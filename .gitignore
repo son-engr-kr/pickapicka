@@ -25,3 +25,6 @@ picks.json.*
 picks/
 *.picks/
 .picture-classifier/
+
+# Local-only planning notes
+.plan.md

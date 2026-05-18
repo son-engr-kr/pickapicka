@@ -1,10 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for Picture Classifier (macOS .app bundle).
+"""PyInstaller spec for Picture Classifier — cross-platform.
+
+macOS wraps the bundle in a .app; on Windows the COLLECT tree
+(dist/picture-classifier/) is the distributable, wrapped by Inno Setup.
 
 Run from the project root:
     uvx --with-requirements pyproject.toml pyinstaller packaging/picture-classifier.spec
 """
 import os
+import sys
 from pathlib import Path
 
 ROOT = Path(SPECPATH).parent
@@ -94,20 +98,23 @@ coll = COLLECT(
     name="picture-classifier",
 )
 
-app = BUNDLE(
-    coll,
-    name="Picture Classifier.app",
-    icon=None,
-    bundle_identifier="kr.son-engr.picture-classifier",
-    version=APP_VERSION,
-    info_plist={
-        "CFBundleName": "Picture Classifier",
-        "CFBundleDisplayName": "Picture Classifier",
-        "CFBundleIdentifier": "kr.son-engr.picture-classifier",
-        "CFBundleVersion": APP_VERSION,
-        "CFBundleShortVersionString": APP_VERSION,
-        "LSMinimumSystemVersion": "12.0",
-        "NSHighResolutionCapable": True,
-        "LSUIElement": False,
-    },
-)
+# macOS wraps the COLLECT tree in a .app bundle; on Windows/Linux the COLLECT
+# directory (dist/picture-classifier/) is itself the distributable.
+if sys.platform == "darwin":
+    app = BUNDLE(
+        coll,
+        name="Picture Classifier.app",
+        icon=None,
+        bundle_identifier="kr.son-engr.picture-classifier",
+        version=APP_VERSION,
+        info_plist={
+            "CFBundleName": "Picture Classifier",
+            "CFBundleDisplayName": "Picture Classifier",
+            "CFBundleIdentifier": "kr.son-engr.picture-classifier",
+            "CFBundleVersion": APP_VERSION,
+            "CFBundleShortVersionString": APP_VERSION,
+            "LSMinimumSystemVersion": "12.0",
+            "NSHighResolutionCapable": True,
+            "LSUIElement": False,
+        },
+    )

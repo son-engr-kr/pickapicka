@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: macOS arm64 .app + DMG
+    name: macOS arm64 .app + .pkg
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -54,25 +54,24 @@ jobs:
           test -d "$APP"
           "$APP/Contents/MacOS/picture-classifier" --help | head -3
 
-      - name: Create DMG
+      - name: Create .pkg installer
         run: |
-          DMG="dist/Picture-Classifier-${{ steps.ver.outputs.tag }}-macos-arm64.dmg"
-          # Use a temporary read-write image so we can drop a Applications symlink.
-          STAGING=$(mktemp -d)
-          cp -R "dist/Picture Classifier.app" "$STAGING/"
-          ln -s /Applications "$STAGING/Applications"
-          hdiutil create \
-            -volname "Picture Classifier" \
-            -srcfolder "$STAGING" \
-            -ov -format UDZO \
-            "$DMG"
-          ls -lh "$DMG"
+          PKG="dist/Picture-Classifier-${{ steps.ver.outputs.tag }}-macos-arm64.pkg"
+          # A component pkg that installs the .app into /Applications; opens in
+          # Installer.app on double-click.
+          pkgbuild \
+            --install-location /Applications \
+            --component "dist/Picture Classifier.app" \
+            --identifier kr.son-engr.picture-classifier \
+            --version "${{ steps.ver.outputs.version }}" \
+            "$PKG"
+          ls -lh "$PKG"
 
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Picture-Classifier-*.dmg
+          files: dist/Picture-Classifier-*.pkg
           fail_on_unmatched_files: true
 
       - name: Upload artifact (workflow_dispatch fallback)
@@ -80,5 +79,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: picture-classifier-${{ steps.ver.outputs.tag }}-macos-arm64
-          path: dist/Picture-Classifier-*.dmg
+          path: dist/Picture-Classifier-*.pkg
           retention-days: 14
