@@ -13,6 +13,9 @@ hundred to a few thousand JPEGs. Runs entirely on your machine; no network.
   closed-eye detection.
 - **Per-scene auto-suggestion**: top 30% pick / middle review / bottom 30%
   reject, normalized within each scene.
+- **HDR bracket auto-merge**: detects auto-exposure brackets from EXIF and
+  exposure-fuses each into one photo, with a tunable real-estate "look"
+  (shadow lift, local contrast, saturation) and an HDR-vs-0 EV compare toggle.
 - **Face clustering**: detects faces with `insightface` and clusters them
   per-person via DBSCAN on embeddings.
 - **Drag-and-drop people priority**: rank face clusters by importance; photos
@@ -30,26 +33,34 @@ hundred to a few thousand JPEGs. Runs entirely on your machine; no network.
 
 ## Requirements
 
-- Python 3.12+
-- macOS (developed on macOS 15; Linux/Windows likely work but the native
-  folder-picker uses AppleScript on macOS and Tk elsewhere)
-- [uv](https://github.com/astral-sh/uv) (recommended) or pip
+- Prebuilt installers for macOS (Apple Silicon) and Windows (x64) — see below
+- For the source / `uv tool` install: Python 3.12+ and
+  [uv](https://github.com/astral-sh/uv). Linux is supported this way.
 
 ## Install
 
 Pick whichever installer you prefer. The first run downloads the
 `insightface` `buffalo_l` model (~280 MB) into `~/.insightface/`.
 
-### macOS app bundle (no terminal needed)
+### macOS (no terminal needed)
 
-Grab the latest `.dmg` from
+Grab the latest `.pkg` from
 [Releases](https://github.com/son-engr-kr/picture-classifier/releases),
-drag **Picture Classifier.app** into `/Applications`, and double-click to
-launch. The app opens the landing page in your default browser
+double-click it, and follow the installer — it puts **Picture Classifier.app**
+into `/Applications`. Launch it and the landing page opens in your browser
 automatically.
 
-Apple Silicon (arm64) only for now. The app is unsigned, so the first
-launch needs **Right-click → Open → Open** to clear Gatekeeper.
+Apple Silicon (arm64) only. The package is unsigned, so the first launch
+needs **Right-click → Open → Open** to clear Gatekeeper.
+
+### Windows (no terminal needed)
+
+Grab the latest `Picture-Classifier-*-windows-x64.exe` from
+[Releases](https://github.com/son-engr-kr/picture-classifier/releases),
+run the installer, and launch **Picture Classifier** from the Start menu.
+
+x64 only. The installer is unsigned, so SmartScreen warns on first run —
+click **More info → Run anyway**.
 
 ### `uv tool` (cross-platform — macOS, Linux, Windows)
 
@@ -165,19 +176,29 @@ Caches (`picks.json.thumbs/`, `picks.json.faces/`,
 
 ## Releasing (maintainer notes)
 
-Bump the version, tag, and push. The
-`Update Homebrew tap` GitHub Action picks up `v*` tags and updates the
-[homebrew tap](https://github.com/son-engr-kr/homebrew-picture-classifier)
-formula automatically.
+A release is cut by pushing a `v*` tag. Three GitHub Actions fire on it and
+all attach their output to the **same** GitHub Release:
+
+- **Build macOS app** — builds the `.app` and packages a `.pkg`.
+- **Build Windows app** — builds the PyInstaller bundle and wraps it in an
+  Inno Setup installer (`setup.exe`).
+- **Update Homebrew tap** — refreshes the
+  [tap](https://github.com/son-engr-kr/homebrew-picture-classifier) formula.
 
 ```bash
-# bump version in pyproject.toml first
-git tag v0.1.1
-git push origin v0.1.1
+# 1. bump "version" in pyproject.toml, then:
+git commit -am "chore: bump to 0.1.4"
+git tag v0.1.4
+git push origin main v0.1.4
 ```
 
-The action requires a `TAP_TOKEN` repository secret — a fine-grained PAT
-with `Contents: Write` permission on `son-engr-kr/homebrew-picture-classifier`.
+The tag push triggers all three workflows; build artifacts publish to the
+GitHub Release automatically — no manual upload. To dry-run a platform build
+*without* cutting a release, use **Actions → Build … app → Run workflow**
+(workflow_dispatch); it uploads an artifact instead of publishing a release.
+
+The Homebrew workflow needs a `TAP_TOKEN` repository secret — a fine-grained
+PAT with `Contents: Write` on `son-engr-kr/homebrew-picture-classifier`.
 
 ## License
 
