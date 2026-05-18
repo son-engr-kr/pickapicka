@@ -24,11 +24,19 @@ def read_capture_time(image_path: Path) -> datetime | None:
         return None
 
 
+def _scene_ref(photo: dict[str, Any]) -> str:
+    """Rel_path to derive a scene from. A merged HDR result has a synthetic
+    rel_path, so its first source frame stands in for it."""
+    if photo.get("type") == "hdr" and photo.get("members"):
+        return photo["members"][0]
+    return photo["rel_path"]
+
+
 def group_by_folder(photos: list[dict[str, Any]]) -> None:
     """Set photo['scene'] from the first directory component of rel_path.
     Loose files (no subdir) become '(none)'."""
     for p in photos:
-        parts = p["rel_path"].split("/", 1)
+        parts = _scene_ref(p).split("/", 1)
         p["scene"] = parts[0] if len(parts) > 1 else "(none)"
 
 
@@ -40,7 +48,7 @@ def group_by_time_gap(
     """Sort photos by capture time, start a new scene whenever the gap exceeds
     `gap_minutes`. Photos missing EXIF time go to '(no_time)'."""
     times: list[datetime | None] = [
-        read_capture_time(jpeg_root / p["rel_path"]) for p in photos
+        read_capture_time(jpeg_root / _scene_ref(p)) for p in photos
     ]
     timed = sorted(
         ((i, t) for i, t in enumerate(times) if t is not None),

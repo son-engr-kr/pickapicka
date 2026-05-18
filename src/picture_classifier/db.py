@@ -26,5 +26,6 @@ def init_db(photo_root: Path, jpeg_subdir: str) -> dict[str, Any]:
         "photo_root": str(photo_root),
         "jpeg_subdir": jpeg_subdir,
         "scored_at": None,
+        "brackets": [],
         "photos": [],
     }

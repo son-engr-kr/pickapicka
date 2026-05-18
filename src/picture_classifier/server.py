@@ -2,6 +2,7 @@
 face crops, and persistence of decisions/clusters/scene-grouping."""
 from __future__ import annotations
 
+import io
 import platform
 import shutil
 import subprocess
@@ -11,13 +12,20 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel
 
-from . import db, scenes, userstate
-from .scorer import SUPPORTED_EXTS, _is_supported, apply_scene_suggestions
+from . import db, hdr, scenes, userstate
+from .scorer import (
+    SUPPORTED_EXTS,
+    _is_supported,
+    apply_scene_suggestions,
+    excluded_scan_dirs,
+    source_rel_paths,
+    walk_files,
+)
 
 THUMB_LONG_EDGE = 1280
 THUMB_QUALITY = 90
@@ -43,6 +51,15 @@ class BulkDecidePayload(BaseModel):
 
 class ScorePayload(BaseModel):
     with_faces: bool = False
+    # Explicit HDR bracket grouping (HDR-tab edit); None re-detects from EXIF.
+    bracket_groups: list[list[str]] | None = None
+    # Real-estate "look" for merged results; None keeps the project's setting.
+    hdr_look: dict[str, float] | None = None
+
+
+class HdrPreviewPayload(BaseModel):
+    members: list[str]
+    look: dict[str, float] = {}
 
 
 class ClusterPayload(BaseModel):
@@ -111,7 +128,11 @@ class AppContext:
         self.jpeg_root: Path | None = None
         self.thumbs_root: Path | None = None
         self.faces_root: Path | None = None
+        self.hdr_root: Path | None = None
         self.photo_index: dict[str, dict[str, Any]] = {}
+        # Single-entry cache of the last previewed bracket's fused array, so
+        # dragging the look sliders re-grades instead of re-fusing.
+        self.hdr_fuse_cache: tuple[tuple[str, ...], Any] | None = None
 
         self.save_lock = threading.Lock()
         self.score_lock = threading.Lock()
@@ -149,7 +170,9 @@ class AppContext:
         self.jpeg_root = None
         self.thumbs_root = None
         self.faces_root = None
+        self.hdr_root = None
         self.photo_index = {}
+        self.hdr_fuse_cache = None
         self.opening_state = self._fresh_opening_state()
 
     def load_db(self, db_path: Path) -> None:
@@ -167,8 +190,10 @@ class AppContext:
         self.jpeg_root = jpeg_root
         self.thumbs_root = db_path.with_suffix(db_path.suffix + ".thumbs")
         self.faces_root = db_path.with_suffix(db_path.suffix + ".faces")
+        self.hdr_root = db_path.with_suffix(db_path.suffix + ".hdr")
         self.thumbs_root.mkdir(exist_ok=True)
         self.faces_root.mkdir(exist_ok=True)
+        self.hdr_root.mkdir(exist_ok=True)
         self._rebuild_index()
         self.opening_state["ready"] = True
 
@@ -190,8 +215,10 @@ class AppContext:
         cache_root = project_dir / ".cache"
         self.thumbs_root = cache_root / "thumbs"
         self.faces_root = cache_root / "faces"
+        self.hdr_root = project_dir / "hdr"
         self.thumbs_root.mkdir(parents=True, exist_ok=True)
         self.faces_root.mkdir(parents=True, exist_ok=True)
+        self.hdr_root.mkdir(parents=True, exist_ok=True)
         self._rebuild_index()
         self.opening_state["ready"] = True
 
@@ -209,11 +236,28 @@ class AppContext:
             shutil.rmtree(self.faces_root, ignore_errors=True)
             self.faces_root.mkdir(exist_ok=True)
 
+    def source_path(self, rel_path: str) -> Path:
+        """Absolute path of a photo's image file. A merged HDR result lives in
+        the HDR output directory; every other photo under the JPEG root."""
+        if hdr.is_hdr_rel(rel_path):
+            assert self.hdr_root is not None
+            return self.hdr_root / rel_path[len(hdr.HDR_PREFIX) + 1:]
+        assert self.jpeg_root is not None
+        return self.jpeg_root / rel_path
+
 
 # ----- helpers ------------------------------------------------------------
 
-def _ensure_thumb(jpeg_root: Path, thumbs_root: Path, rel_path: str) -> Path:
-    src = jpeg_root / rel_path
+def _within_roots(ctx: "AppContext", path: Path) -> bool:
+    """True when an already-resolved `path` lies inside the JPEG root or the
+    HDR output directory — guards the image routes against path traversal."""
+    roots = [ctx.jpeg_root.resolve()]
+    if ctx.hdr_root is not None:
+        roots.append(ctx.hdr_root.resolve())
+    return any(path == r or r in path.parents for r in roots)
+
+
+def _ensure_thumb(src: Path, thumbs_root: Path, rel_path: str) -> Path:
     dst = thumbs_root / rel_path
     if dst.exists() and dst.stat().st_mtime >= src.stat().st_mtime:
         # Invalidate cached thumbs whose long edge is smaller than the current
@@ -233,14 +277,13 @@ def _ensure_thumb(jpeg_root: Path, thumbs_root: Path, rel_path: str) -> Path:
 
 
 def _ensure_face_crop(
-    jpeg_root: Path,
+    src: Path,
     faces_root: Path,
     rel_path: str,
     bbox_xywh: list[int],
     face_idx: int,
     db_path: Path,
 ) -> Path:
-    src = jpeg_root / rel_path
     dst = faces_root / f"{rel_path}.f{face_idx}.jpg"
     db_mtime = db_path.stat().st_mtime if db_path.exists() else 0
     src_mtime = src.stat().st_mtime
@@ -264,21 +307,23 @@ def _ensure_face_crop(
     return dst
 
 
-def _scan_jpegs(jpeg_root: Path) -> set[str]:
+def _scan_jpegs(jpeg_root: Path, exclude_dirs: set[Path] | None = None) -> set[str]:
     """Recursively find rel_paths of all supported images under jpeg_root."""
     found: set[str] = set()
-    for img in jpeg_root.rglob("*"):
-        if img.is_file() and _is_supported(img):
+    for img in walk_files(jpeg_root, exclude_dirs or ()):
+        if _is_supported(img):
             found.add(str(img.relative_to(jpeg_root)))
     return found
 
 
-def _summarize_other_files(jpeg_root: Path, limit: int = 4) -> str:
+def _summarize_other_files(
+    jpeg_root: Path,
+    exclude_dirs: set[Path] | None = None,
+    limit: int = 4,
+) -> str:
     """Sample non-image extensions found under jpeg_root for a helpful error msg."""
     counts: dict[str, int] = {}
-    for p in jpeg_root.rglob("*"):
-        if not p.is_file():
-            continue
+    for p in walk_files(jpeg_root, exclude_dirs or ()):
         ext = p.suffix.lower()
         if ext in SUPPORTED_EXTS or p.name.startswith("._"):
             continue
@@ -460,18 +505,19 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             )
             if not jpeg_root.is_dir():
                 raise RuntimeError(f"folder does not exist: {jpeg_root}")
-            current_files = _scan_jpegs(jpeg_root)
+            scan_excludes = excluded_scan_dirs(db_path, project_dir)
+            current_files = _scan_jpegs(jpeg_root, scan_excludes)
             if not current_files:
-                hint = _summarize_other_files(jpeg_root)
+                hint = _summarize_other_files(jpeg_root, scan_excludes)
                 raise RuntimeError(
                     f"no .jpg/.jpeg/.png images found under {jpeg_root} ({hint}); "
                     f"pick a different folder or set the JPEG subfolder"
                 )
 
-            existing_files = (
-                {p["rel_path"] for p in existing_data["photos"]}
-                if existing_data else set()
-            )
+            # Compare the scan against the prior *source* files (standalone
+            # photos + bracket members), since merged HDR results carry
+            # synthetic rel_paths that never appear in a folder scan.
+            existing_files = source_rel_paths(existing_data) if existing_data else set()
             needs_score = (
                 existing_data is None
                 or existing_data.get("scored_at") is None
@@ -491,6 +537,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                 run_scoring(
                     photo_dir, jpeg_subdir, db_path,
                     with_faces=False, progress_cb=score_cb,
+                    project_dir=project_dir,
                 )
 
                 ctx.opening_state["phase"] = "clustering"
@@ -622,6 +669,22 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             ctx.opening_state["running"] = False
             ctx.opening_state["error"] = f"photo folder does not exist: {photo_dir}"
             raise HTTPException(status_code=400, detail=ctx.opening_state["error"])
+        jpeg_root = (
+            (photo_dir / payload.jpeg_subdir).resolve()
+            if payload.jpeg_subdir else photo_dir
+        )
+        if (
+            project_dir == jpeg_root
+            or project_dir.is_relative_to(jpeg_root)
+            or jpeg_root.is_relative_to(project_dir)
+        ):
+            ctx.opening_state["running"] = False
+            ctx.opening_state["error"] = (
+                "project folder must not live inside the photo folder (or vice "
+                f"versa); cache files would be re-scored as photos. "
+                f"project={project_dir}, photos={jpeg_root}"
+            )
+            raise HTTPException(status_code=400, detail=ctx.opening_state["error"])
         try:
             project_dir.mkdir(parents=True, exist_ok=True)
             (project_dir / ".cache").mkdir(exist_ok=True)
@@ -662,6 +725,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             "jpeg_subdir": ctx.data["jpeg_subdir"],
             "scene_grouping": ctx.data.get("scene_grouping", {"mode": "folder", "gap_minutes": 30}),
             "people": ctx.data.get("people", []),
+            "brackets": ctx.data.get("brackets", []),
+            "hdr_look": ctx.data.get("hdr_look") or hdr.DEFAULT_LOOK,
             "photos": ctx.data["photos"],
         }
 
@@ -712,6 +777,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             db.save(ctx.db_path, ctx.data)
 
         with_faces = payload.with_faces if payload else False
+        bracket_groups = payload.bracket_groups if payload else None
+        hdr_look = payload.hdr_look if payload else None
 
         def progress_cb(i: int, total: int, current: str | None) -> None:
             ctx.scoring_state["idx"] = i
@@ -727,6 +794,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                     ctx.db_path,
                     with_faces=with_faces,
                     progress_cb=progress_cb,
+                    project_dir=ctx.project_dir,
+                    bracket_groups=bracket_groups,
+                    hdr_look=hdr_look,
                 )
                 ctx.reload_data()
                 ctx.wipe_face_cache()
@@ -742,6 +812,27 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     @app.get("/api/score/status")
     def score_status() -> dict[str, Any]:
         return ctx.scoring_state
+
+    @app.post("/api/hdr/preview")
+    def hdr_preview(payload: HdrPreviewPayload) -> Response:
+        """Fuse a bracket and apply the given look — drives the live look-tuner.
+        The fused array is cached (single entry) so dragging the sliders only
+        re-grades instead of re-fusing."""
+        _require_loaded()
+        if len(payload.members) < 2:
+            raise HTTPException(status_code=400, detail="need at least 2 frames")
+        member_paths = [ctx.jpeg_root / m for m in payload.members]
+        for p in member_paths:
+            if not p.is_file():
+                raise HTTPException(status_code=404, detail=f"missing frame: {p.name}")
+        key = tuple(sorted(payload.members))
+        if ctx.hdr_fuse_cache is None or ctx.hdr_fuse_cache[0] != key:
+            ctx.hdr_fuse_cache = (key, hdr.fuse(member_paths, max_edge=1400))
+        graded = hdr.grade(ctx.hdr_fuse_cache[1], payload.look)
+        buf = io.BytesIO()
+        Image.fromarray(graded).save(buf, "JPEG", quality=86)
+        return Response(content=buf.getvalue(), media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
 
     # ----- clustering ------------------------------------------------
 
@@ -870,7 +961,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         per_combo: dict[str, int] = {}
 
         for photo in picks:
-            src = ctx.jpeg_root / photo["rel_path"]
+            src = ctx.source_path(photo["rel_path"])
             if not src.is_file():
                 skipped.append(photo["rel_path"])
                 continue
@@ -923,8 +1014,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     @app.get("/img/{rel_path:path}")
     def get_image(rel_path: str) -> FileResponse:
         _require_loaded()
-        path = (ctx.jpeg_root / rel_path).resolve()
-        if ctx.jpeg_root.resolve() not in path.parents and path != ctx.jpeg_root.resolve():
+        path = ctx.source_path(rel_path).resolve()
+        if not _within_roots(ctx, path):
             raise HTTPException(status_code=403, detail="forbidden")
         if not path.is_file():
             raise HTTPException(status_code=404, detail="not found")
@@ -934,12 +1025,12 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     @app.get("/thumb/{rel_path:path}")
     def get_thumb(rel_path: str) -> FileResponse:
         _require_loaded()
-        src = (ctx.jpeg_root / rel_path).resolve()
-        if ctx.jpeg_root.resolve() not in src.parents:
+        src = ctx.source_path(rel_path).resolve()
+        if not _within_roots(ctx, src):
             raise HTTPException(status_code=403, detail="forbidden")
         if not src.is_file():
             raise HTTPException(status_code=404, detail="not found")
-        thumb = _ensure_thumb(ctx.jpeg_root, ctx.thumbs_root, rel_path)
+        thumb = _ensure_thumb(src, ctx.thumbs_root, rel_path)
         return FileResponse(thumb, media_type="image/jpeg")
 
     @app.get("/face/{rel_path:path}")
@@ -953,7 +1044,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="face not found")
         face = face_list[idx]
         bbox = face["bbox_xywh"]
-        crop_path = _ensure_face_crop(ctx.jpeg_root, ctx.faces_root, rel_path, bbox, idx, ctx.db_path)
+        crop_path = _ensure_face_crop(
+            ctx.source_path(rel_path), ctx.faces_root, rel_path, bbox, idx, ctx.db_path)
         return FileResponse(crop_path, media_type="image/jpeg")
 
     return app

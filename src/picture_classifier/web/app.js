@@ -19,10 +19,15 @@ const state = {
   filteredPhotos: [],
   pageSize: 4,
   cursorIdx: 0,             // index into filteredPhotos (focused tile)
-  modal: { open: false, idx: 0, fit: true },
+  modal: { open: false, idx: 0, fit: true, compare: false },
   people: [],
   peopleById: new Map(),
+  brackets: [],
+  hdrLook: {},
 };
+
+// Mirror of hdr.DEFAULT_LOOK — the realtor-style starting point.
+const LOOK_DEFAULT = { shadows: 0.22, brightness: 1.05, clarity: 1.6, saturation: 1.15, sharpen: 0.45 };
 
 // ---------- helpers ----------
 const $ = (sel) => document.querySelector(sel);
@@ -83,6 +88,8 @@ async function loadDb() {
   }
   state.people = data.people || [];
   state.peopleById = new Map(state.people.map((p) => [p.id, p]));
+  state.brackets = data.brackets || [];
+  state.hdrLook = data.hdr_look || { ...LOOK_DEFAULT };
   state.sceneGrouping = data.scene_grouping || { mode: "folder", gap_minutes: 30 };
   prunePersonFilter();
 }
@@ -238,6 +245,7 @@ function renderHeader() {
   exportBtn.textContent = totalPicks > 0
     ? `📁 export ${totalPicks} pick${totalPicks > 1 ? "s" : ""}`
     : "📁 export picks";
+  $("#hdr-btn").textContent = `🌅 HDR (${state.brackets.length})`;
 }
 
 function renderGrid() {
@@ -277,6 +285,7 @@ function renderGrid() {
         <div class="tile-img" data-action="open">
           <img loading="lazy" src="/thumb/${enc(p.rel_path)}" alt="" />
           ${auto ? `<span class="auto-badge ${auto}">auto: ${auto}</span>` : ""}
+          ${p.type === "hdr" ? `<span class="hdr-tile-badge">HDR · ${(p.members || []).length}</span>` : ""}
           <span class="badness">${badness}</span>
         </div>
       </div>
@@ -513,11 +522,310 @@ async function performUndo() {
   renderMain();
 }
 
+// ---------- HDR brackets modal ----------
+const hdrEdit = { groups: [], selected: new Set(), sceneOf: new Map(), origKey: "" };
+
+function hdrGroupsKey(groups) {
+  return groups.map((g) => g.slice().sort().join("|")).sort().join("¶");
+}
+
+function openHdrModal() {
+  // Working copy of the current grouping; edits apply on "Apply".
+  hdrEdit.groups = state.brackets.map((b) => b.members.slice());
+  hdrEdit.selected = new Set();
+  hdrEdit.origKey = hdrGroupsKey(hdrEdit.groups);
+  // Scene of every source frame: standalone photos + bracket members.
+  hdrEdit.sceneOf = new Map();
+  for (const p of state.photos) {
+    if (p.type !== "hdr") hdrEdit.sceneOf.set(p.rel_path, p.scene);
+  }
+  for (const b of state.brackets) {
+    for (const m of b.members) hdrEdit.sceneOf.set(m, b.scene);
+  }
+  $("#hdr-modal").classList.remove("hidden");
+  renderHdrModal();
+}
+
+function closeHdrModal() {
+  $("#hdr-modal").classList.add("hidden");
+}
+
+function updateHdrToolbar() {
+  const sel = hdrEdit.selected;
+  $("#hdr-selcount").textContent = `${sel.size} selected`;
+  $("#hdr-group").disabled = sel.size < 3 || sel.size > 9;
+  const anyGrouped = [...sel].some(
+    (m) => hdrEdit.groups.some((g) => g.includes(m)));
+  $("#hdr-ungroup").disabled = !anyGrouped;
+  const changed = hdrGroupsKey(hdrEdit.groups) !== hdrEdit.origKey;
+  $("#hdr-apply").disabled = !changed;
+  $("#hdr-status").textContent = changed ? "Unsaved changes — Apply to re-score" : "";
+}
+
+function hdrToggleSelect(relPath) {
+  if (hdrEdit.selected.has(relPath)) hdrEdit.selected.delete(relPath);
+  else hdrEdit.selected.add(relPath);
+  // Light update — re-rendering would collapse expanded scene sections.
+  const on = hdrEdit.selected.has(relPath);
+  $$(`.hdr-thumb`).forEach((d) => {
+    if (d.dataset.rel === relPath) d.classList.toggle("selected", on);
+  });
+  updateHdrToolbar();
+}
+
+function hdrGroupSelected() {
+  const picked = [...hdrEdit.selected];
+  if (picked.length < 3 || picked.length > 9) return;
+  // Pull the picked frames out of any existing group, drop groups now < 3.
+  hdrEdit.groups = hdrEdit.groups
+    .map((g) => g.filter((m) => !hdrEdit.selected.has(m)))
+    .filter((g) => g.length >= 3);
+  hdrEdit.groups.push(picked);
+  hdrEdit.selected.clear();
+  renderHdrModal();
+}
+
+function hdrUngroupSelected() {
+  if (!hdrEdit.selected.size) return;
+  hdrEdit.groups = hdrEdit.groups
+    .map((g) => g.filter((m) => !hdrEdit.selected.has(m)))
+    .filter((g) => g.length >= 3);
+  hdrEdit.selected.clear();
+  renderHdrModal();
+}
+
+function hdrDissolve(idx) {
+  hdrEdit.groups.splice(idx, 1);
+  renderHdrModal();
+}
+
+function buildHdrThumb(relPath) {
+  const div = document.createElement("div");
+  div.className = "hdr-thumb" + (hdrEdit.selected.has(relPath) ? " selected" : "");
+  div.dataset.rel = relPath;
+  div.innerHTML =
+    `<img loading="lazy" src="/thumb/${enc(relPath)}" alt="" />` +
+    `<span class="hdr-thumb-name">${escapeHtml(relPath.split("/").pop())}</span>`;
+  div.addEventListener("click", () => hdrToggleSelect(relPath));
+  return div;
+}
+
+function buildBracketCard(members, idx) {
+  const card = document.createElement("div");
+  card.className = "bracket-card";
+
+  const head = document.createElement("div");
+  head.className = "bracket-head";
+  head.innerHTML = `<span class="bracket-title">Bracket · ${members.length} frames</span>`;
+  const dissolve = document.createElement("button");
+  dissolve.type = "button";
+  dissolve.className = "bracket-dissolve";
+  dissolve.textContent = "Dissolve";
+  dissolve.addEventListener("click", () => hdrDissolve(idx));
+  head.appendChild(dissolve);
+  card.appendChild(head);
+
+  const row = document.createElement("div");
+  row.className = "hdr-thumbs";
+  // A group identical to a saved bracket already has a merged result to show.
+  const key = members.slice().sort().join("|");
+  const saved = state.brackets.find(
+    (b) => b.members.slice().sort().join("|") === key);
+  const result = document.createElement("div");
+  if (saved) {
+    result.className = "hdr-thumb merged";
+    result.innerHTML =
+      `<img loading="lazy" src="/thumb/${enc(saved.merged)}" alt="" />` +
+      `<span class="hdr-thumb-name">merged result</span>`;
+  } else {
+    result.className = "hdr-thumb pending";
+    result.innerHTML = `<span>merges<br>on Apply</span>`;
+  }
+  row.appendChild(result);
+  members.forEach((m) => row.appendChild(buildHdrThumb(m)));
+  card.appendChild(row);
+  return card;
+}
+
+function renderHdrModal() {
+  const content = $("#hdr-content");
+  content.innerHTML = "";
+
+  const grouped = new Set();
+  hdrEdit.groups.forEach((g) => g.forEach((m) => grouped.add(m)));
+
+  if (hdrEdit.groups.length) {
+    const sec = document.createElement("div");
+    sec.className = "hdr-section";
+    sec.innerHTML = `<h3>Brackets · ${hdrEdit.groups.length}</h3>`;
+    hdrEdit.groups.forEach((g, idx) => sec.appendChild(buildBracketCard(g, idx)));
+    content.appendChild(sec);
+  }
+
+  const ungrouped = [...hdrEdit.sceneOf.keys()].filter((m) => !grouped.has(m));
+  const byScene = new Map();
+  for (const m of ungrouped.sort()) {
+    const s = hdrEdit.sceneOf.get(m) || "(none)";
+    if (!byScene.has(s)) byScene.set(s, []);
+    byScene.get(s).push(m);
+  }
+  const sec = document.createElement("div");
+  sec.className = "hdr-section";
+  sec.innerHTML = `<h3>Ungrouped photos · ${ungrouped.length}</h3>`;
+  if (!ungrouped.length) {
+    const empty = document.createElement("div");
+    empty.className = "hdr-empty";
+    empty.textContent = "Every photo is in a bracket.";
+    sec.appendChild(empty);
+  }
+  for (const [scene, members] of byScene) {
+    const det = document.createElement("details");
+    det.className = "hdr-scene";
+    const sum = document.createElement("summary");
+    sum.textContent = `${scene} · ${members.length}`;
+    det.appendChild(sum);
+    const body = document.createElement("div");
+    body.className = "hdr-thumbs";
+    det.appendChild(body);
+    // Populate lazily on first expand so a big library stays responsive.
+    det.addEventListener("toggle", () => {
+      if (det.open && !body.childElementCount) {
+        members.forEach((m) => body.appendChild(buildHdrThumb(m)));
+      }
+    });
+    sec.appendChild(det);
+  }
+  content.appendChild(sec);
+  updateHdrToolbar();
+}
+
+async function applyHdr() {
+  const frames = hdrEdit.groups.reduce((n, g) => n + g.length, 0);
+  if (!confirm(
+      "Apply HDR changes? This re-scores every photo.\n" +
+      `${hdrEdit.groups.length} bracket(s) from ${frames} frames.`)) return;
+  const res = await fetch("/api/score", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ with_faces: false, bracket_groups: hdrEdit.groups }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    $("#hdr-status").textContent = "Failed: " + (err.detail || res.status);
+    return;
+  }
+  closeHdrModal();
+  $("#score-title").textContent = "Merging & re-scoring…";
+  $("#score-progress").classList.remove("hidden");
+  $("#score-bar-fill").style.width = "0%";
+  $("#score-progress-text").textContent = "starting…";
+  $("#score-current").textContent = "";
+  pollScoreStatus();
+}
+
+// ---------- HDR look tuner ----------
+const lookEdit = { look: {}, bracketIdx: 0, objUrl: null, timer: null };
+
+function openLookModal() {
+  if (!state.brackets.length) {
+    alert("No HDR brackets yet — run a re-score first so there is something to tune.");
+    return;
+  }
+  lookEdit.look = { ...LOOK_DEFAULT, ...(state.hdrLook || {}) };
+  lookEdit.bracketIdx = 0;
+  $$("#hdr-look-modal input[type=range]").forEach((sl) => {
+    sl.value = lookEdit.look[sl.dataset.look];
+  });
+  syncLookValues();
+  $("#hdr-look-status").textContent = "";
+  $("#hdr-look-modal").classList.remove("hidden");
+  fetchLookPreview(true);
+}
+
+function closeLookModal() {
+  $("#hdr-look-modal").classList.add("hidden");
+  if (lookEdit.objUrl) { URL.revokeObjectURL(lookEdit.objUrl); lookEdit.objUrl = null; }
+  if (lookEdit.timer) { clearTimeout(lookEdit.timer); lookEdit.timer = null; }
+}
+
+function syncLookValues() {
+  $$("#hdr-look-modal .look-val").forEach((el) => {
+    el.textContent = Number(lookEdit.look[el.dataset.val]).toFixed(2);
+  });
+}
+
+function lookBracketNav(delta) {
+  const n = state.brackets.length;
+  if (!n) return;
+  lookEdit.bracketIdx = (lookEdit.bracketIdx + delta + n) % n;
+  fetchLookPreview(true);
+}
+
+function fetchLookPreview(immediate) {
+  if (lookEdit.timer) { clearTimeout(lookEdit.timer); lookEdit.timer = null; }
+  const go = async () => {
+    const b = state.brackets[lookEdit.bracketIdx];
+    if (!b) return;
+    $("#hdr-look-which").textContent =
+      `bracket ${lookEdit.bracketIdx + 1} / ${state.brackets.length}`;
+    $("#hdr-look-status").textContent = "rendering…";
+    try {
+      const res = await fetch("/api/hdr/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ members: b.members, look: lookEdit.look }),
+      });
+      if (!res.ok) { $("#hdr-look-status").textContent = "preview failed"; return; }
+      const blob = await res.blob();
+      if (lookEdit.objUrl) URL.revokeObjectURL(lookEdit.objUrl);
+      lookEdit.objUrl = URL.createObjectURL(blob);
+      $("#hdr-look-img").src = lookEdit.objUrl;
+      $("#hdr-look-status").textContent = "";
+    } catch {
+      $("#hdr-look-status").textContent = "preview error";
+    }
+  };
+  if (immediate) go();
+  else lookEdit.timer = setTimeout(go, 130);
+}
+
+function resetLook() {
+  lookEdit.look = { ...LOOK_DEFAULT };
+  $$("#hdr-look-modal input[type=range]").forEach((sl) => {
+    sl.value = lookEdit.look[sl.dataset.look];
+  });
+  syncLookValues();
+  fetchLookPreview(true);
+}
+
+async function applyLook() {
+  if (!confirm("Apply this look to every HDR photo? This re-merges and re-scores.")) return;
+  const res = await fetch("/api/score", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ with_faces: false, hdr_look: lookEdit.look }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    $("#hdr-look-status").textContent = "Failed: " + (err.detail || res.status);
+    return;
+  }
+  closeLookModal();
+  closeHdrModal();
+  $("#score-title").textContent = "Applying look & re-scoring…";
+  $("#score-progress").classList.remove("hidden");
+  $("#score-bar-fill").style.width = "0%";
+  $("#score-progress-text").textContent = "starting…";
+  $("#score-current").textContent = "";
+  pollScoreStatus();
+}
+
 // ---------- modal ----------
 function openModal(absIdx) {
   state.modal.open = true;
   state.modal.idx = absIdx;
   state.modal.fit = true;
+  state.modal.compare = false;
   state.cursorIdx = absIdx;
   $("#modal").classList.remove("hidden");
   renderModal();
@@ -532,12 +840,23 @@ function closeModal() {
 function renderModal() {
   const photo = state.filteredPhotos[state.modal.idx];
   if (!photo) { closeModal(); return; }
+  const isHdr = photo.type === "hdr" && !!photo.base;
+  const comparing = isHdr && state.modal.compare;
+  const shownRel = comparing ? photo.base : photo.rel_path;
   const img = $("#modal-image");
-  img.src = "/img/" + enc(photo.rel_path);
+  img.src = "/img/" + enc(shownRel);
   img.className = state.modal.fit ? "fit" : "actual";
-  $("#modal-title").textContent = photo.rel_path;
+  $("#modal-title").textContent = shownRel;
   $("#modal-meta").textContent =
     `${state.modal.idx + 1}/${state.filteredPhotos.length} in ${photo.scene} · auto: ${photo.auto_suggestion || "—"}`;
+  const cmp = $("#modal-compare");
+  cmp.classList.toggle("hidden", !isHdr);
+  cmp.classList.toggle("active", comparing);
+  cmp.textContent = comparing ? "showing: 0 EV original" : "showing: HDR merged";
+  if (isHdr) {
+    // Preload the other version so the toggle is instant.
+    new Image().src = "/img/" + enc(comparing ? photo.rel_path : photo.base);
+  }
   const dec = $("#modal-decision");
   dec.className = photo.decision || "none";
   dec.textContent = (photo.decision || "—").toUpperCase();
@@ -555,6 +874,14 @@ function modalNav(delta) {
   state.modal.idx = i;
   state.cursorIdx = i;
   state.modal.fit = true;
+  state.modal.compare = false;
+  renderModal();
+}
+
+function toggleCompare() {
+  const photo = state.filteredPhotos[state.modal.idx];
+  if (!photo || photo.type !== "hdr" || !photo.base) return;
+  state.modal.compare = !state.modal.compare;
   renderModal();
 }
 
@@ -573,6 +900,17 @@ function bindKeys() {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key;
 
+    // The HDR look tuner swallows shortcuts (its sliders use arrows); Esc only.
+    if (!$("#hdr-look-modal").classList.contains("hidden")) {
+      if (k === "Escape") { closeLookModal(); e.preventDefault(); }
+      return;
+    }
+    // The HDR modal swallows grid/photo shortcuts; only Esc closes it.
+    if (!$("#hdr-modal").classList.contains("hidden")) {
+      if (k === "Escape") { closeHdrModal(); e.preventDefault(); }
+      return;
+    }
+
     if (state.modal.open) {
       if (k === "Escape") { closeModal(); e.preventDefault(); return; }
       if (k === "ArrowRight" || k === " ") { modalNav(+1); e.preventDefault(); return; }
@@ -582,6 +920,7 @@ function bindKeys() {
         $("#modal-image").className = state.modal.fit ? "fit" : "actual";
         e.preventDefault(); return;
       }
+      if (k === "c" || k === "C") { toggleCompare(); e.preventDefault(); return; }
       let decision = null, hasDecision = false, advance = true;
       if (k === "1" || k === "r" || k === "R") { decision = "reject"; hasDecision = true; }
       else if (k === "2" || k === "v" || k === "V") { decision = "review"; hasDecision = true; }
@@ -663,6 +1002,7 @@ function bindUi() {
   $("#prev-page").addEventListener("click", () => gotoPage(-1));
   $("#next-page").addEventListener("click", () => gotoPage(+1));
   $("#modal-close").addEventListener("click", closeModal);
+  $("#modal-compare").addEventListener("click", toggleCompare);
   $("#rescore-btn").addEventListener("click", startRescore);
   $("#reject-undecided-btn").addEventListener("click", rejectUndecidedInScene);
   $("#export-picks-btn").addEventListener("click", openExportModal);
@@ -672,6 +1012,28 @@ function bindUi() {
   $$("#export-mode-cards .option-card").forEach((card) => {
     card.addEventListener("click", () => {
       setOptionCardValue("#export-mode-cards", card.dataset.value);
+    });
+  });
+  $("#hdr-btn").addEventListener("click", openHdrModal);
+  $("#hdr-modal-close").addEventListener("click", closeHdrModal);
+  $("#hdr-cancel").addEventListener("click", closeHdrModal);
+  $("#hdr-apply").addEventListener("click", applyHdr);
+  $("#hdr-group").addEventListener("click", hdrGroupSelected);
+  $("#hdr-ungroup").addEventListener("click", hdrUngroupSelected);
+  $("#hdr-look-btn").addEventListener("click", openLookModal);
+  $("#hdr-look-close").addEventListener("click", closeLookModal);
+  $("#hdr-look-cancel").addEventListener("click", closeLookModal);
+  $("#hdr-look-apply").addEventListener("click", applyLook);
+  $("#hdr-look-reset").addEventListener("click", resetLook);
+  $("#hdr-look-prev").addEventListener("click", () => lookBracketNav(-1));
+  $("#hdr-look-next").addEventListener("click", () => lookBracketNav(+1));
+  $$("#hdr-look-modal input[type=range]").forEach((sl) => {
+    sl.addEventListener("input", () => {
+      const k = sl.dataset.look;
+      lookEdit.look[k] = parseFloat(sl.value);
+      $(`#hdr-look-modal .look-val[data-val="${k}"]`).textContent =
+        parseFloat(sl.value).toFixed(2);
+      fetchLookPreview(false);
     });
   });
   $("#people-cluster-btn").addEventListener("click", startCluster);
@@ -1210,6 +1572,16 @@ const HELP_CONTENT = {
     crops are hidden in the grid — but the photos themselves still show.</p>
     <p>Re-clustering (↻ in the sidebar) resets labels and priorities because
     face indices change. Decisions per photo are kept.</p>`,
+  "hdr": `
+    <h3>HDR brackets</h3>
+    <p>Auto-exposure brackets are detected from EXIF — frames shot close
+    together, at different exposures, of the same composition — and merged
+    into one photo with exposure fusion.</p>
+    <p>A merged result is scored and culled as a single photo; its source
+    frames stay on disk but are not shown in the grid.</p>
+    <p>If detection got something wrong, select frames and <b>Group</b> or
+    <b>Ungroup</b> them, then <b>Apply</b> to re-merge and re-score. A bracket
+    holds 3–9 frames.</p>`,
 };
 
 function openHelp(key, anchor) {
