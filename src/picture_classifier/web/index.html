@@ -217,8 +217,9 @@
     <div id="people-section">
       <div id="people-section-head">
         <h2>People</h2>
-        <button id="people-cluster-btn" title="Run face clustering">↻ cluster</button>
-        <button id="people-manage-btn" title="Edit labels &amp; priorities">⚙</button>
+        <button id="people-cluster-btn">↻ group</button>
+        <button id="cluster-settings-btn" title="Clustering settings">⚙</button>
+        <button id="people-manage-btn" title="Edit labels &amp; priorities">👤</button>
       </div>
       <div id="people-chips"></div>
     </div>
@@ -356,6 +357,68 @@
       <footer>
         <button id="export-cancel">Cancel</button>
         <button id="export-confirm" class="primary">Copy</button>
+      </footer>
+    </div>
+  </div>
+
+  <div id="cluster-modal" class="hidden">
+    <div class="cluster-box">
+      <header>
+        <h2>Clustering settings</h2>
+        <button id="cluster-modal-close" title="Esc">&times;</button>
+      </header>
+      <p class="cluster-hint">
+        Grouping runs two passes: faces into people, then detected subjects into
+        look-alike groups. Lower distance = stricter = more, smaller groups.
+      </p>
+
+      <h3>People (faces)</h3>
+      <label class="look-row" title="Cosine distance at which two faces count as the same person">
+        <span class="look-name">Distance</span>
+        <input type="range" id="cl-face-eps" min="0.2" max="1.2" step="0.01" />
+        <span class="look-val" id="cl-face-eps-val"></span>
+      </label>
+      <label class="look-row" title="Fewest faces that can form a person; the rest are left ungrouped">
+        <span class="look-name">Min faces</span>
+        <input type="range" id="cl-face-min" min="1" max="20" step="1" />
+        <span class="look-val" id="cl-face-min-val"></span>
+      </label>
+
+      <h3>
+        Subjects
+        <label id="cl-subject-on-row">
+          <input type="checkbox" id="cl-subject-on" /> group them
+        </label>
+      </h3>
+      <p class="cluster-hint" id="cl-subject-note"></p>
+      <div id="cl-subject-fields">
+        <label class="look-row" title="Appearance distance at which two subjects count as the same one">
+          <span class="look-name">Distance</span>
+          <input type="range" id="cl-subject-eps" min="0.05" max="1" step="0.01" />
+          <span class="look-val" id="cl-subject-eps-val"></span>
+        </label>
+        <label class="look-row" title="Fewest frames a subject must appear in to become a group">
+          <span class="look-name">Min frames</span>
+          <input type="range" id="cl-subject-min" min="1" max="20" step="1" />
+          <span class="look-val" id="cl-subject-min-val"></span>
+        </label>
+        <label class="look-row" title="Ignore anything smaller than this share of the frame — background traffic">
+          <span class="look-name">Min size</span>
+          <input type="range" id="cl-subject-area" min="0" max="0.5" step="0.005" />
+          <span class="look-val" id="cl-subject-area-val"></span>
+        </label>
+        <label class="look-row" title="Ignore detections the detector is less sure about than this">
+          <span class="look-name">Min confidence</span>
+          <input type="range" id="cl-subject-score" min="0" max="1" step="0.01" />
+          <span class="look-val" id="cl-subject-score-val"></span>
+        </label>
+      </div>
+
+      <footer>
+        <button id="cluster-defaults">Defaults</button>
+        <span class="spacer"></span>
+        <button id="cluster-cancel">Cancel</button>
+        <button id="cluster-run" class="primary">Save &amp; group</button>
       </footer>
     </div>
   </div>

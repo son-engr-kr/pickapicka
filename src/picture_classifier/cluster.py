@@ -124,10 +124,71 @@ def run_clustering(
 # Read scoring/appearance.py before touching the thresholds: these groups mean
 # "looks like the same vehicle", which is a weaker claim than the person groups.
 
+# Both passes in one place, because they are configured together and the
+# defaults are the only thing most projects ever need. Stored per project in the
+# db so a rescore does not reset them.
+DEFAULT_SETTINGS: dict[str, Any] = {
+    "face_eps": DEFAULT_EPS,
+    "face_min_samples": DEFAULT_MIN_SAMPLES,
+    # Subject grouping is appearance-based, so it is a weaker claim than the
+    # person groups and worth being able to switch off.
+    "group_subjects": True,
+    "subject_eps": 0.28,
+    "subject_min_samples": 2,
+    "subject_min_area": 0.02,
+    "subject_min_score": 0.5,
+}
+
+_SETTING_RANGES: dict[str, tuple[float, float]] = {
+    "face_eps": (0.20, 1.20),
+    "face_min_samples": (1, 20),
+    "subject_eps": (0.05, 1.00),
+    "subject_min_samples": (1, 20),
+    "subject_min_area": (0.0, 0.50),
+    "subject_min_score": (0.0, 1.0),
+}
+_INT_SETTINGS = frozenset({"face_min_samples", "subject_min_samples"})
+
+
+def normalize_settings(raw: Any) -> dict[str, Any]:
+    """Merge over the defaults and clamp. Loosening eps too far collapses
+    everyone into one group and tightening it splits one person into five, so the
+    range is bounded rather than left to whatever arrives."""
+    out = dict(DEFAULT_SETTINGS)
+    if not isinstance(raw, dict):
+        return out
+    out["group_subjects"] = bool(raw.get("group_subjects", out["group_subjects"]))
+    for key, (lo, hi) in _SETTING_RANGES.items():
+        if raw.get(key) is None:
+            continue
+        try:
+            val = float(raw[key])
+        except (TypeError, ValueError):
+            continue
+        val = min(hi, max(lo, val))
+        out[key] = int(round(val)) if key in _INT_SETTINGS else val
+    return out
+
+
 VEHICLE_EPS = 0.28          # cosine distance; appearance space is tighter than ArcFace
 VEHICLE_MIN_SAMPLES = 2     # a car that shows up in two frames is worth grouping
 VEHICLE_MIN_AREA = 0.02     # ignore background traffic: <2% of the frame
 VEHICLE_MIN_SCORE = 0.5
+
+
+def clear_vehicle_groups(db_path: Path) -> None:
+    """Drop every subject group and the ids pointing at them.
+
+    Switching the subject pass off has to remove what it produced: the face pass
+    does not touch `vehicles`, so without this the sidebar would keep offering
+    groups that nothing is going to refresh.
+    """
+    data = db.load(db_path)
+    for photo in data["photos"]:
+        for obj in photo.get("objects", []):
+            obj["vehicle_id"] = None
+    data["vehicles"] = []
+    db.save(db_path, data)
 
 
 def run_vehicle_clustering(
@@ -135,6 +196,8 @@ def run_vehicle_clustering(
     resolve_path: Callable[[dict[str, Any]], Path],
     eps: float = VEHICLE_EPS,
     min_samples: int = VEHICLE_MIN_SAMPLES,
+    min_area: float = VEHICLE_MIN_AREA,
+    min_score: float = VEHICLE_MIN_SCORE,
     progress_cb=None,
 ) -> int:
     """Group detected subjects that look like the same object. Writes
@@ -154,7 +217,7 @@ def run_vehicle_clustering(
             obj["vehicle_id"] = None  # reset every run
             x, y, bw, bh = obj["bbox_xywh"]
             area = bw * bh / float(max(1, photo["width"] * photo["height"]))
-            if area < VEHICLE_MIN_AREA or obj["score"] < VEHICLE_MIN_SCORE:
+            if area < min_area or obj["score"] < min_score:
                 continue
             candidates.append((pi, oi, photo["rel_path"], obj["bbox_xywh"]))
 

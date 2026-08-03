@@ -1147,3 +1147,26 @@ body.landing-mode #welcome-banner { display: none !important; }
   font-family: "SF Mono", Menlo, monospace; font-size: 11px; }
 #download-toast button { font-size: 11px; padding: 3px 10px; flex-shrink: 0; }
 #selection-download { font-size: 12px; }
+
+/* ----- clustering settings ----- */
+#cluster-modal { position: fixed; inset: 0; z-index: 60; display: flex;
+  align-items: center; justify-content: center; background: rgba(0,0,0,0.6); }
+#cluster-modal.hidden { display: none; }
+.cluster-box { background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: 8px; width: min(460px, 92vw); max-height: 88vh; overflow: auto;
+  padding: 0 18px 14px; }
+.cluster-box header { display: flex; align-items: center; gap: 8px;
+  position: sticky; top: 0; background: var(--bg-2); padding: 14px 0 8px;
+  border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.cluster-box header h2 { margin: 0; font-size: 15px; flex: 1; }
+.cluster-box h3 { font-size: 12px; text-transform: uppercase;
+  letter-spacing: 0.5px; color: var(--fg-dim); margin: 14px 0 6px;
+  display: flex; align-items: center; gap: 10px; }
+#cl-subject-on-row { font-size: 11px; text-transform: none; letter-spacing: 0;
+  display: flex; align-items: center; gap: 4px; font-weight: normal; }
+.cluster-hint { font-size: 11px; color: var(--fg-dim); line-height: 1.5;
+  margin: 4px 0 8px; }
+#cl-subject-fields.disabled { opacity: 0.45; }
+.cluster-box footer { display: flex; align-items: center; gap: 8px;
+  margin-top: 14px; }
+.cluster-box footer .spacer { flex: 1; }

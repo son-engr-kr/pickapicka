@@ -610,6 +610,11 @@ def run_scoring(
     data["hdr_look"] = look
     data["subject_classes"] = classes
     data["vehicles"] = []
+    # Scoring throws the groups away — embeddings are recomputed and every
+    # person_id goes back to None — but the *settings* that produced them are a
+    # preference, so they are carried across rather than reset with the data.
+    if (existing or {}).get("cluster_settings") is not None:
+        data["cluster_settings"] = (existing or {})["cluster_settings"]
     data["photos"] = scored
     db.save(db_path, data)
 

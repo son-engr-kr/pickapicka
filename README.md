@@ -108,7 +108,19 @@ network.
   "just this car". Unlike the person clusters this is *appearance*-based
   (colour and how it sits on the shape), because no reliable consumer vehicle
   re-identification model exists — two same-colour, same-shape cars will land in
-  one group, and groups are renameable/hideable for exactly that reason.
+  one group, and groups are renameable/hideable for exactly that reason. It can
+  be switched off, and switching it off clears what it produced.
+- **Grouping settings** (⚙ next to *↻ group*): both passes are configurable per
+  project and remembered — how close two faces must be to count as one person
+  and the fewest faces that make one, and for subjects the same plus a minimum
+  size and confidence so background traffic is ignored. Loosening the subject
+  distance from 0.15 to 0.45 on the same shoot goes from 1 group to 3, so it is
+  worth a try when the grouping looks wrong. Settings survive a re-score.
+- **One button for scoring and grouping**: scoring recomputes face embeddings,
+  which discards every group — so *↻ rescore* now re-groups in the same run
+  rather than leaving a project with faces and nobody grouped into them. *↻
+  group* on its own re-groups without re-scoring, which is what you want after
+  changing a setting.
 - **Face clustering**: detects faces with `insightface` and clusters them
   per-person via DBSCAN on embeddings.
 - **Drag-and-drop people priority**: rank face clusters by importance; photos

@@ -216,7 +216,10 @@ const SHORTCUT_TIPS = {
   "#peak-btn": ["Highlight what is actually in focus", "K"],
   "#boxes-btn": ["Show detected subject boxes", "B"],
   "#hdr-btn": ["Review and fix auto-detected HDR brackets", null],
-  "#rescore-btn": ["Re-run scoring on all photos (keeps decisions)", null],
+  "#rescore-btn": ["Re-score every photo, then re-group. Keeps decisions", null],
+  "#people-cluster-btn": ["Group faces into people and subjects into groups", null],
+  "#cluster-settings-btn": ["How strictly to group faces and subjects", null],
+  "#people-manage-btn": ["Rename people, set priority, exclude clusters", null],
   "#reject-undecided-btn": ["Mark every undecided photo in this scene as reject", null],
   "#export-picks-btn": ["Copy all PICK photos to a folder", null],
   "#selection-apply": ["Apply an edit or preset to the selection", null],
@@ -429,7 +432,7 @@ function renderPeopleChips() {
   if (!state.people.length) {
     const empty = document.createElement("div");
     empty.id = "people-empty";
-    empty.textContent = "No clusters yet — click ↻ cluster after scoring.";
+    empty.textContent = "No people yet — click ↻ group.";
     wrap.appendChild(empty);
     return;
   }
@@ -502,7 +505,7 @@ function renderSubjectPanel() {
         `<img loading="lazy" src="/subject/${enc(v.ref.rel_path)}?idx=${v.ref.obj_idx}" alt="" />` +
         `<span class="lbl">${escapeHtml(v.label)}</span>` +
         `<span class="cnt">${v.count}</span></button>`).join("")
-    : `<div class="subject-empty">No groups yet — click ↻ cluster.</div>`;
+    : `<div class="subject-empty">No groups yet — click ↻ group.</div>`;
   groupWrap.querySelectorAll("[data-group]").forEach((b) =>
     b.addEventListener("click", () => toggleSubjectFilter(state.subjectGroupFilter, b.dataset.group)));
 }
@@ -4219,7 +4222,8 @@ function bindUi() {
       updateBulkUi();
     }));
   $("#bulk-preset-select").addEventListener("change", updateBulkUi);
-  $("#people-cluster-btn").addEventListener("click", startCluster);
+  $("#people-cluster-btn").addEventListener("click", () => startCluster(null));
+  bindClusterModal();
   $("#people-manage-btn").addEventListener("click", openPeopleModal);
   $("#people-modal-close").addEventListener("click", closePeopleModal);
   $("#people-save").addEventListener("click", savePeople);
@@ -4286,7 +4290,7 @@ function bindUi() {
 // ---------- People modal ----------
 function openPeopleModal() {
   if (!state.people.length) {
-    alert("No people clusters yet. Click ↻ cluster first.");
+    alert("No people yet. Click ↻ group first.");
     return;
   }
   const list = $("#people-list");
@@ -4458,19 +4462,92 @@ async function savePeople() {
 }
 
 // ---------- Cluster trigger ----------
-async function startCluster() {
-  if (!confirm("Run face clustering? This takes ~1-2 minutes for 1000+ faces.")) return;
+// ---------- clustering ----------
+// One run, two passes: faces into people, then detected subjects into look-alike
+// groups. Both are configured from the same dialog and stored on the project, so
+// re-grouping after a tweak does not mean re-scoring every photo.
+const clusterEdit = { settings: null, defaults: null, available: false, classes: [] };
+
+const CLUSTER_FIELDS = [
+  ["cl-face-eps", "face_eps", 2],
+  ["cl-face-min", "face_min_samples", 0],
+  ["cl-subject-eps", "subject_eps", 2],
+  ["cl-subject-min", "subject_min_samples", 0],
+  ["cl-subject-area", "subject_min_area", 3],
+  ["cl-subject-score", "subject_min_score", 2],
+];
+
+async function openClusterModal() {
+  const res = await fetch("/api/cluster/settings", { cache: "no-store" });
+  if (!res.ok) { alert("Could not read clustering settings: " + res.status); return; }
+  const info = await res.json();
+  clusterEdit.settings = { ...info.settings };
+  clusterEdit.defaults = info.defaults;
+  clusterEdit.available = !!info.subjects_available;
+  clusterEdit.classes = info.subject_classes || [];
+  renderClusterModal();
+  $("#cluster-modal").classList.remove("hidden");
+}
+
+function closeClusterModal() { $("#cluster-modal").classList.add("hidden"); }
+
+function renderClusterModal() {
+  const v = clusterEdit.settings;
+  for (const [id, key, dp] of CLUSTER_FIELDS) {
+    $(`#${id}`).value = v[key];
+    $(`#${id}-val`).textContent = key === "subject_min_area"
+      ? `${(v[key] * 100).toFixed(1)}%`
+      : Number(v[key]).toFixed(dp);
+  }
+  const on = clusterEdit.available && v.group_subjects;
+  $("#cl-subject-on").checked = !!v.group_subjects;
+  $("#cl-subject-on").disabled = !clusterEdit.available;
+  $("#cl-subject-fields").classList.toggle("disabled", !on);
+  $$("#cl-subject-fields input").forEach((i) => { i.disabled = !on; });
+  $("#cl-subject-note").textContent = clusterEdit.available
+    ? `Detected: ${clusterEdit.classes.join(", ")}. Appearance-based, so two
+       same-colour, same-shape subjects will land together — rename or hide a
+       group from the Subjects panel.`.replace(/\s+/g, " ")
+    : "This project has no subject detection turned on, so there is nothing "
+      + "detected to group. Turn it on from the Subjects panel (it re-scores).";
+}
+
+function bindClusterModal() {
+  $("#cluster-settings-btn").addEventListener("click", openClusterModal);
+  $("#cluster-modal-close").addEventListener("click", closeClusterModal);
+  $("#cluster-cancel").addEventListener("click", closeClusterModal);
+  $("#cluster-defaults").addEventListener("click", () => {
+    clusterEdit.settings = { ...clusterEdit.defaults };
+    renderClusterModal();
+  });
+  $("#cl-subject-on").addEventListener("change", (e) => {
+    clusterEdit.settings.group_subjects = e.target.checked;
+    renderClusterModal();
+  });
+  for (const [id, key] of CLUSTER_FIELDS) {
+    $(`#${id}`).addEventListener("input", (e) => {
+      clusterEdit.settings[key] = parseFloat(e.target.value);
+      renderClusterModal();
+    });
+  }
+  $("#cluster-run").addEventListener("click", () => {
+    closeClusterModal();
+    startCluster(clusterEdit.settings);
+  });
+}
+
+async function startCluster(settings) {
   const res = await fetch("/api/cluster", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
+    body: JSON.stringify(settings || {}),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    alert("Cluster failed: " + (err.detail || res.status));
+    alert("Grouping failed: " + (err.detail || res.status));
     return;
   }
-  $("#score-title").textContent = "Clustering faces…";
+  $("#score-title").textContent = "Grouping…";
   $("#score-progress").classList.remove("hidden");
   $("#score-bar-fill").style.width = "0%";
   $("#score-progress-text").textContent = "starting…";
@@ -4504,6 +4581,12 @@ function pollClusterStatus() {
       }
       const prevScene = state.selectedScene;
       await loadDb();
+      // Refreshed here rather than when the panel is dismissed: the groups are
+      // what was just asked for, and waiting for a click (or the 4-second
+      // timeout) left the sidebar showing the previous run's answer.
+      renderSidebar();
+      renderPeopleChips();
+      loadSubjects();
       $("#score-title").textContent = `✓ Done · ${state.people.length} clusters`;
       $("#score-bar-fill").style.width = "100%";
       $("#score-progress-text").textContent =
@@ -4534,8 +4617,10 @@ let scorePollTimer = null;
 async function startRescore() {
   const total = state.photos.length;
   const ok = confirm(
-    `Re-score all ${total} photos? Existing decisions are preserved.\n` +
-    `(Decisions disabled while scoring runs.)`,
+    `Re-score all ${total} photos, then re-group?\n\n` +
+    `Scoring recomputes face embeddings, which discards the existing groups — ` +
+    `so grouping runs straight afterwards in the same pass.\n` +
+    `Decisions and edits are preserved, but disabled while it runs.`,
   );
   if (!ok) return;
   const res = await fetch("/api/score", {
@@ -4564,6 +4649,9 @@ function pollScoreStatus() {
     if (!res.ok) { console.warn("score status fetch failed", res.status); return; }
     const s = await res.json();
     const pct = s.total ? Math.min(100, 100 * s.idx / s.total) : 0;
+    const grouping = s.phase === "grouping";
+    $("#score-title").textContent = grouping
+      ? "Grouping…" : `Scoring ${state.photos.length} photos…`;
     $("#score-bar-fill").style.width = pct.toFixed(1) + "%";
     $("#score-progress-text").textContent = s.total
       ? `${s.idx}/${s.total} (${pct.toFixed(1)}%)`
@@ -4581,16 +4669,22 @@ function pollScoreStatus() {
       const prevScene = state.selectedScene;
       await loadDb();
       const totalFaces = state.photos.reduce((s, p) => s + (p.faces?.length || 0), 0);
+      const groups = state.subjects.vehicles.length;
       $("#score-title").textContent = `✓ Scored ${state.photos.length} photos`;
       $("#score-bar-fill").style.width = "100%";
-      $("#score-progress-text").textContent = `${totalFaces} faces detected`;
-      $("#score-current").textContent = "Click anywhere to dismiss · ↻ cluster next";
+      // Scoring throws the groups away and rebuilds them in the same run, so the
+      // summary reports both rather than telling anyone to press another button.
+      $("#score-progress-text").textContent =
+        `${totalFaces} faces · ${state.people.length} people`
+        + (groups ? ` · ${groups} subject groups` : "");
+      $("#score-current").textContent = "Click anywhere to dismiss";
       const dismiss = () => {
         $("#score-progress").classList.add("hidden");
         $("#score-progress").removeEventListener("click", dismiss);
         $("#score-title").textContent = "Scoring photos…";
         renderSidebar();
         renderPeopleChips();
+        loadSubjects();          // the grouping pass rewrote these
         if (prevScene && state.byScene.has(prevScene)) selectScene(prevScene);
         else if (state.sceneOrder.length) selectScene(state.sceneOrder[0]);
         else renderMain();

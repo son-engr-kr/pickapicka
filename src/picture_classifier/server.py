@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import cv2
 import numpy as np
@@ -132,9 +132,16 @@ class PresetSavePayload(BaseModel):
     edit: dict[str, Any] = {}
 
 
+# Every field optional: what is not sent falls back to the project's saved
+# settings, and what has never been set falls back to cluster.DEFAULT_SETTINGS.
 class ClusterPayload(BaseModel):
-    eps: float = 0.55
-    min_samples: int = 3
+    face_eps: float | None = None
+    face_min_samples: int | None = None
+    group_subjects: bool | None = None
+    subject_eps: float | None = None
+    subject_min_samples: int | None = None
+    subject_min_area: float | None = None
+    subject_min_score: float | None = None
 
 
 class PersonUpdate(BaseModel):
@@ -257,8 +264,12 @@ class AppContext:
 
     @staticmethod
     def _fresh_scoring_state() -> dict[str, Any]:
-        return {"running": False, "idx": 0, "total": 0, "current": None,
-                "started_at": None, "ended_at": None, "error": None}
+        # `phase` is "scoring" or "grouping": one run does both, because scoring
+        # discards the groups and stopping in between leaves the project with
+        # faces nobody has been grouped into.
+        return {"running": False, "phase": None, "idx": 0, "total": 0,
+                "current": None, "started_at": None, "ended_at": None,
+                "error": None}
 
     @staticmethod
     def _fresh_cluster_state() -> dict[str, Any]:
@@ -1471,7 +1482,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             if ctx.scoring_state["running"]:
                 raise HTTPException(status_code=409, detail="scoring already running")
             ctx.scoring_state.update(
-                running=True, idx=0, total=0, current=None,
+                running=True, phase="scoring", idx=0, total=0, current=None,
                 started_at=datetime.now().isoformat(), ended_at=None, error=None,
             )
 
@@ -1507,10 +1518,27 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                 )
                 ctx.reload_data()
                 ctx.wipe_face_cache()
+                # Scoring resets people[] and vehicles[] and puts every
+                # person_id back to None, so a run that stopped here would hand
+                # back a project whose groups had silently vanished. Grouping is
+                # the cheap half; do it now rather than making it a second button
+                # someone has to know to press.
+                ctx.scoring_state["phase"] = "grouping"
+                ctx.scoring_state.update(idx=0, total=0, current=None)
+
+                def cluster_cb(phase: str, idx: int, total: int) -> None:
+                    ctx.scoring_state["current"] = phase
+                    ctx.scoring_state["idx"] = idx
+                    ctx.scoring_state["total"] = total
+
+                _run_clustering(_cluster_settings(), cluster_cb)
+                ctx.reload_data()
+                ctx.wipe_face_cache()
             except Exception as exc:
                 ctx.scoring_state["error"] = f"{type(exc).__name__}: {exc}"
             finally:
                 ctx.scoring_state["running"] = False
+                ctx.scoring_state["phase"] = None
                 ctx.scoring_state["ended_at"] = datetime.now().isoformat()
 
         threading.Thread(target=runner, daemon=True).start()
@@ -1686,6 +1714,57 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
 
     # ----- clustering ------------------------------------------------
 
+    def _cluster_settings(patch: ClusterPayload | None = None) -> dict[str, Any]:
+        """The project's clustering settings, with anything sent laid over them."""
+        # Imported here, not at the top: cluster pulls in sklearn, which is half a
+        # second nobody launching the app should wait for.
+        from . import cluster as cluster_mod
+        stored = cluster_mod.normalize_settings(ctx.data.get("cluster_settings"))
+        if patch is None:
+            return stored
+        sent = {k: v for k, v in patch.model_dump().items() if v is not None}
+        return cluster_mod.normalize_settings({**stored, **sent})
+
+    @app.get("/api/cluster/settings")
+    def get_cluster_settings() -> dict[str, Any]:
+        """What the settings panel shows. `subjects_available` says whether the
+        subject pass can run at all: with no target classes there is nothing
+        detected to group, and the controls say so rather than doing nothing."""
+        _require_loaded()
+        from . import cluster as cluster_mod
+        return {
+            "settings": _cluster_settings(),
+            "defaults": cluster_mod.DEFAULT_SETTINGS,
+            "subjects_available": bool(ctx.data.get("subject_classes")),
+            "subject_classes": ctx.data.get("subject_classes") or [],
+        }
+
+    def _run_clustering(settings: dict[str, Any],
+                        progress_cb: Callable[[str, int, int], None]) -> None:
+        """Both passes, in the order the results depend on. Shared by the cluster
+        button and by the tail of a rescore, so the two cannot drift."""
+        from functools import partial
+        from .cluster import (clear_vehicle_groups, run_clustering,
+                              run_vehicle_clustering)
+        from .scorer import pixel_path
+        run_clustering(ctx.db_path, eps=settings["face_eps"],
+                       min_samples=settings["face_min_samples"],
+                       progress_cb=progress_cb)
+        # Nothing detected means nothing to group, so a project with no target
+        # classes never pays for the extra pass.
+        if not (settings["group_subjects"] and ctx.data.get("subject_classes")):
+            clear_vehicle_groups(ctx.db_path)
+        else:
+            run_vehicle_clustering(
+                ctx.db_path,
+                partial(pixel_path, ctx.data, ctx.db_path, ctx.project_dir),
+                eps=settings["subject_eps"],
+                min_samples=settings["subject_min_samples"],
+                min_area=settings["subject_min_area"],
+                min_score=settings["subject_min_score"],
+                progress_cb=progress_cb,
+            )
+
     @app.post("/api/cluster")
     def start_cluster(payload: ClusterPayload | None = None) -> dict[str, Any]:
         _require_loaded()
@@ -1697,30 +1776,20 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                 started_at=datetime.now().isoformat(), ended_at=None, error=None,
             )
 
-        eps = payload.eps if payload else 0.55
-        min_samples = payload.min_samples if payload else 3
+        settings = _cluster_settings(payload)
+        # Remembered on the project, so the next run and the next session start
+        # from what was chosen here.
+        ctx.data["cluster_settings"] = settings
+        db.save(ctx.db_path, ctx.data)
 
         def progress_cb(phase: str, idx: int, total: int) -> None:
             ctx.cluster_state["phase"] = phase
             ctx.cluster_state["idx"] = idx
             ctx.cluster_state["total"] = total
 
-        # Subject groups only make sense once objects have been detected, so a
-        # project without target classes never pays for the extra pass.
-        group_subjects = bool(ctx.data.get("subject_classes"))
-
         def runner() -> None:
             try:
-                from functools import partial
-                from .cluster import run_clustering, run_vehicle_clustering
-                from .scorer import pixel_path
-                run_clustering(ctx.db_path, eps=eps, min_samples=min_samples, progress_cb=progress_cb)
-                if group_subjects:
-                    run_vehicle_clustering(
-                        ctx.db_path,
-                        partial(pixel_path, ctx.data, ctx.db_path, ctx.project_dir),
-                        progress_cb=progress_cb,
-                    )
+                _run_clustering(settings, progress_cb)
                 ctx.reload_data()
                 ctx.wipe_face_cache()
             except Exception as exc:
