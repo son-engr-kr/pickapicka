@@ -503,10 +503,21 @@ function renderSubjectPanel() {
   const section = $("#subject-section");
   const s = state.subjects;
   const on = (s.classes || []).length > 0;
-  // The whole panel stays out of the way until a project opts into detection.
-  section.classList.toggle("hidden", !on);
+  // The panel stays put even with detection off, because its cog is the only
+  // way to turn detection on: hiding the section hid the switch along with it,
+  // so a project created as "just photos" — the wizard's default — had no way
+  // to ever start detecting anything. The boxes button does go, having nothing
+  // to draw.
+  section.classList.remove("hidden");
   $("#boxes-btn").classList.toggle("hidden", !on);
-  if (!on) return;
+  if (!on) {
+    $("#subject-classes").innerHTML =
+      `<div class="subject-empty">Not detecting anything in this project. ` +
+      `Use ⚙ to pick what it is a shoot of — cars, pets, anything COCO. ` +
+      `Turning it on re-scores the photos.</div>`;
+    $("#subject-groups").innerHTML = "";
+    return;
+  }
 
   const classWrap = $("#subject-classes");
   const found = (s.classes || []).filter((c) => (s.counts || {})[c]);

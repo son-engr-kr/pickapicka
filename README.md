@@ -98,7 +98,8 @@ network.
   exposure-fuses each into one photo, with a tunable real-estate "look"
   (shadow lift, local contrast, saturation) and an HDR-vs-0 EV compare toggle.
 - **Subject detection (cars, pets, anything COCO)**: tell a project what it is
-  a shoot *of* and object detection joins the scoring — frames missing the
+  a shoot *of* — at creation, or any time afterwards from the **Subjects** panel's
+  ⚙ (it re-scores) — and object detection joins the scoring — frames missing the
   subject sort down, prominence counts, and **sharpness is measured on the
   subject instead of the whole frame** (so a panned or bokeh'd shot of a tack-
   sharp car stops reading as blurry). Boxes overlay the grid and viewer with
