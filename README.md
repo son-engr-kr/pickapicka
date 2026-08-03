@@ -1,14 +1,82 @@
 # Picture Classifier
 
-Score photos for blur, exposure, and face presence — then cull them fast in a
-local web viewer with face-cluster-aware sorting and pick/review/reject
+Score photos for blur, exposure, and face presence — then cull *and edit* them
+fast in a local web viewer with face-cluster-aware sorting and pick/review/reject
 decisions.
 
 Designed for the post-shoot triage workflow on a personal collection of a few
-hundred to a few thousand JPEGs. Runs entirely on your machine; no network.
+hundred to a few thousand JPEGs (and RAWs). Runs entirely on your machine; no
+network.
 
 ## Features
 
+- **In-app photo editing**: adjust any photo right from the picking screen —
+  Exposure, Contrast, Highlights/Shadows/Whites/Blacks, Temperature/Tint,
+  Vibrance/Saturation, Clarity/Sharpen/Vignette, and a draggable **tone curve**,
+  with a live before/after preview and an **Auto** button. Fully
+  non-destructive — originals are never modified; adjustments bake in only on
+  export. Save **global presets** and **apply an edit/preset to many photos at
+  once** (a whole scene, all picks, or a hand-picked selection).
+- **Local adjustments (masks)**: grade just part of a photo. Draw a **radial**
+  ellipse (drag to place, handles to resize and rotate), a **gradient** for
+  skies and foregrounds, or **brush** an area freehand (Alt to erase). Each mask
+  carries its own full slider set plus Feather, Amount and an inside/outside
+  toggle; stack up to 16 per photo. Press `\` to tint the affected area.
+- **Creative effects**, global or masked: **defocus** (disc-shaped lens blur, so
+  highlights bloom into circles — put it on an inverted radial for fake shallow
+  depth of field), **motion** blur with an angle (mask the car out of it and you
+  have a panned shot), **glow** for headlights and low sun, and **mosaic** for a
+  number plate. All sized relative to the frame, so the preview is the export.
+- **1:1 editing**: the editor previews fitted by default, but fit/50/100/200%
+  renders the visible window from the **full-resolution original**, so you can
+  judge real sharpness while grading. Scroll to zoom, drag to pan (space or
+  middle-drag to pan past a mask).
+- **Presets**, including a built-in car set: glossy paint, studio white, night
+  neon, golden hour, plus mask-carrying ones for a speed pan, background bokeh
+  and plate blurring. Built-ins are read-only; tweak and save your own.
+  Presets load **additively** by default, so a local preset drops its mask onto
+  whatever you already have instead of wiping it — stack "background bokeh" and
+  "blur a plate" on top of your own grade, and a slider the preset leaves
+  neutral keeps your value. Switch to *replace* for a clean slate. Bulk apply
+  has the same choice, so you can add one mask to every pick without touching
+  their individual grades.
+- **Watermarks**: stamp a signature and the shooting info in one of five styles
+  (minimal, gradient bar, plate, corner rule, filmstrip caption), anywhere in
+  the frame. Lines are templates — `{name}`, `{camera}`, `{lens}`, `{focal}`,
+  `{aperture}`, `{shutter}`, `{iso}`, `{date}`, `{file}` — and a token that has
+  no value takes its separator with it, so a lens-less frame prints
+  "α7C II", never "α7C II · ". Sized against the frame, so the preview is the
+  export; skipped on grid thumbnails where it would just be noise.
+- **Camera names, spelled properly**: EXIF stores codenames, so `ILCE-7CM2`
+  becomes **α7C II** and `NIKON Z 6_2` becomes **Z 6II**. ~100 bodies across
+  Sony, Canon, Nikon, Fujifilm, Panasonic, OM System, Leica and Ricoh, picked
+  from a searchable list or overridden by hand; unknown bodies still read
+  sensibly instead of vanishing.
+- **Shooting info**: camera, lens, focal length, aperture, shutter and ISO are
+  read once at scoring time and shown in the viewer — and available to the
+  watermark. RAW files get theirs from the embedded preview.
+- **Focus peaking** (`K`): tints what is actually in focus, on the grid tiles
+  and in the viewer. The badness score says which frame is sharpest overall;
+  this says *what* is sharp, which is the real question when one frame nailed
+  the headlight and the next nailed the badge. Sharpness is measured as how
+  much an edge collapses under a small extra blur, which is independent of how
+  much contrast it has — so a hard-lit but defocused boundary is not mistaken
+  for a sharp one, and a frame with nothing in focus lights up nothing.
+  Sensitivity is tight / normal / loose.
+- **Loupe** (`L`): in the single-photo viewer, hovering shows a live magnified
+  panel of whatever is under the cursor, parked in the letterbox margin so it
+  stays off the photo (and dodging to the other side when it can't). 1:1 / 2:1 /
+  4:1 against the source pixels, nearest-neighbour — the point is to see the
+  softness, not to smooth it away.
+- **RAW support**: RAW files are first-class in the grid. When a shot exists as
+  both a RAW and a JPEG, the RAW is preferred; edit it and export a JPEG.
+- **Workspaces & projects**: pick a workspace folder, then create projects
+  inside it *by name* (DaVinci-Resolve style). The landing page lists the
+  projects in each workspace. Photos are referenced by path; if a photo folder
+  moves, the app offers to **re-link** it (matching by folder structure, then by
+  file name). **Deleting a project never touches your photos**: it renames the
+  project folder to `<name>.deleted-<timestamp>` and hides it from the list —
+  decisions and edits stay inside, so renaming the folder back restores it.
 - **Per-photo scoring**: Laplacian blur, brightness exposure, optional
   closed-eye detection.
 - **Per-scene auto-suggestion**: top 30% pick / middle review / bottom 30%
@@ -16,6 +84,19 @@ hundred to a few thousand JPEGs. Runs entirely on your machine; no network.
 - **HDR bracket auto-merge**: detects auto-exposure brackets from EXIF and
   exposure-fuses each into one photo, with a tunable real-estate "look"
   (shadow lift, local contrast, saturation) and an HDR-vs-0 EV compare toggle.
+- **Subject detection (cars, pets, anything COCO)**: tell a project what it is
+  a shoot *of* and object detection joins the scoring — frames missing the
+  subject sort down, prominence counts, and **sharpness is measured on the
+  subject instead of the whole frame** (so a panned or bokeh'd shot of a tack-
+  sharp car stops reading as blurry). Boxes overlay the grid and viewer with
+  `B`, and you can filter by class. Uses YOLOX-tiny (Apache-2.0) on the
+  `onnxruntime` already in the stack — no PyTorch; ~20 MB downloaded on first
+  use.
+- **Subject grouping**: look-alike subjects are grouped so you can filter to
+  "just this car". Unlike the person clusters this is *appearance*-based
+  (colour and how it sits on the shape), because no reliable consumer vehicle
+  re-identification model exists — two same-colour, same-shape cars will land in
+  one group, and groups are renameable/hideable for exactly that reason.
 - **Face clustering**: detects faces with `insightface` and clusters them
   per-person via DBSCAN on embeddings.
 - **Drag-and-drop people priority**: rank face clusters by importance; photos
@@ -26,8 +107,16 @@ hundred to a few thousand JPEGs. Runs entirely on your machine; no network.
   (configurable in minutes). Switch any time without re-scoring.
 - **Bulk actions**: reject all undecided in a scene; export all picks to a
   folder (preserving structure or flattened).
+- **Download the selection** (`D`): saves the selected photos straight to your
+  Downloads folder — no dialog. Edits are baked and RAW is rendered, so what
+  lands there is the photo as you graded it. One photo goes in loose, several
+  go into a dated subfolder; nothing already there is ever overwritten.
 - **Keyboard-driven culling**: `R` reject, `V` review, `A`/`P` pick, `U` undo,
-  arrow keys to navigate, `Enter` to open the modal viewer, `[`/`]` for pages.
+  `E` edit, `X` toggle-select, arrow keys to navigate, `Enter` to open the modal
+  viewer, `[`/`]` for pages, `B` subject boxes, `K` focus peaking, `L` loupe.
+  In the editor: `R`/`G`/`B` add a radial/gradient/brush mask, `\` shows the
+  mask, `Del` removes it, `C` holds the original, `F` toggles fit ↔ 100%.
+  Hovering any of these buttons shows the action and its shortcut.
 - **Project history**: recent folders are remembered so you can reopen them
   from the landing page.
 
@@ -107,8 +196,11 @@ uv run pcls serve
 uv run pcls serve
 ```
 
-This starts the server at <http://127.0.0.1:8765> and opens a landing page
-where you can pick a photo folder. Recent projects are listed there too.
+This starts the server at <http://127.0.0.1:8765> and opens a landing page.
+Pick a **workspace** folder (or use the default), then create a project inside
+it by name and point it at your photos. The landing lists every project in the
+current workspace; you can also open a project folder directly, and recent
+projects are listed under that section.
 
 ### Open an existing project directly
 
@@ -125,6 +217,20 @@ uv run pcls score /path/to/photos -o /path/to/picks.json
 uv run pcls cluster /path/to/picks.json
 uv run pcls report /path/to/picks.json
 ```
+
+For a subject-driven shoot (a car meet, a dog session), add `--subjects`. It
+takes a preset — `vehicle`, `person`, `pet`, `bike` — or any comma-separated
+list of COCO class names, and `pcls cluster --subjects` then groups the
+look-alikes:
+
+```bash
+uv run pcls score /path/to/photos -o picks.json --subjects vehicle
+uv run pcls score /path/to/photos -o picks.json --subjects car,truck
+uv run pcls cluster picks.json --subjects
+```
+
+A plain re-score keeps whatever the project was last scored with, so you only
+pass `--subjects` when you want to change it.
 
 `pcls score --help` for all options.
 
@@ -161,8 +267,11 @@ shoot/
   picks.json   (at shoot/)
 ```
 
-Supported extensions: `.jpg`, `.jpeg`, `.png` (case-insensitive). Other files
-(videos, RAW, sidecars) are ignored.
+Supported extensions: `.jpg`, `.jpeg`, `.png` plus common RAW formats
+(`.cr2`/`.cr3`, `.nef`, `.arw`, `.raf`, `.rw2`, `.orf`, `.dng`, …),
+case-insensitive. When a shot has both a RAW and a same-named JPEG, the RAW is
+used. If your RAWs live in a separate `RAW/` tree, set the RAW subfolder under
+**Advanced** in the new-project wizard. Videos and sidecars are ignored.
 
 ## How decisions are persisted
 
