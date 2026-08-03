@@ -282,6 +282,10 @@ const thumbUrl = (p) => "/thumb/" + enc(p.rel_path) + (p.edited_at ? `?v=${encod
 function matchesDecisionFilter(p) {
   if (state.filter === "all") return true;
   if (state.filter === "undecided") return p.decision == null;
+  // Not a decision, but it sits in the same row because it answers the same
+  // question: which of these still want my attention. A neutral edit is dropped
+  // from the db, so the field being there means the photo really was changed.
+  if (state.filter === "edited") return !!p.edit;
   return p.decision === state.filter;
 }
 function matchesPersonFilter(p) {
@@ -874,6 +878,10 @@ function renderMain() {
   renderGrid();
   renderNextPreview();
   renderSelectionBar();
+  // Hooked here rather than onto each control, so paging with the keyboard and
+  // any future way of moving around are remembered without being wired up
+  // individually. Debounced, so a burst of arrow keys still writes once.
+  scheduleViewSave();
 }
 
 function applyLayoutCSS() {
@@ -1013,6 +1021,62 @@ function focusAt(absIdx, scroll) {
     $$(".tile").forEach((el, i) => el.classList.toggle("focused", i === (absIdx - oldPage * state.pageSize)));
     if (state.pageSize === 1) renderNextPreview();
   }
+}
+
+// ---------- remembered view ----------
+// A project reopens on the filter, layout and page it was left on. Saved on the
+// server per project: it is a preference about how you work, so it should follow
+// the project rather than the browser profile that happened to open it.
+let viewRestored = false;
+let viewSaveTimer = null;
+
+function scheduleViewSave() {
+  // Nothing is written until the saved view has been read and applied — the
+  // renders that happen on the way there would otherwise file the defaults
+  // over the very thing they are about to restore.
+  if (!viewRestored) return;
+  if (viewSaveTimer) clearTimeout(viewSaveTimer);
+  viewSaveTimer = setTimeout(saveView, 500);
+}
+
+async function saveView() {
+  viewSaveTimer = null;
+  const res = await fetch("/api/view", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      filter: state.filter,
+      page_size: state.pageSize,
+      page: pageIdx(),
+      scene: state.selectedScene,
+    }),
+  });
+  if (!res.ok) throw new Error(`view save failed: ${res.status}`);
+}
+
+// Applies what can be applied before the scene list is built, and hands the
+// rest back for the caller to use once it is.
+async function restoreView() {
+  const res = await fetch("/api/view");
+  if (!res.ok) throw new Error(`view load failed: ${res.status}`);
+  const v = await res.json();
+  if (v.filter) state.filter = v.filter;
+  if (v.page_size) state.pageSize = v.page_size;
+  return v;
+}
+
+function syncViewControls() {
+  $$(".filter").forEach((b) =>
+    b.classList.toggle("active", b.dataset.filter === state.filter));
+  $$("#cols-toggle .cols").forEach((b) =>
+    b.classList.toggle("active", parseInt(b.dataset.cols, 10) === state.pageSize));
+}
+
+// Land on a page directly, rather than stepping to it as gotoPage does.
+function gotoPageIndex(page) {
+  const target = Math.max(0, Math.min(page, pageCount() - 1));
+  state.cursorIdx = target * state.pageSize;
+  renderMain();
 }
 
 function gotoPage(delta) {
@@ -4708,13 +4772,24 @@ function pollOpenStatus() {
 
 async function bootMain() {
   await loadDb();
+  const view = await restoreView();
   loadPresets();
   loadSubjects();
+  syncViewControls();
   renderSidebar();
   renderPeopleChips();
   syncSceneGroupingControls();
-  if (state.sceneOrder.length) selectScene(state.sceneOrder[0]);
-  else renderMain();
+  // A remembered scene can be gone — rescored, regrouped, or renamed — so fall
+  // back to the first one. The page is only restored within the scene it was
+  // counted in; anywhere else the number would point at unrelated photos.
+  const scene = state.byScene.has(view.scene) ? view.scene : state.sceneOrder[0];
+  if (scene) {
+    selectScene(scene);
+    if (scene === view.scene && view.page) gotoPageIndex(view.page);
+  } else {
+    renderMain();
+  }
+  viewRestored = true;
   maybeShowWelcomeBanner();
 }
 

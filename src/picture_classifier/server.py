@@ -115,6 +115,15 @@ class AutoTonePayload(BaseModel):
     rel_path: str
 
 
+# Where the grid was left. `scene` is remembered too because a page number only
+# means anything inside the scene it was counted in.
+class ViewPayload(BaseModel):
+    filter: Literal["all", "undecided", "pick", "review", "reject", "edited"]
+    page_size: Literal[1, 2, 4, 8]
+    page: int
+    scene: str | None = None
+
+
 class PresetSavePayload(BaseModel):
     name: str
     edit: dict[str, Any] = {}
@@ -958,6 +967,27 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             "photo_root": str(ctx.photo_root) if ctx.photo_root else None,
             "opening": ctx.opening_state,
         }
+
+    def _view_key() -> str:
+        assert ctx.db_path is not None, "a project must be loaded to key its view"
+        return userstate.view_key(ctx.db_path, ctx.project_dir)
+
+    @app.get("/api/view")
+    def get_view() -> dict[str, Any]:
+        """The filter, layout and page this project was last left on. Empty the
+        first time it is opened, which the client reads as "use the defaults"."""
+        _require_loaded()
+        return userstate.get_view(_view_key())
+
+    @app.post("/api/view")
+    def set_view(payload: ViewPayload) -> dict[str, Any]:
+        _require_loaded()
+        if payload.page < 0:
+            raise HTTPException(status_code=400, detail="page must not be negative")
+        view = {"filter": payload.filter, "page_size": payload.page_size,
+                "page": payload.page, "scene": payload.scene}
+        userstate.set_view(_view_key(), view)
+        return view
 
     @app.post("/api/close")
     def close_project() -> dict[str, Any]:

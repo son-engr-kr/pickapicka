@@ -80,6 +80,7 @@ def forget(key: Path) -> None:
     ]
     if data.get("last_db_path") == s:
         data["last_db_path"] = None
+    data.get("views", {}).pop(s, None)   # nothing left to reopen it at
     _save(data)
 
 
@@ -109,6 +110,38 @@ def save_preset(name: str, edit: dict[str, Any]) -> dict[str, Any]:
 def delete_preset(preset_id: str) -> None:
     data = _load()
     data["presets"] = [p for p in data.get("presets", []) if p.get("id") != preset_id]
+    _save(data)
+
+
+# ----- remembered view, per project ---------------------------------------
+# Which filter, layout and page a project was last left on, so reopening it puts
+# you back where you were instead of on page 1 of everything. A user preference
+# rather than anything about the photos, so it lives here and not in the db.
+
+MAX_VIEWS = 50
+
+
+def view_key(db_path: Path, project_dir: Path | None = None) -> str:
+    """Identify a project the way `remember_open` files it, so the two agree on
+    what counts as the same project."""
+    return str(project_dir if project_dir is not None else db_path)
+
+
+def get_view(key: str) -> dict[str, Any]:
+    """The saved view, or {} for a project opened for the first time."""
+    return _load().get("views", {}).get(key, {})
+
+
+def set_view(key: str, view: dict[str, Any]) -> None:
+    data = _load()
+    views = data.setdefault("views", {})
+    views[key] = {**view, "saved_at": datetime.now().isoformat()}
+    if len(views) > MAX_VIEWS:
+        # Drop the least recently left. A page number in a project untouched for
+        # that long is not worth keeping the file big for.
+        oldest = sorted(views, key=lambda k: views[k].get("saved_at") or "")
+        for stale in oldest[: len(views) - MAX_VIEWS]:
+            del views[stale]
     _save(data)
 
 

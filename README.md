@@ -105,6 +105,14 @@ network.
   positives) from sorting and chips.
 - **Scene grouping**: by folder structure, or by EXIF capture-time gaps
   (configurable in minutes). Switch any time without re-scoring.
+- **Filter by decision or by edited**: alongside all/undecided/pick/review/reject
+  there is `edited`, which shows only the photos you have actually graded —
+  useful for a last pass over your own work, or for finding what still needs it.
+- **Reopens where you left it**: the filter, grid layout, page and scene are
+  remembered per project, so a project opens on the shot you were looking at
+  rather than on page 1 of everything. Stored per project in
+  `~/.picture-classifier/state.json`; a scene that has since been regrouped away
+  falls back to the first one.
 - **Bulk actions**: reject all undecided in a scene; export all picks to a
   folder (preserving structure or flattened).
 - **Download the selection** (`D`): saves the selected photos straight to your
