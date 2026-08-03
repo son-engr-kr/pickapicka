@@ -189,19 +189,44 @@ def test_a_window_may_not_ask_for_geometry() -> None:
     raise AssertionError("expected an assertion for geometry on a partial ROI")
 
 
-def test_geometry_runs_before_the_grade() -> None:
-    """Order matters: grading first and cropping after would let the vignette and
-    the masks be positioned against a frame the viewer never sees."""
-    img = np.full((300, 400, 3), 120, np.uint8)
-    edit = {"crop": {"x": 0, "y": 0, "w": 0.5, "h": 1.0}, "vignette": -90}
-    out = editing.render(img, edit)
+def test_the_grade_runs_before_the_geometry() -> None:
+    """The order the whole feature turns on: adjustments are measured against the
+    original frame and the crop is taken out of the result. Grading the crop
+    instead would move every mask and re-centre the vignette the moment someone
+    cropped."""
+    img = np.full((300, 400, 3), 140, np.uint8)
+    # Keep only the left half. A vignette applied to the *original* frame is dark
+    # at the original's left edge and bright at its centre — which is now the
+    # right edge of the crop, so the output brightens left to right.
+    out = editing.render(img, {"crop": {"x": 0, "y": 0, "w": 0.5, "h": 1.0},
+                               "vignette": -90})
     h, w = out.shape[:2]
-    # The vignette darkens the corners of whatever it is given. Applied to the
-    # crop, the crop's own centre column stays bright.
-    centre = out[h // 2, w // 2].mean()
-    corner = out[2, 2].mean()
-    assert centre > corner + 15, \
-        f"vignette does not follow the crop (centre {centre:.0f}, corner {corner:.0f})"
+    left = out[h // 2, : w // 8].mean()
+    right = out[h // 2, -w // 8:].mean()
+    assert right > left + 15, \
+        f"vignette re-centred on the crop (left {left:.0f}, right {right:.0f})"
+
+
+def test_a_window_cannot_be_stamped_by_render() -> None:
+    """Only the caller knows where its window sits in the cropped frame, so
+    render refuses to guess rather than putting the signature in the wrong place.
+    """
+    img = _img()
+    edit = {"crop": {"x": 0, "y": 0, "w": .5, "h": .5},
+            "watermark": {"enabled": True, "name": "X"}}
+    try:
+        editing.render(img, edit, roi=(0.1, 0.1, 0.4, 0.4), geometry=False)
+    except AssertionError:
+        return
+    raise AssertionError("expected a refusal to stamp a window")
+
+
+def test_a_crop_never_resamples() -> None:
+    """With no straighten there is nothing to interpolate, so the crop has to be
+    the original's own pixels — not a resampled copy of them."""
+    img = _img(400, 300)
+    out = editing.apply_geometry(img, {"crop": {"x": .25, "y": .25, "w": .5, "h": .5}})
+    assert np.array_equal(out, img[75:225, 100:300]), "crop went through a resample"
 
 
 def test_watermark_lands_on_the_cropped_frame() -> None:
@@ -218,18 +243,107 @@ def test_watermark_lands_on_the_cropped_frame() -> None:
     assert not changed[: int(h * 0.5)].any(), "stamped above the middle"
 
 
-def test_masks_are_relative_to_the_cropped_frame() -> None:
-    """Documented behaviour, pinned so it cannot drift silently: a mask is placed
-    in the frame the crop produced, so crop first and mask second."""
-    img = np.full((300, 400, 3), 128, np.uint8)
-    mask = {"type": "radial", "cx": 0.5, "cy": 0.5, "rx": 0.3, "ry": 0.3,
-            "feather": 0, "adj": {"exposure": -2.0}}
-    out = editing.render(img, {"crop": {"x": 0.5, "y": 0, "w": 0.5, "h": 1.0},
-                               "masks": [mask]})
-    h, w = out.shape[:2]
-    # Darkened at the centre of the *crop*, not at the centre of the original.
-    assert out[h // 2, w // 2].mean() < 90, "mask did not land in the crop's centre"
-    assert out[5, 5].mean() > 110, "mask spilled to the crop's corner"
+def test_masks_stay_on_the_original_frame() -> None:
+    """The complaint this ordering exists to answer: cropping must not drag a
+    mask off the thing it was drawn on, nor change its size."""
+    flat = np.full((600, 800, 3), 200, np.uint8)
+    mask = {"type": "radial", "cx": 0.45, "cy": 0.30, "rx": 0.10, "ry": 0.10,
+            "feather": 0, "adj": {"exposure": -3.0}}
+
+    def bbox(img):
+        ys, xs = np.nonzero(img[..., 0] < 150)
+        assert len(xs), "the mask left no mark"
+        return (xs.min() / img.shape[1], xs.max() / img.shape[1],
+                ys.min() / img.shape[0], ys.max() / img.shape[0])
+
+    base = bbox(editing.render(flat, {"masks": [mask]}))
+    # Crops that all contain the mask outright, so nothing is clipped and any
+    # movement is the pipeline's fault rather than the crop's edge.
+    for crop in ({"x": .10, "y": .05, "w": .70, "h": .70},
+                 {"x": .30, "y": .15, "w": .40, "h": .40},
+                 {"x": .00, "y": .00, "w": .60, "h": .55},
+                 {"x": .25, "y": .10, "w": .70, "h": .35}):
+        out = editing.render(flat, {"masks": [mask], "crop": crop})
+        x0, x1, y0, y1 = bbox(out)
+        back = (crop["x"] + x0 * crop["w"], crop["x"] + x1 * crop["w"],
+                crop["y"] + y0 * crop["h"], crop["y"] + y1 * crop["h"])
+        drift = max(abs(back[i] - base[i]) * (800 if i < 2 else 600) for i in range(4))
+        assert drift < 2.0, f"crop {crop} moved the mask by {drift:.1f}px"
+
+
+def test_a_window_matches_the_same_part_of_the_whole_render() -> None:
+    """What the 1:1 view rests on. The window is mapped back through the geometry,
+    that patch of the original is graded, and the result is warped into place; it
+    has to come out as the whole render's own pixels."""
+    img = np.random.default_rng(9).integers(0, 256, (300, 400, 3), dtype=np.uint8)
+    cases = {
+        "crop": {"crop": {"x": .2, "y": .15, "w": .5, "h": .6}, "exposure": .3,
+                 "vignette": -40,
+                 "masks": [{"type": "radial", "cx": .35, "cy": .4, "rx": .2,
+                            "ry": .18, "feather": 40, "adj": {"exposure": -1.0}}]},
+        "tilt": {"tilt": 6.0, "exposure": .2,
+                 "masks": [{"type": "linear", "x1": .2, "y1": .2, "x2": .8,
+                            "y2": .7, "feather": 50, "adj": {"exposure": -.8}}]},
+        "both": {"tilt": -9.0, "crop": {"x": .1, "y": .1, "w": .6, "h": .6},
+                 "contrast": 25,
+                 "masks": [{"type": "radial", "cx": .5, "cy": .5, "rx": .25,
+                            "ry": .25, "feather": 30, "adj": {"exposure": -1.2}}]},
+    }
+    for label, edit in cases.items():
+        full = editing.render(img, edit)
+        oh, ow = full.shape[:2]
+        win = (int(ow * .2), int(oh * .25), max(1, int(ow * .5)), max(1, int(oh * .45)))
+        pad = int(round(editing.effect_padding(edit, 400))) + 2
+        box = editing.geometry_source_box(400, 300, edit, win, pad)
+        bx, by, bw, bh = box
+        graded = editing.render(img[by:by + bh, bx:bx + bw], edit,
+                                roi=(bx / 400, by / 300, bw / 400, bh / 300),
+                                with_watermark=False, geometry=False)
+        got = editing.geometry_window(graded, box, 400, 300, edit, win)
+        want = full[win[1]:win[1] + win[3], win[0]:win[0] + win[2]]
+        assert got.shape == want.shape, f"{label}: {got.shape} vs {want.shape}"
+        diff = np.abs(got.astype(int) - want.astype(int))
+        # A pure crop is exact. A straighten resamples, and warping a patch cannot
+        # land bit-identically on warping the whole frame near the patch's edge.
+        limit = 0 if label == "crop" else 12
+        assert diff.max() <= limit, f"{label}: max diff {diff.max()} > {limit}"
+
+
+def test_the_normalized_matrix_agrees_with_the_pixels() -> None:
+    """The editor places mask guides with this, so it has to say the same thing
+    the renderer does about where a point ends up."""
+    W, H = 400, 300
+    for edit in ({"crop": {"x": .2, "y": .1, "w": .5, "h": .6}},
+                 {"tilt": 8.0},
+                 {"tilt": -5.0, "crop": {"x": .15, "y": .2, "w": .6, "h": .5}}):
+        m, (ow, oh) = editing.geometry_matrix(W, H, edit)
+        n = editing.geometry_norm_matrix(W, H, edit)
+        for u, v in ((0.0, 0.0), (0.5, 0.5), (0.3, 0.8), (1.0, 1.0)):
+            px = m @ np.array([u * W, v * H, 1.0])
+            want = (px[0] / ow, px[1] / oh)
+            got = (n[0] * u + n[1] * v + n[2], n[3] * u + n[4] * v + n[5])
+            assert abs(got[0] - want[0]) < 1e-9 and abs(got[1] - want[1]) < 1e-9, \
+                f"{edit} at ({u},{v}): {got} vs {want}"
+
+
+def test_the_source_box_covers_the_window() -> None:
+    """If the patch were too small the window would come out with a blank edge."""
+    W, H = 400, 300
+    for edit in ({"crop": {"x": .2, "y": .1, "w": .5, "h": .6}},
+                 {"tilt": 12.0},
+                 {"tilt": -20.0, "crop": {"x": .1, "y": .1, "w": .7, "h": .7}}):
+        _, (ow, oh) = editing.geometry_matrix(W, H, edit)
+        win = (ow // 4, oh // 4, max(1, ow // 3), max(1, oh // 3))
+        box = editing.geometry_source_box(W, H, edit, win)
+        bx, by, bw, bh = box
+        # A patch that is entirely marked: anything unmarked in the placed window
+        # is a pixel the box failed to supply.
+        patch = np.full((bh, bw, 3), 255, np.uint8)
+        placed = editing.geometry_window(patch, box, W, H, edit, win)
+        assert placed.shape[:2] == (win[3], win[2]), \
+            f"{edit}: window came out {placed.shape[:2]}, wanted {(win[3], win[2])}"
+        assert placed.min() > 250, \
+            f"{edit}: the patch did not cover the window (min {placed.min()})"
 
 
 def _main() -> None:

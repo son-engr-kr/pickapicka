@@ -482,47 +482,6 @@ class AppContext:
                 self.full_base_cache.popitem(last=False)
         return arr
 
-    def get_geom_base(self, rel_path: str, edit: dict[str, Any] | None,
-                      *, full: bool, draft_edge: int | None = None,
-                      with_crop: bool = True) -> np.ndarray:
-        """A base with the straighten-and-crop stage already applied, so the rest
-        of the pipeline sees the cropped result as the whole photo.
-
-        Cached on the geometry alone: turning a 24 MP frame costs real time, and
-        while a tone slider is being dragged the geometry is not changing. Keyed
-        separately from the plain bases because the crop tool wants the
-        straightened-but-uncropped frame to drag the box over.
-        """
-        if full:
-            base = self.get_full_base(rel_path)
-        elif draft_edge is not None:
-            base = self.get_draft_base(rel_path, draft_edge)
-        else:
-            base = self.get_decoded_base(rel_path)
-        if editing.geometry_is_neutral(edit):
-            return base
-        e = editing.normalize(edit)
-        crop = e["crop"] if with_crop else None
-        # Straighten the size actually being shown: turning the 2048 px preview
-        # is a few milliseconds, turning 24 MP is not, and a tone slider drag
-        # must not pay for either more than once.
-        size = "F" if full else (f"D{draft_edge}" if draft_edge else "P")
-        key = (f"{rel_path}@geom{size}"
-               f":{e['tilt']:.4f}:{crop and tuple(sorted(crop.items()))}")
-        cache = self.full_base_cache if full else self.edit_base_cache
-        limit = FULL_BASE_CACHE_MAX if full else EDIT_BASE_CACHE_MAX * 2
-        with self.decode_lock:
-            arr = cache.get(key)
-            if arr is not None:
-                cache.move_to_end(key)
-                return arr
-        arr = editing.apply_geometry(base, e, with_crop=with_crop)
-        with self.decode_lock:
-            cache[key] = arr
-            while len(cache) > limit:
-                cache.popitem(last=False)
-        return arr
-
 
 # ----- helpers ------------------------------------------------------------
 
@@ -672,39 +631,51 @@ def _bake_photo(ctx: "AppContext", photo: dict[str, Any], rel: str, dst: Path) -
 def _render_roi(ctx: "AppContext", payload: EditPreviewPayload) -> np.ndarray:
     """Grade one window of a photo at full resolution — the editor's 1:1 view.
 
-    The window is cut with a margin and the margin is trimmed off after
-    grading, because blur and bloom pull in neighbouring pixels: without it the
-    edges of every pan step would carry a visible seam.
+    The grade happens in the *original* frame's coordinates, because that is
+    where masks live: the window is mapped back through the geometry to find
+    which original pixels can reach it, that patch is graded, and only then is it
+    straightened and cropped into place. Grading the cropped frame instead would
+    put every mask somewhere else the moment a crop was set.
 
-    The base is straightened and cropped first, so the ROI is a window of what
-    the export will be rather than of the untouched original. Everything below
-    then measures against the cropped frame, which is what the fit preview and
-    the export also do — one meaning of "the frame" throughout.
+    The patch is taken with a margin that is dropped on the way out, because blur
+    and bloom pull in neighbouring pixels and the tilt needs somewhere to sample
+    from; without it every pan step would show a seam at its edge.
     """
+    edit = payload.edit
+    if payload.skip_crop:                    # the crop tool shows the frame whole
+        edit = {**editing.normalize(edit), "crop": None}
+
+    base = ctx.get_full_base(payload.rel_path)
+    fh, fw = base.shape[:2]
+    _, (ow, oh) = editing.geometry_matrix(fw, fh, edit)
+
     x0, y0, rw, rh = (float(v) for v in payload.roi)
     rw = min(max(rw, 1e-3), 1.0)
     rh = min(max(rh, 1e-3), 1.0)
     x0 = min(max(x0, 0.0), 1.0 - rw)
     y0 = min(max(y0, 0.0), 1.0 - rh)
+    window = (int(round(x0 * ow)), int(round(y0 * oh)),
+              max(1, int(round(rw * ow))), max(1, int(round(rh * oh))))
 
-    base = ctx.get_geom_base(payload.rel_path, payload.edit, full=True,
-                             with_crop=not payload.skip_crop)
-    fh, fw = base.shape[:2]
-    px0, py0 = int(round(x0 * fw)), int(round(y0 * fh))
-    pw, ph = max(1, int(round(rw * fw))), max(1, int(round(rh * fh)))
-
-    # Only as much surrounding pixel data as this particular edit reaches for.
-    pad = int(round(editing.effect_padding(payload.edit, max(fw, fh))))
-    ax0, ay0 = max(0, px0 - pad), max(0, py0 - pad)
-    ax1, ay1 = min(fw, px0 + pw + pad), min(fh, py0 + ph + pad)
-    crop = base[ay0:ay1, ax0:ax1]
+    # As much surrounding pixel data as this edit reaches for, plus a couple of
+    # pixels for the straighten to interpolate against.
+    pad = int(round(editing.effect_padding(edit, max(fw, fh)))) + 2
+    box = editing.geometry_source_box(fw, fh, edit, window, pad)
+    bx, by, bw, bh = box
     graded = editing.render(
-        crop, payload.edit,
-        roi=(ax0 / fw, ay0 / fh, (ax1 - ax0) / fw, (ay1 - ay0) / fh),
+        base[by:by + bh, bx:bx + bw], edit,
+        roi=(bx / fw, by / fh, bw / fw, bh / fh),
         meta=ctx.photo_meta(payload.rel_path),
-        geometry=False,          # already applied, and this is only a window
+        with_watermark=False,     # placed below, against the cropped frame
+        geometry=False,           # this is a patch of the original, not a frame
     )
-    out = graded[py0 - ay0:py0 - ay0 + ph, px0 - ax0:px0 - ax0 + pw]
+    out = editing.geometry_window(graded, box, fw, fh, edit, window)
+
+    stamp = editing.normalize(edit)["watermark"]
+    if stamp is not None:
+        out = watermark_mod.render(
+            out, stamp, ctx.photo_meta(payload.rel_path),
+            (window[0] / ow, window[1] / oh, window[2] / ow, window[3] / oh))
 
     # Only ever downscale: upscaling would defeat the point of a 1:1 view.
     target = min(payload.out_w or out.shape[1], EDIT_ZOOM_MAX_OUT, out.shape[1])
@@ -1587,17 +1558,17 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         if ctx.photo_index.get(payload.rel_path) is None:
             raise HTTPException(status_code=404, detail="photo not found")
         started = time.perf_counter()
+        fit_edit = payload.edit
+        if payload.skip_crop:   # the crop tool drags its box over the whole frame
+            fit_edit = {**editing.normalize(payload.edit), "crop": None}
         if payload.roi is None:
-            preview = ctx.get_decoded_base(payload.rel_path)
-            draft = (payload.max_edge
-                     if payload.max_edge and payload.max_edge < max(preview.shape[:2])
-                     else None)
-            base = ctx.get_geom_base(payload.rel_path, payload.edit, full=False,
-                                     draft_edge=draft,
-                                     with_crop=not payload.skip_crop)
-            out = editing.render(base, payload.edit,
-                                 meta=ctx.photo_meta(payload.rel_path),
-                                 geometry=False)
+            # Graded whole, then cropped — the same order `render` uses for an
+            # export, so the fit view is what the file will be.
+            base = ctx.get_decoded_base(payload.rel_path)
+            if payload.max_edge and payload.max_edge < max(base.shape[:2]):
+                base = ctx.get_draft_base(payload.rel_path, payload.max_edge)
+            out = editing.render(base, fit_edit,
+                                 meta=ctx.photo_meta(payload.rel_path))
         else:
             out = _render_roi(ctx, payload)
         buf = io.BytesIO()
@@ -1612,6 +1583,10 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         uncropped = {**editing.normalize(payload.edit), "crop": None}
         shown = uncropped if payload.skip_crop else payload.edit
         fw, fh = editing.geometry_size(src_w, src_h, shown)
+        # How to get from a point on the original frame to the same point on what
+        # is displayed. Masks are positioned against the original, so the editor
+        # needs this to draw their guides on the right piece of the photo.
+        xform = editing.geometry_norm_matrix(src_w, src_h, shown)
         # Two sizes, because they answer different questions: X-Frame-Size is what
         # is on screen right now (the overlay and the 1:1 view measure against it),
         # X-Frame-Full is the straightened frame before cropping, which is what a
@@ -1621,6 +1596,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                         headers={"Cache-Control": "no-store",
                                  "X-Frame-Size": f"{fw}x{fh}",
                                  "X-Frame-Full": f"{cw}x{ch}",
+                                 "X-Mask-Xform": ",".join(f"{v:.8f}" for v in xform),
                                  "X-Render-Ms": f"{(time.perf_counter() - started) * 1000:.0f}"})
 
     @app.post("/api/edit")

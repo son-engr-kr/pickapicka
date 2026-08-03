@@ -1605,6 +1605,9 @@ const editSession = {
   // it is also what is on screen) or not (when `frame` is the cropped result).
   cropFrame: { w: 0, h: 0 },
   cropAspect: "free",
+  // Original frame -> displayed frame, as six numbers from the server. Identity
+  // until a crop or a straighten makes the two differ.
+  maskXform: null,
 };
 
 // ---------- tone curve ----------
@@ -1766,6 +1769,7 @@ function openEditModal(absIdx) {
   editSession.frame = { ...editSession.natural };
   editSession.cropFrame = { ...editSession.natural };
   editSession.cropAspect = "free";
+  editSession.maskXform = null;
   $$("#edit-modal .edit-zoom").forEach((b) =>
     b.classList.toggle("active", b.dataset.zoom === "0"));
   $("#edit-zoom-hint").classList.add("hidden");
@@ -1923,7 +1927,13 @@ function fetchEditPreview(immediate, draft) {
         const [cw, ch] = fullFrame.split("x").map(Number);
         if (cw && ch) editSession.cropFrame = { w: cw, h: ch };
       }
+      const xf = res.headers.get("X-Mask-Xform");
+      if (xf) {
+        const v = xf.split(",").map(Number);
+        editSession.maskXform = (v.length === 6 && v.every(Number.isFinite)) ? v : null;
+      }
       syncCropControls();
+      scheduleOverlay();   // guides move with the frame they are drawn on
       if (editSession.objUrl) URL.revokeObjectURL(editSession.objUrl);
       editSession.objUrl = URL.createObjectURL(blob);
       if (!editSession.comparing) $("#edit-img").src = editSession.objUrl;
@@ -2377,6 +2387,67 @@ const smoothstep = (t) => t * t * (3 - 2 * t);
 const fx2px = (r, x) => r.x + x * r.w;
 const fy2px = (r, y) => r.y + y * r.h;
 
+// Masks are positioned against the *original* frame, because that is where they
+// are graded — crop later and a mask stays on the thing it was drawn on. The
+// overlay, though, sits on the cropped preview. maskRect answers "where would
+// the whole original frame be, given that the crop occupies `r`", so every
+// existing guide that measures against a rect keeps working unchanged.
+//
+// The server supplies the transform (see geometry_norm_matrix) rather than the
+// arithmetic being repeated here. Its off-diagonal terms are the straighten;
+// those are handled by rotating the canvas, since a rect cannot express a turn.
+function maskRect(r) {
+  const x = editSession.maskXform;
+  if (!x) return r;
+  return { x: r.x + r.w * x[2], y: r.y + r.h * x[5],
+           w: r.w * x[0], h: r.h * x[4] };
+}
+
+// Degrees the guides must be turned by to sit on straightened content.
+function maskTurn() {
+  const x = editSession.maskXform;
+  if (!x) return 0;
+  return Math.atan2(x[3], x[0]) * 180 / Math.PI;
+}
+
+// Original-frame fraction -> the same point as a fraction of what is displayed.
+function maskFwd(u, v) {
+  const x = editSession.maskXform;
+  if (!x) return { x: u, y: v };
+  return { x: x[0] * u + x[1] * v + x[2], y: x[3] * u + x[4] * v + x[5] };
+}
+
+// ...and back, which is what a pointer position has to go through before it can
+// be compared against a mask or used to drag one.
+function maskInv(u, v) {
+  const x = editSession.maskXform;
+  if (!x) return { x: u, y: v };
+  const det = x[0] * x[4] - x[1] * x[3];
+  if (!det) return { x: u, y: v };
+  const p = u - x[2], q = v - x[5];
+  return { x: (x[4] * p - x[1] * q) / det, y: (x[0] * q - x[3] * p) / det };
+}
+
+// The straighten cannot be folded into a rect, so it goes on the canvas. Written
+// relative to maskRect, which already carries the scale, this leaves a matrix
+// with a unit diagonal: line widths and handle sizes come out unchanged, which a
+// plain scaling transform would have wrecked.
+function applyMaskXform(ctx, r, mr) {
+  const x = editSession.maskXform;
+  const p = 1, s = 1;
+  const q = mr.h ? (r.w * x[1]) / mr.h : 0;
+  const u = mr.w ? (r.h * x[3]) / mr.w : 0;
+  const tx = (r.x + r.w * x[2]) - (p * mr.x + q * mr.y);
+  const ty = (r.y + r.h * x[5]) - (u * mr.x + s * mr.y);
+  ctx.transform(p, u, q, s, tx, ty);
+}
+
+const MASK_XFORM_ID = [1, 0, 0, 0, 1, 0];
+function maskXformIsIdentity() {
+  const x = editSession.maskXform;
+  return !x || x.every((v, i) => Math.abs(v - MASK_XFORM_ID[i]) < 1e-9);
+}
+
 const isZoomed = () => editSession.view.zoom > 0;
 const clamp01 = (v, span) => Math.min(Math.max(v, 0), Math.max(0, 1 - span));
 
@@ -2507,9 +2578,17 @@ function resizeOverlay() {
   drawOverlay();
 }
 
-function evFrac(e) {
+// A pointer position as a fraction of the *displayed* frame. What the crop tool
+// works in, since a crop box is measured against what you can see.
+function evFracView(e) {
   const b = $("#edit-overlay").getBoundingClientRect(), r = overlayRect();
   return { x: (e.clientX - b.left - r.x) / r.w, y: (e.clientY - b.top - r.y) / r.h };
+}
+
+// ...and as a fraction of the original frame, which is the space masks live in.
+function evFrac(e) {
+  const v = evFracView(e);
+  return maskInv(v.x, v.y);
 }
 
 // Every position a pointermove stands for, oldest first, as frame fractions.
@@ -2567,11 +2646,17 @@ function drawOverlay() {
   // a broken checkbox. With Global selected it now tints every enabled mask, so
   // you can see the whole local-adjustment layout at a glance. Outlines go on
   // too: a red wash alone is invisible over a red car.
+  // Guides are drawn against where the *original* frame would be, because that
+  // is the space masks are stored and graded in.
+  const mr = maskRect(r);
+  const turned = !maskXformIsIdentity();
   if (editSession.showMask && !m) {
     for (const other of (editSession.edit.masks || [])) {
       if (!other.enabled) continue;
       drawMaskTint(ctx, other, r, W, H);
-      drawMaskOutline(ctx, other, r);
+      if (turned) { ctx.save(); applyMaskXform(ctx, r, mr); }
+      drawMaskOutline(ctx, other, mr);
+      if (turned) ctx.restore();
     }
   }
   if (!m || !m.enabled) return;
@@ -2585,10 +2670,12 @@ function drawOverlay() {
     const stroking = !!editSession.drag && editSession.drag.kind === "paint";
     drawMaskTint(ctx, m, r, W, H, painting ? 0.28 : 0.34, stroking);
   }
-  drawMaskHandles(ctx, m, r);
+  if (turned) { ctx.save(); applyMaskXform(ctx, r, mr); }
+  drawMaskHandles(ctx, m, mr);
   // The wrap hides the system cursor for the brush, so this ring *is* the
   // cursor — it has to stay up mid-stroke, which is exactly when you need it.
-  if (painting && editSession.hover) drawBrushCursor(ctx, r);
+  if (painting && editSession.hover) drawBrushCursor(ctx, mr);
+  if (turned) ctx.restore();
 }
 
 // ---------- crop & straighten ----------
@@ -2859,10 +2946,16 @@ function drawMaskTint(ctx, m, r, W, H, alpha = 0.34, cheap = false) {
   o.clearRect(0, 0, W, H);
   if (m.invert) {
     o.fillStyle = "#fff";
+    // The display rect, not the original frame's: inverted means everything the
+    // mask does not cover, and all of that is what you can see.
     o.fillRect(r.x, r.y, r.w, r.h);
     o.globalCompositeOperation = "destination-out";
   }
-  paintMaskShape(o, m, r, m.invert, cheap);
+  const mr = maskRect(r);
+  const turned = !maskXformIsIdentity();
+  if (turned) { o.save(); applyMaskXform(o, r, mr); }
+  paintMaskShape(o, m, mr, m.invert, cheap);
+  if (turned) o.restore();
   o.globalCompositeOperation = "source-in";
   o.fillStyle = MASK_TINT;
   o.fillRect(0, 0, W, H);
@@ -3040,17 +3133,20 @@ function overlayDown(e) {
   const m = activeMask();
   const r0 = overlayRect(), f0 = evFrac(e);
   if (editSession.tool === "crop" && !panButton) {
+    // A crop box is measured against what is on screen, not against the original
+    // frame the masks use, so this branch has its own coordinates.
+    const fv = evFracView(e);
     // Outside the box starts a fresh one, which is what dragging on a photo
     // means everywhere else. Inside, the grips and the box itself take over —
     // except before there is a crop at all, when the box *is* the whole frame
     // and "move" would be a no-op drag over the entire photo. Then a drag
     // anywhere draws a new box; the corner grips still resize the frame edges.
-    let hit = cropHit(r0, f0);
+    let hit = cropHit(r0, fv);
     if (hit === "move" && !editSession.edit.crop) hit = null;
     editSession.drag = hit
-      ? { kind: "crop-" + hit, start: f0, orig: { ...cropRect() } }
-      : { kind: "crop-new", start: f0 };
-    if (!hit) setCrop({ x: f0.x, y: f0.y, w: CROP_MIN, h: CROP_MIN }, { silent: true });
+      ? { kind: "crop-" + hit, start: fv, orig: { ...cropRect() } }
+      : { kind: "crop-new", start: fv };
+    if (!hit) setCrop({ x: fv.x, y: fv.y, w: CROP_MIN, h: CROP_MIN }, { silent: true });
     $("#edit-overlay").setPointerCapture(e.pointerId);
     e.preventDefault();
     drawOverlay();
@@ -3105,6 +3201,7 @@ function overlayMove(e) {
   const d = editSession.drag, m = activeMask();
   if (editSession.tool === "crop") {
     const cv = $("#edit-overlay");
+    const f = evFracView(e);          // view space, as in overlayDown
     if (!d) {
       const hit = cropHit(r, f);
       cv.style.cursor = hit ? CROP_CURSORS[hit] : "crosshair";

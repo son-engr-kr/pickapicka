@@ -22,12 +22,13 @@ network.
   grid, and the output size in pixels as you go. **Straighten** turns the frame
   and cuts back to the largest rectangle of the same aspect that still fits, so
   levelling a horizon never leaves blank corners; positive levels one drooping
-  to the right. Both are non-destructive and are applied before anything tonal,
-  which means the vignette, the masks and the watermark all land on the frame you
-  cropped rather than the one you started with. Set the crop before doing local
-  work: a mask is positioned in the cropped frame, so cropping afterwards moves
-  it. Detection boxes are hidden on a cropped photo, since they describe the
-  original frame.
+  to the right. Both are non-destructive, and you can crop at any point in the
+  process: the grade — masks included — is measured against the **original**
+  frame and the crop is taken out of the result, so cropping never drags a mask
+  off the thing you drew it on or changes its size. The watermark is the one
+  thing that follows the crop, since a signature belongs on the picture you end
+  up with. Detection boxes are hidden on a cropped photo, since they describe the
+  frame the detector saw.
 - **Local adjustments (masks)**: grade just part of a photo. Draw a **radial**
   ellipse (drag to place, handles to resize and rotate), a **gradient** for
   skies and foregrounds, or **brush** an area freehand (Alt to erase). Each mask

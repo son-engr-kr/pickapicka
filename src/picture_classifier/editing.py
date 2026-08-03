@@ -160,48 +160,118 @@ def geometry_is_neutral(edit: dict[str, Any] | None) -> bool:
     return abs(e["tilt"]) < _EPS and e["crop"] is None
 
 
-def geometry_size(w: int, h: int, edit: dict[str, Any] | None) -> tuple[int, int]:
-    """What `apply_geometry` will return for a `w`x`h` frame, without touching a
-    pixel. The client needs it to lay out the view before the render arrives,
-    and the ROI path needs it to know what the window is a window *of*."""
-    e = normalize(edit)
-    if abs(e["tilt"]) >= _EPS:
-        t = _tilt_scale(w, h, e["tilt"])
-        w, h = max(1, int(round(w * t))), max(1, int(round(h * t)))
-    crop = e["crop"]
-    if crop is not None:
-        w = max(1, int(round(w * crop["w"])))
-        h = max(1, int(round(h * crop["h"])))
-    return w, h
+def geometry_matrix(w: int, h: int,
+                    edit: dict[str, Any] | None) -> tuple[np.ndarray, tuple[int, int]]:
+    """The 2x3 affine taking a pixel of the original frame to its place in the
+    straightened, cropped one, plus that frame's size.
 
-
-def apply_geometry(rgb: np.ndarray, edit: dict[str, Any] | None,
-                   *, with_crop: bool = True) -> np.ndarray:
-    """Straighten and crop `rgb`, which must be a whole frame.
-
-    `with_crop=False` straightens only — that is what the crop tool shows, so
-    you can drag the box over everything the tilt left available.
+    Everything geometric is derived from this one function — the whole-frame
+    path, the windowed path, and the transform the client is told about — so the
+    three cannot drift apart.
     """
     e = normalize(edit)
-    out = rgb
+    m = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    ow, oh = int(w), int(h)
     if abs(e["tilt"]) >= _EPS:
-        h, w = out.shape[:2]
-        m = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), e["tilt"], 1.0)
-        turned = cv2.warpAffine(out, m, (w, h), flags=cv2.INTER_LINEAR,
-                                borderMode=cv2.BORDER_REPLICATE)
+        m = np.asarray(cv2.getRotationMatrix2D((w / 2.0, h / 2.0), e["tilt"], 1.0))
         t = _tilt_scale(w, h, e["tilt"])
-        kw, kh = max(1, int(round(w * t))), max(1, int(round(h * t)))
-        x0, y0 = (w - kw) // 2, (h - kh) // 2
-        out = turned[y0:y0 + kh, x0:x0 + kw]
+        ow, oh = max(1, int(round(w * t))), max(1, int(round(h * t)))
+        m = m.copy()
+        m[0, 2] -= (w - ow) // 2
+        m[1, 2] -= (h - oh) // 2
     crop = e["crop"]
-    if with_crop and crop is not None:
-        h, w = out.shape[:2]
-        cw, ch = max(1, int(round(w * crop["w"]))), max(1, int(round(h * crop["h"])))
-        cx, cy = int(round(w * crop["x"])), int(round(h * crop["y"]))
-        cx, cy = min(cx, w - cw), min(cy, h - ch)
-        out = out[cy:cy + ch, cx:cx + cw]
-    # A view into the source would be handed to code that writes in place.
-    return np.ascontiguousarray(out) if out is not rgb else rgb
+    if crop is not None:
+        cw = max(1, int(round(ow * crop["w"])))
+        ch = max(1, int(round(oh * crop["h"])))
+        cx = min(int(round(ow * crop["x"])), ow - cw)
+        cy = min(int(round(oh * crop["y"])), oh - ch)
+        m = m.copy()
+        m[0, 2] -= cx
+        m[1, 2] -= cy
+        ow, oh = cw, ch
+    return m, (ow, oh)
+
+
+def geometry_size(w: int, h: int, edit: dict[str, Any] | None) -> tuple[int, int]:
+    """What the geometry stage will return for a `w`x`h` frame, without touching
+    a pixel. The client lays the view out from this before the render lands."""
+    return geometry_matrix(w, h, edit)[1]
+
+
+def _is_translation(m: np.ndarray) -> bool:
+    """True when the affine only shifts — a crop with no straightening, which can
+    be taken as a slice instead of resampled."""
+    return bool(np.allclose(m[:, :2], np.eye(2), atol=1e-9))
+
+
+def apply_geometry(rgb: np.ndarray, edit: dict[str, Any] | None) -> np.ndarray:
+    """Straighten and crop `rgb`, which must be a whole frame."""
+    e = normalize(edit)
+    if geometry_is_neutral(e):
+        return rgb
+    h, w = rgb.shape[:2]
+    m, (ow, oh) = geometry_matrix(w, h, e)
+    if _is_translation(m):
+        x0, y0 = int(round(-m[0, 2])), int(round(-m[1, 2]))
+        return np.ascontiguousarray(rgb[y0:y0 + oh, x0:x0 + ow])
+    return cv2.warpAffine(rgb, m, (ow, oh), flags=cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_REPLICATE)
+
+
+def geometry_source_box(w: int, h: int, edit: dict[str, Any] | None,
+                        window: tuple[int, int, int, int],
+                        pad: int = 0) -> tuple[int, int, int, int]:
+    """Which axis-aligned patch of the *original* frame is needed to fill
+    `window` (x, y, w, h, in output pixels) of the geometry-applied frame.
+
+    This is what lets the 1:1 view grade in original coordinates without grading
+    the whole frame: only the pixels the window can see, plus `pad` for the
+    effects that reach into their neighbourhood.
+    """
+    m, _ = geometry_matrix(w, h, edit)
+    inv = np.asarray(cv2.invertAffineTransform(m))
+    wx, wy, ww, wh = window
+    corners = np.array([[wx, wy], [wx + ww, wy], [wx, wy + wh], [wx + ww, wy + wh]],
+                       dtype=np.float64)
+    src = corners @ inv[:, :2].T + inv[:, 2]
+    x0 = max(0, int(np.floor(src[:, 0].min())) - pad)
+    y0 = max(0, int(np.floor(src[:, 1].min())) - pad)
+    x1 = min(w, int(np.ceil(src[:, 0].max())) + pad)
+    y1 = min(h, int(np.ceil(src[:, 1].max())) + pad)
+    return x0, y0, max(1, x1 - x0), max(1, y1 - y0)
+
+
+def geometry_window(patch: np.ndarray, patch_box: tuple[int, int, int, int],
+                    w: int, h: int, edit: dict[str, Any] | None,
+                    window: tuple[int, int, int, int]) -> np.ndarray:
+    """Place an already-graded patch of the original frame into `window` of the
+    geometry-applied frame. The counterpart of `geometry_source_box`."""
+    m, _ = geometry_matrix(w, h, edit)
+    bx, by = patch_box[0], patch_box[1]
+    wx, wy, ww, wh = window
+    a = m[:, :2]
+    t = m[:, 2] + a @ np.array([float(bx), float(by)]) - np.array([float(wx), float(wy)])
+    mm = np.hstack([a, t.reshape(2, 1)])
+    if _is_translation(mm):
+        x0, y0 = int(round(-mm[0, 2])), int(round(-mm[1, 2]))
+        return np.ascontiguousarray(patch[y0:y0 + wh, x0:x0 + ww])
+    return cv2.warpAffine(patch, mm, (ww, wh), flags=cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_REPLICATE)
+
+
+def geometry_norm_matrix(w: int, h: int,
+                         edit: dict[str, Any] | None) -> list[float]:
+    """`geometry_matrix` expressed in normalized coordinates: it takes a point
+    given as a fraction of the *original* frame to the same point as a fraction
+    of the output frame. Six numbers, row-major.
+
+    The editor draws mask guides with it. Masks are positioned against the
+    original frame, so once a crop is on, a guide drawn straight onto the
+    cropped preview would sit somewhere else entirely.
+    """
+    m, (ow, oh) = geometry_matrix(w, h, edit)
+    return [m[0, 0] * w / ow, m[0, 1] * h / ow, m[0, 2] / ow,
+            m[1, 0] * w / oh, m[1, 1] * h / oh, m[1, 2] / oh]
 
 
 # ----- mask schema (local adjustments) ------------------------------------
@@ -1088,12 +1158,19 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     so masks, the vignette and every frame-relative effect land where they would
     in the full-frame render. The default says `rgb` *is* the whole photo.
 
-    `geometry` runs the straighten-and-crop stage first, so `rgb` must then be a
-    whole frame. Pass False when the caller has already applied it and is handing
-    over a window of the result — that is the ROI path, which crops from a
-    geometry-applied base it keeps cached. It defaults to True because a forgotten
-    True double-crops visibly, while a forgotten False would silently drop the
-    crop from an export.
+    `geometry` runs the straighten-and-crop stage, so `rgb` must then be a whole
+    frame. Pass False when the caller is handing over a window and will place it
+    itself — that is the ROI path, which grades a patch of the original and warps
+    it. It defaults to True because a forgotten True crops something already
+    cropped, which is obvious, while a forgotten False would quietly drop the crop
+    out of an export.
+
+    The order is grade, then geometry, then watermark, and it matters:
+
+      - the grade (masks included) is measured against the *original* frame, so
+        cropping later does not drag a mask off the thing it was drawn on;
+      - the watermark goes on afterwards and is placed against the frame that
+        comes out, because a signature belongs on the picture you end up with.
 
     `meta` is the photo's shooting info (see `exifinfo`), used to fill the
     watermark's tokens. `with_watermark=False` grades without stamping, for
@@ -1104,17 +1181,18 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     if is_neutral(e):
         return rgb
 
-    if geometry and not geometry_is_neutral(e):
+    do_geom = geometry and not geometry_is_neutral(e)
+    if do_geom:
         assert roi == FULL_ROI, \
             "geometry needs the whole frame; pass geometry=False for a window"
-        rgb = apply_geometry(rgb, e)
-
     stamp = e["watermark"] if with_watermark else None
-    # Geometry is excluded: it has already happened, and on its own it leaves
-    # nothing for the tonal stages to do.
+    assert not (stamp is not None and not geometry and not geometry_is_neutral(e)), \
+        "a window cannot be stamped here: only its caller knows where it sits " \
+        "in the cropped frame. Stamp it yourself with watermark.render()."
+    # Geometry excluded: on its own it leaves nothing for the tonal stages to do.
     tone_neutral = is_neutral({**e, "watermark": None, "crop": None, "tilt": 0.0})
-    if tone_neutral and stamp is None:
-        return rgb   # cropped and/or straightened, and nothing else was asked
+    if tone_neutral and stamp is None and not do_geom:
+        return rgb
 
     if tone_neutral:
         out = rgb
@@ -1125,8 +1203,11 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         if e["masks"]:
             img = _apply_masks(img, e["masks"], roi)
         out = np.rint(np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
+    if do_geom:
+        out = apply_geometry(out, e)
     if stamp is not None:
-        out = watermark_mod.render(out, stamp, meta, roi)
+        # FULL_ROI once cropped: `out` is now the whole of the frame that ships.
+        out = watermark_mod.render(out, stamp, meta, FULL_ROI if do_geom else roi)
     return out
 
 
