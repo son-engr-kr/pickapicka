@@ -591,6 +591,32 @@
             </div>
           </div>
 
+          <details class="edit-group" id="edit-crop-group" open>
+            <summary>Crop &amp; Straighten</summary>
+            <div class="edit-group-body">
+              <div class="crop-row">
+                <button id="crop-tool" class="crop-arm">✂ Crop</button>
+                <button id="crop-reset">Reset</button>
+              </div>
+              <div class="crop-aspects" id="crop-aspects">
+                <button data-aspect="free" class="active">Free</button>
+                <button data-aspect="orig">Original</button>
+                <button data-aspect="1:1">1:1</button>
+                <button data-aspect="4:5">4:5</button>
+                <button data-aspect="5:4">5:4</button>
+                <button data-aspect="2:3">2:3</button>
+                <button data-aspect="3:2">3:2</button>
+                <button data-aspect="16:9">16:9</button>
+              </div>
+              <label class="look-row" data-field="tilt">
+                <span class="look-name">Straighten</span>
+                <input type="range" id="crop-tilt" min="-45" max="45" step="0.1" />
+                <span class="look-val" id="crop-tilt-val"></span>
+              </label>
+              <div class="crop-size" id="crop-size"></div>
+            </div>
+          </details>
+
           <div class="mask-context" id="mask-context">Global adjustments</div>
           <details class="edit-group" open>
             <summary>Light</summary>

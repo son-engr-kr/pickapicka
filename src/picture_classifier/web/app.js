@@ -103,7 +103,11 @@ function canonWatermark(w) {
 }
 
 const EDIT_NEUTRAL = (() => {
-  const e = { curve: CURVE_IDENTITY.map((p) => p.slice()), masks: [], watermark: null };
+  // tilt and crop sit outside EDIT_SCHEMA on purpose: they are frame geometry,
+  // not a slider a mask could ever carry, and they are applied before anything
+  // tonal. Mirrors editing.DEFAULT_EDIT.
+  const e = { curve: CURVE_IDENTITY.map((p) => p.slice()), masks: [], watermark: null,
+              tilt: 0, crop: null };
   for (const f of EDIT_FIELDS) e[f.k] = 0;
   return e;
 })();
@@ -119,6 +123,8 @@ function mergeNeutralEdit(edit) {
     ? edit.curve.map((p) => p.slice()) : CURVE_IDENTITY.map((p) => p.slice());
   e.masks = (edit && Array.isArray(edit.masks)) ? edit.masks.map(cloneMask) : [];
   e.watermark = (edit && edit.watermark) ? cloneWatermark(edit.watermark) : null;
+  e.tilt = (edit && Number(edit.tilt)) || 0;
+  e.crop = (edit && edit.crop) ? { ...edit.crop } : null;
   if (edit) for (const f of EDIT_FIELDS) if (edit[f.k] != null) e[f.k] = edit[f.k];
   return e;
 }
@@ -129,7 +135,12 @@ function editsEqual(a, b) {
   for (let i = 0; i < ca.length; i++)
     if (Math.abs(ca[i][0] - cb[i][0]) > 1e-4 || Math.abs(ca[i][1] - cb[i][1]) > 1e-4) return false;
   if (canonWatermark(a.watermark) !== canonWatermark(b.watermark)) return false;
+  if (Math.abs((a.tilt || 0) - (b.tilt || 0)) > 1e-4) return false;
+  if (canonCrop(a.crop) !== canonCrop(b.crop)) return false;
   return canonMasks(a.masks) === canonMasks(b.masks);
+}
+function canonCrop(c) {
+  return c ? JSON.stringify([rnd4(c.x), rnd4(c.y), rnd4(c.w), rnd4(c.h)]) : "";
 }
 function isNeutralEdit(edit) { return editsEqual(mergeNeutralEdit(edit), EDIT_NEUTRAL); }
 
@@ -225,6 +236,9 @@ const SHORTCUT_TIPS = {
   "#edit-apply-more": ["Apply this edit to more photos", null],
   '[data-preset-mode="add"]': ["Lay the preset on top: its masks are added to yours", null],
   '[data-preset-mode="replace"]': ["Discard the current edit and use the preset alone", null],
+  "#crop-tool": ["Crop — drag a box on the photo", null],
+  "#crop-reset": ["Back to the whole frame, level", null],
+  "#crop-tilt": ["Straighten. Positive levels a horizon drooping to the right", null],
   '[data-add-mask="radial"]': ["Radial mask — drag an ellipse on the photo", "R"],
   '[data-add-mask="linear"]': ["Gradient mask — drag a direction on the photo", "G"],
   '[data-add-mask="brush"]': ["Brush mask — paint on the photo", "B"],
@@ -326,8 +340,16 @@ function peakLayerHtml(p) {
 // Boxes are drawn as percentages of the photo, inside a layer that reproduces
 // the object-fit: contain rect via aspect-ratio — no measuring, and it stays
 // aligned through every resize.
+// A detection box says where something sits in the *original* frame. Crop or
+// straighten the photo and the thumbnail is a different frame, so the box would
+// point at the wrong thing — better not drawn than drawn wrong.
+function hasGeometry(edit) {
+  return !!(edit && (edit.crop || Math.abs(edit.tilt || 0) > 1e-4));
+}
+
 function boxLayerHtml(p) {
   if (!state.showBoxes || !p.width || !p.height) return "";
+  if (hasGeometry(p.edit)) return "";
   const objs = p.objects || [];
   if (!objs.length) return "";
   const boxes = objs.map((o) => {
@@ -1574,6 +1596,15 @@ const editSession = {
   // full-resolution original through the server's ROI path.
   view: { zoom: 0, cx: 0.5, cy: 0.5 },
   natural: { w: 0, h: 0 },   // the photo's real pixel size, from the db
+  // The frame *after* straightening and cropping — what every overlay and the
+  // 1:1 view measure against. Starts at the photo's own size (correct whenever
+  // the geometry is neutral) and is corrected by each render's X-Frame-Size.
+  frame: { w: 0, h: 0 },
+  // The straightened frame *before* cropping. A crop box's coordinates are
+  // fractions of this, so it stays the reference whether the tool is armed (when
+  // it is also what is on screen) or not (when `frame` is the cropped result).
+  cropFrame: { w: 0, h: 0 },
+  cropAspect: "free",
 };
 
 // ---------- tone curve ----------
@@ -1732,6 +1763,9 @@ function openEditModal(absIdx) {
   // Every photo opens fitted; the zoom is a per-photo inspection, not a mode.
   editSession.view = { zoom: 0, cx: 0.5, cy: 0.5 };
   editSession.natural = { w: photo.width || 0, h: photo.height || 0 };
+  editSession.frame = { ...editSession.natural };
+  editSession.cropFrame = { ...editSession.natural };
+  editSession.cropAspect = "free";
   $$("#edit-modal .edit-zoom").forEach((b) =>
     b.classList.toggle("active", b.dataset.zoom === "0"));
   $("#edit-zoom-hint").classList.add("hidden");
@@ -1805,6 +1839,9 @@ function syncEditSliders() {
     sl.value = target[sl.dataset.edit] || 0;
   });
   syncEditValues();
+  // Geometry is global, so it is not part of the per-mask slider set — but it
+  // still has to come back looking right when a photo opens with one saved.
+  syncCropControls();
 }
 function syncEditValues() {
   const target = adjTarget();
@@ -1830,6 +1867,9 @@ const DRAFT_EDGE = 1100;
 function previewBody(edit, draft) {
   const body = { rel_path: editSession.relPath, edit };
   if (draft) body.max_edge = DRAFT_EDGE;
+  // While the crop tool is armed the frame is shown whole, so the box has
+  // something to be dragged over.
+  if (editSession.tool === "crop") body.skip_crop = true;
   if (isZoomed()) {
     const roi = viewRoi();
     const dpr = window.devicePixelRatio || 1;
@@ -1864,8 +1904,26 @@ function fetchEditPreview(immediate, draft) {
       });
       if (!res.ok) { $("#edit-status").textContent = "preview failed"; return; }
       const ms = res.headers.get("X-Render-Ms");
+      // What the frame is after straightening and cropping. The overlay and the
+      // 1:1 view measure against it, and the server is the one that knows —
+      // better one copy of that arithmetic than a second one here that can drift.
+      const frame = res.headers.get("X-Frame-Size");
       const blob = await res.blob();
       if (seq !== previewSeq) return;
+      const fullFrame = res.headers.get("X-Frame-Full");
+      if (frame) {
+        const [fw, fh] = frame.split("x").map(Number);
+        if (fw && fh) {
+          const moved = fw !== editSession.frame.w || fh !== editSession.frame.h;
+          editSession.frame = { w: fw, h: fh };
+          if (moved) layoutPreviewImage();
+        }
+      }
+      if (fullFrame) {
+        const [cw, ch] = fullFrame.split("x").map(Number);
+        if (cw && ch) editSession.cropFrame = { w: cw, h: ch };
+      }
+      syncCropControls();
       if (editSession.objUrl) URL.revokeObjectURL(editSession.objUrl);
       editSession.objUrl = URL.createObjectURL(blob);
       if (!editSession.comparing) $("#edit-img").src = editSession.objUrl;
@@ -2162,6 +2220,7 @@ function selectMask(idx, opts) {
 }
 
 function setEditTool(tool) {
+  const was = editSession.tool;
   editSession.tool = tool;
   // Painting blind is never what you want, so picking up the brush turns the
   // tint on — visibly, by ticking the box, rather than behind its back.
@@ -2174,13 +2233,21 @@ function setEditTool(tool) {
   const wrap = $(".edit-canvas-wrap");
   wrap.classList.toggle("tool-place", tool === "radial" || tool === "linear");
   wrap.classList.toggle("tool-brush", tool === "brush");
+  wrap.classList.toggle("tool-crop", tool === "crop");
   const text = tool === "radial" ? "Drag on the photo to place the ellipse"
     : tool === "linear" ? "Drag on the photo to set the gradient direction"
     : tool === "brush" ? "Paint over the area · Alt = erase · [ ] = brush size"
+    : tool === "crop" ? "Drag the box or its corners · ✂ again when you are done"
     : "";
   const hint = $("#edit-tool-hint");
   hint.textContent = text;
   hint.classList.toggle("hidden", !text);
+  // Arming or dropping the crop tool changes whether the frame is shown cropped,
+  // so the preview has to be asked for again.
+  if (was === "crop" || tool === "crop") {
+    syncCropControls();
+    fetchEditPreview(true);
+  }
   drawOverlay();
 }
 
@@ -2324,7 +2391,7 @@ function viewportSize() {
 function viewRoi() {
   const { w: vw, h: vh } = viewportSize();
   const z = editSession.view.zoom;
-  const nw = editSession.natural.w || 1, nh = editSession.natural.h || 1;
+  const nw = editSession.frame.w || 1, nh = editSession.frame.h || 1;
   const rw = Math.min(1, vw / z / nw), rh = Math.min(1, vh / z / nh);
   return {
     x0: clamp01(editSession.view.cx - rw / 2, rw),
@@ -2350,8 +2417,8 @@ function overlayRect() {
     // a second: for those frames this measured 0, fell through to the whole
     // wrap below, and every coordinate mapped through it landed hundreds of
     // pixels sideways. That was the brush jumping mid-stroke.
-    const nw = editSession.natural.w || img.naturalWidth;
-    const nh = editSession.natural.h || img.naturalHeight;
+    const nw = editSession.frame.w || img.naturalWidth;
+    const nh = editSession.frame.h || img.naturalHeight;
     if (!nw || !nh || !ir.width || !ir.height) {
       return { x: 0, y: 0, w: wr.width || 1, h: wr.height || 1 };
     }
@@ -2364,7 +2431,7 @@ function overlayRect() {
   }
   const { w: vw, h: vh } = viewportSize();
   const z = editSession.view.zoom;
-  const nw = editSession.natural.w || 1, nh = editSession.natural.h || 1;
+  const nw = editSession.frame.w || 1, nh = editSession.frame.h || 1;
   const roi = viewRoi();
   const fullW = nw * z, fullH = nh * z;
   // Centre the frame in the viewport on any axis it no longer fills.
@@ -2491,6 +2558,9 @@ function drawOverlay() {
   ctx.clearRect(0, 0, W, H);
   if ($("#edit-modal").classList.contains("hidden") || editSession.comparing) return;
   const r = overlayRect();
+  // Cropping shows the frame uncropped, so mask guides drawn against it would
+  // sit in the wrong place. One job at a time.
+  if (editSession.tool === "crop") { drawCropOverlay(ctx, r, W, H); return; }
   const m = activeMask();
 
   // "show mask" with no mask selected used to do nothing at all, which read as
@@ -2519,6 +2589,192 @@ function drawOverlay() {
   // The wrap hides the system cursor for the brush, so this ring *is* the
   // cursor — it has to stay up mid-stroke, which is exactly when you need it.
   if (painting && editSession.hover) drawBrushCursor(ctx, r);
+}
+
+// ---------- crop & straighten ----------
+// The crop box lives in normalized coordinates of the *straightened* frame,
+// which is exactly what the canvas shows while the tool is armed (the preview is
+// asked for with skip_crop, so the box can be dragged over everything the tilt
+// left available). No conversion, and nudging the tilt afterwards keeps the box
+// where it was rather than sliding it around.
+
+const CROP_ASPECTS = {
+  "1:1": 1, "4:5": 4 / 5, "5:4": 5 / 4,
+  "2:3": 2 / 3, "3:2": 3 / 2, "16:9": 16 / 9,
+};
+const CROP_MIN = 0.02;          // matches editing.MIN_CROP on the server
+const CROP_HANDLE = 11;         // grab radius in CSS px
+
+function cropRect() {
+  return editSession.edit.crop || { x: 0, y: 0, w: 1, h: 1 };
+}
+
+// Aspect of the straightened, uncropped frame — the space a crop box lives in.
+// Deliberately not the displayed frame: with the tool off that is already
+// cropped, and every ratio computed from it would be wrong by the crop.
+function frameAspect() {
+  const f = editSession.cropFrame;
+  return (f && f.w && f.h) ? f.w / f.h : 1;
+}
+
+// Which aspect the buttons should offer. "orig" follows the photo, so it stays
+// right for a portrait and a landscape alike.
+function cropTargetAspect() {
+  const a = editSession.cropAspect;
+  if (a === "free") return null;
+  if (a === "orig") return frameAspect();
+  return CROP_ASPECTS[a] || null;
+}
+
+// Largest box of `ratio` (w/h in *frame* terms) centred on what is there now.
+function cropForAspect(ratio) {
+  if (ratio === null) return null;
+  const fa = frameAspect();
+  // A ratio is about the picture; the box is in fractions of the frame, so it
+  // has to be divided through by the frame's own aspect.
+  let w = 1, h = fa / ratio;
+  if (h > 1) { h = 1; w = ratio / fa; }
+  const c = cropRect();
+  const cx = c.x + c.w / 2, cy = c.y + c.h / 2;
+  return {
+    x: Math.min(1 - w, Math.max(0, cx - w / 2)),
+    y: Math.min(1 - h, Math.max(0, cy - h / 2)),
+    w, h,
+  };
+}
+
+function setCrop(box, opts) {
+  const full = !box || (box.w >= 1 - 1e-4 && box.h >= 1 - 1e-4);
+  editSession.edit.crop = full ? null : {
+    x: +box.x.toFixed(5), y: +box.y.toFixed(5),
+    w: +box.w.toFixed(5), h: +box.h.toFixed(5),
+  };
+  syncCropControls();
+  setEditDirty();
+  if (!opts || !opts.silent) fetchEditPreview(true, !!(opts && opts.draft));
+}
+
+function syncCropControls() {
+  const c = editSession.edit.crop;
+  $("#crop-tool").classList.toggle("armed", editSession.tool === "crop");
+  $("#crop-reset").disabled = !c && Math.abs(editSession.edit.tilt || 0) < 1e-4;
+  $("#crop-tilt").value = editSession.edit.tilt || 0;
+  $("#crop-tilt-val").textContent = `${(editSession.edit.tilt || 0).toFixed(1)}°`;
+  $$("#crop-aspects button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.aspect === editSession.cropAspect));
+  // Pixel size of what will come out, so a crop can be judged against what it
+  // is for rather than as a fraction.
+  const f = editSession.cropFrame;
+  const out = $("#crop-size");
+  if (f && f.w) {
+    const box = cropRect();
+    const w = Math.round(f.w * box.w), h = Math.round(f.h * box.h);
+    out.textContent = c ? `${w} × ${h} px` : `${f.w} × ${f.h} px · full frame`;
+  } else {
+    out.textContent = "";
+  }
+}
+
+// Corner and edge grips, in canvas px, keyed by what they move.
+function cropHandles(r) {
+  const c = cropRect();
+  const x0 = fx2px(r, c.x), x1 = fx2px(r, c.x + c.w);
+  const y0 = fy2px(r, c.y), y1 = fy2px(r, c.y + c.h);
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+  return {
+    nw: [x0, y0], ne: [x1, y0], sw: [x0, y1], se: [x1, y1],
+    n: [mx, y0], s: [mx, y1], w: [x0, my], e: [x1, my],
+  };
+}
+
+const CROP_CURSORS = {
+  nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize",
+  n: "ns-resize", s: "ns-resize", w: "ew-resize", e: "ew-resize",
+  move: "move",
+};
+
+function cropHit(r, f) {
+  const px = fx2px(r, f.x), py = fy2px(r, f.y);
+  const hs = cropHandles(r);
+  let best = null, bestD = CROP_HANDLE;
+  for (const [k, [hx, hy]] of Object.entries(hs)) {
+    const d = Math.hypot(px - hx, py - hy);
+    if (d <= bestD) { best = k; bestD = d; }
+  }
+  if (best) return best;
+  const c = cropRect();
+  const inside = f.x > c.x && f.x < c.x + c.w && f.y > c.y && f.y < c.y + c.h;
+  return inside ? "move" : null;
+}
+
+function drawCropOverlay(ctx, r, W, H) {
+  const c = cropRect();
+  const x0 = fx2px(r, c.x), y0 = fy2px(r, c.y);
+  const x1 = fx2px(r, c.x + c.w), y1 = fy2px(r, c.y + c.h);
+  ctx.save();
+  // Everything outside goes dark, so the eye reads the crop and not the frame.
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.beginPath();
+  ctx.rect(0, 0, W, H);
+  ctx.rect(x0, y0, x1 - x0, y1 - y0);
+  ctx.fill("evenodd");
+
+  // Thirds, the reason anyone reaches for a crop tool.
+  ctx.strokeStyle = "rgba(255,255,255,0.32)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 1; i < 3; i++) {
+    const gx = x0 + (x1 - x0) * i / 3, gy = y0 + (y1 - y0) * i / 3;
+    ctx.moveTo(gx, y0); ctx.lineTo(gx, y1);
+    ctx.moveTo(x0, gy); ctx.lineTo(x1, gy);
+  }
+  ctx.stroke();
+
+  ctx.strokeStyle = "rgba(255,255,255,0.95)";
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+
+  // Corner brackets read as grabbable in a way a plain square does not.
+  const L = Math.min(26, (x1 - x0) / 3, (y1 - y0) / 3);
+  ctx.lineWidth = 3.5;
+  ctx.beginPath();
+  for (const [cx, cy, sx, sy] of [[x0, y0, 1, 1], [x1, y0, -1, 1],
+                                  [x0, y1, 1, -1], [x1, y1, -1, -1]]) {
+    ctx.moveTo(cx, cy + sy * L); ctx.lineTo(cx, cy); ctx.lineTo(cx + sx * L, cy);
+  }
+  ctx.stroke();
+  // Edge grips.
+  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  for (const k of ["n", "s", "w", "e"]) {
+    const [hx, hy] = cropHandles(r)[k];
+    ctx.beginPath();
+    ctx.arc(hx, hy, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// Resize from a handle, honouring the locked aspect and never inverting.
+function cropResize(kind, orig, f, ratio) {
+  let { x, y, w, h } = orig;
+  const right = orig.x + orig.w, bottom = orig.y + orig.h;
+  if (kind.includes("w")) { x = Math.min(f.x, right - CROP_MIN); w = right - x; }
+  if (kind.includes("e")) { w = Math.max(CROP_MIN, Math.min(1, f.x) - x); }
+  if (kind.includes("n")) { y = Math.min(f.y, bottom - CROP_MIN); h = bottom - y; }
+  if (kind.includes("s")) { h = Math.max(CROP_MIN, Math.min(1, f.y) - y); }
+  if (ratio !== null) {
+    const fa = frameAspect();
+    // Drive the free axis from the one being dragged, so a locked crop follows
+    // the pointer on the edge under it instead of fighting it.
+    if (kind === "n" || kind === "s") { w = Math.min(1, h * ratio / fa); }
+    else if (kind === "w" || kind === "e") { h = Math.min(1, w * fa / ratio); }
+    else { h = Math.min(1, w * fa / ratio); }
+    if (kind.includes("w")) x = right - w;
+    if (kind.includes("n")) y = bottom - h;
+  }
+  x = Math.min(1 - w, Math.max(0, x));
+  y = Math.min(1 - h, Math.max(0, y));
+  return { x, y, w: Math.min(w, 1 - x), h: Math.min(h, 1 - y) };
 }
 
 function drawBrushCursor(ctx, r) {
@@ -2783,6 +3039,23 @@ function overlayDown(e) {
   if (e.button !== 0 && !panButton) return;
   const m = activeMask();
   const r0 = overlayRect(), f0 = evFrac(e);
+  if (editSession.tool === "crop" && !panButton) {
+    // Outside the box starts a fresh one, which is what dragging on a photo
+    // means everywhere else. Inside, the grips and the box itself take over —
+    // except before there is a crop at all, when the box *is* the whole frame
+    // and "move" would be a no-op drag over the entire photo. Then a drag
+    // anywhere draws a new box; the corner grips still resize the frame edges.
+    let hit = cropHit(r0, f0);
+    if (hit === "move" && !editSession.edit.crop) hit = null;
+    editSession.drag = hit
+      ? { kind: "crop-" + hit, start: f0, orig: { ...cropRect() } }
+      : { kind: "crop-new", start: f0 };
+    if (!hit) setCrop({ x: f0.x, y: f0.y, w: CROP_MIN, h: CROP_MIN }, { silent: true });
+    $("#edit-overlay").setPointerCapture(e.pointerId);
+    e.preventDefault();
+    drawOverlay();
+    return;
+  }
   // Zoomed with nothing to grab? Then the drag pans the view. Space or the
   // middle button force a pan even when a mask is sitting under the cursor.
   const wantsMask = !panButton && m && m.enabled &&
@@ -2830,6 +3103,35 @@ function overlayMove(e) {
   const r = overlayRect(), f = evFrac(e);
   editSession.hover = f;
   const d = editSession.drag, m = activeMask();
+  if (editSession.tool === "crop") {
+    const cv = $("#edit-overlay");
+    if (!d) {
+      const hit = cropHit(r, f);
+      cv.style.cursor = hit ? CROP_CURSORS[hit] : "crosshair";
+      return;
+    }
+    const ratio = cropTargetAspect();
+    if (d.kind === "crop-move") {
+      const c = d.orig;
+      setCrop({
+        x: Math.min(1 - c.w, Math.max(0, c.x + (f.x - d.start.x))),
+        y: Math.min(1 - c.h, Math.max(0, c.y + (f.y - d.start.y))),
+        w: c.w, h: c.h,
+      }, { silent: true, draft: true });
+    } else if (d.kind === "crop-new") {
+      const x = Math.min(d.start.x, f.x), y = Math.min(d.start.y, f.y);
+      let w = Math.max(CROP_MIN, Math.abs(f.x - d.start.x));
+      let h = Math.max(CROP_MIN, Math.abs(f.y - d.start.y));
+      if (ratio !== null) h = Math.min(1 - y, w * frameAspect() / ratio);
+      setCrop({ x, y, w: Math.min(w, 1 - x), h: Math.min(h, 1 - y) },
+              { silent: true, draft: true });
+    } else {
+      setCrop(cropResize(d.kind.slice(5), d.orig, f, ratio),
+              { silent: true, draft: true });
+    }
+    scheduleOverlay();
+    return;
+  }
   if (!d) {
     const cv = $("#edit-overlay");
     if (m && m.type === "brush" && editSession.tool === "brush") {
@@ -2922,6 +3224,21 @@ function overlayUp(e) {
   const d = editSession.drag;
   if (!d) return;
   editSession.drag = null;
+  if (d.kind.startsWith("crop-")) {
+    if (e && e.pointerId != null) {
+      try { $("#edit-overlay").releasePointerCapture(e.pointerId); } catch { /* gone */ }
+    }
+    // A tap with no drag is a miss, not a request for a 2%-of-the-frame crop.
+    if (d.kind === "crop-new" && cropRect().w <= CROP_MIN * 1.5
+        && cropRect().h <= CROP_MIN * 1.5) {
+      setCrop(null);
+    } else {
+      syncCropControls();
+      fetchEditPreview(true);
+    }
+    drawOverlay();
+    return;
+  }
   if (d.kind === "pan") {
     $("#edit-overlay").style.cursor = "grab";
     if (e && e.pointerId != null) {
@@ -3018,6 +3335,29 @@ function bindMaskUi() {
   $("#mask-brush-paint").addEventListener("click", () => setBrushErase(false));
   $("#mask-brush-erase").addEventListener("click", () => setBrushErase(true));
   $("#mask-brush-undo").addEventListener("click", undoLastStroke);
+  // Crop & straighten
+  $("#crop-tool").addEventListener("click", () =>
+    setEditTool(editSession.tool === "crop" ? null : "crop"));
+  $("#crop-reset").addEventListener("click", () => {
+    editSession.edit.tilt = 0;
+    editSession.cropAspect = "free";
+    setCrop(null);
+  });
+  $$("#crop-aspects button").forEach((b) => {
+    b.addEventListener("click", () => {
+      editSession.cropAspect = b.dataset.aspect;
+      // Choosing a shape is a request to see it, so arm the tool if it is not.
+      if (editSession.tool !== "crop") setEditTool("crop");
+      setCrop(cropForAspect(cropTargetAspect()));
+    });
+  });
+  $("#crop-tilt").addEventListener("input", (e) => {
+    editSession.edit.tilt = parseFloat(e.target.value) || 0;
+    syncCropControls();
+    setEditDirty();
+    previewDuringDrag();
+  });
+  $("#crop-tilt").addEventListener("change", () => fetchEditPreview(true));
   $("#mask-show").addEventListener("change", (e) => {
     editSession.showMask = e.target.checked;
     drawOverlay();
@@ -3403,7 +3743,8 @@ function syncModalBoxes() {
   const layer = $("#modal-boxes"), img = $("#modal-image");
   if (!layer) return;
   const photo = state.modal.open ? state.filteredPhotos[state.modal.idx] : null;
-  const objs = (photo && !state.modal.compare && state.showBoxes) ? (photo.objects || []) : [];
+  const objs = (photo && !state.modal.compare && state.showBoxes
+                && !hasGeometry(photo.edit)) ? (photo.objects || []) : [];
   layer.classList.toggle("hidden", !objs.length);
   if (!objs.length) { layer.innerHTML = ""; return; }
   layer.style.left = `${img.offsetLeft}px`;

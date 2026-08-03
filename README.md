@@ -17,6 +17,17 @@ network.
   non-destructive — originals are never modified; adjustments bake in only on
   export. Save **global presets** and **apply an edit/preset to many photos at
   once** (a whole scene, all picks, or a hand-picked selection).
+- **Crop & straighten**: drag a box on the photo, or lock it to Free / Original /
+  1:1 / 4:5 / 5:4 / 2:3 / 3:2 / 16:9 — corner and edge grips, a rule-of-thirds
+  grid, and the output size in pixels as you go. **Straighten** turns the frame
+  and cuts back to the largest rectangle of the same aspect that still fits, so
+  levelling a horizon never leaves blank corners; positive levels one drooping
+  to the right. Both are non-destructive and are applied before anything tonal,
+  which means the vignette, the masks and the watermark all land on the frame you
+  cropped rather than the one you started with. Set the crop before doing local
+  work: a mask is positioned in the cropped frame, so cropping afterwards moves
+  it. Detection boxes are hidden on a cropped photo, since they describe the
+  original frame.
 - **Local adjustments (masks)**: grade just part of a photo. Draw a **radial**
   ellipse (drag to place, handles to resize and rotate), a **gradient** for
   skies and foregrounds, or **brush** an area freehand (Alt to erase). Each mask

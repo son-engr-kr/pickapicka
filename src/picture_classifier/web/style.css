@@ -700,6 +700,18 @@ body.landing-mode #welcome-banner { display: none !important; }
 #edit-overlay { position: absolute; left: 0; top: 0; touch-action: none; }
 .edit-canvas-wrap.tool-place #edit-overlay { cursor: crosshair; }
 .edit-canvas-wrap.tool-brush #edit-overlay { cursor: none; }
+/* Crop sets its own cursor per grip in JS, so nothing is forced here. */
+
+/* ----- crop & straighten ----- */
+.crop-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.crop-row button { flex: 1; font-size: 12px; padding: 4px 8px; }
+#crop-tool.armed { background: var(--accent); border-color: var(--accent); color: #fff; }
+.crop-aspects { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.crop-aspects button { font-size: 11px; padding: 3px 8px; }
+.crop-aspects button.active {
+  background: var(--accent); border-color: var(--accent); color: #fff; }
+.crop-size { font-size: 11px; color: var(--fg-dim); text-align: right;
+  font-variant-numeric: tabular-nums; margin-top: 2px; }
 #edit-tool-hint { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
   background: rgba(0,0,0,0.72); color: #fff; font-size: 11px; line-height: 1.4;
   padding: 4px 10px; border-radius: 999px; white-space: nowrap;

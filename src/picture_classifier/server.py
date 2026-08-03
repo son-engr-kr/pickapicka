@@ -96,6 +96,9 @@ class EditPreviewPayload(BaseModel):
     # Draft renders during a drag: grade a smaller copy so the frame keeps up,
     # then the client asks again at full size once the pointer settles.
     max_edge: int | None = None
+    # The crop tool shows the straightened frame *uncropped*, so the box can be
+    # dragged over everything still available. The tilt is honoured either way.
+    skip_crop: bool = False
 
 
 class EditSavePayload(BaseModel):
@@ -479,6 +482,47 @@ class AppContext:
                 self.full_base_cache.popitem(last=False)
         return arr
 
+    def get_geom_base(self, rel_path: str, edit: dict[str, Any] | None,
+                      *, full: bool, draft_edge: int | None = None,
+                      with_crop: bool = True) -> np.ndarray:
+        """A base with the straighten-and-crop stage already applied, so the rest
+        of the pipeline sees the cropped result as the whole photo.
+
+        Cached on the geometry alone: turning a 24 MP frame costs real time, and
+        while a tone slider is being dragged the geometry is not changing. Keyed
+        separately from the plain bases because the crop tool wants the
+        straightened-but-uncropped frame to drag the box over.
+        """
+        if full:
+            base = self.get_full_base(rel_path)
+        elif draft_edge is not None:
+            base = self.get_draft_base(rel_path, draft_edge)
+        else:
+            base = self.get_decoded_base(rel_path)
+        if editing.geometry_is_neutral(edit):
+            return base
+        e = editing.normalize(edit)
+        crop = e["crop"] if with_crop else None
+        # Straighten the size actually being shown: turning the 2048 px preview
+        # is a few milliseconds, turning 24 MP is not, and a tone slider drag
+        # must not pay for either more than once.
+        size = "F" if full else (f"D{draft_edge}" if draft_edge else "P")
+        key = (f"{rel_path}@geom{size}"
+               f":{e['tilt']:.4f}:{crop and tuple(sorted(crop.items()))}")
+        cache = self.full_base_cache if full else self.edit_base_cache
+        limit = FULL_BASE_CACHE_MAX if full else EDIT_BASE_CACHE_MAX * 2
+        with self.decode_lock:
+            arr = cache.get(key)
+            if arr is not None:
+                cache.move_to_end(key)
+                return arr
+        arr = editing.apply_geometry(base, e, with_crop=with_crop)
+        with self.decode_lock:
+            cache[key] = arr
+            while len(cache) > limit:
+                cache.popitem(last=False)
+        return arr
+
 
 # ----- helpers ------------------------------------------------------------
 
@@ -631,6 +675,11 @@ def _render_roi(ctx: "AppContext", payload: EditPreviewPayload) -> np.ndarray:
     The window is cut with a margin and the margin is trimmed off after
     grading, because blur and bloom pull in neighbouring pixels: without it the
     edges of every pan step would carry a visible seam.
+
+    The base is straightened and cropped first, so the ROI is a window of what
+    the export will be rather than of the untouched original. Everything below
+    then measures against the cropped frame, which is what the fit preview and
+    the export also do — one meaning of "the frame" throughout.
     """
     x0, y0, rw, rh = (float(v) for v in payload.roi)
     rw = min(max(rw, 1e-3), 1.0)
@@ -638,7 +687,8 @@ def _render_roi(ctx: "AppContext", payload: EditPreviewPayload) -> np.ndarray:
     x0 = min(max(x0, 0.0), 1.0 - rw)
     y0 = min(max(y0, 0.0), 1.0 - rh)
 
-    base = ctx.get_full_base(payload.rel_path)
+    base = ctx.get_geom_base(payload.rel_path, payload.edit, full=True,
+                             with_crop=not payload.skip_crop)
     fh, fw = base.shape[:2]
     px0, py0 = int(round(x0 * fw)), int(round(y0 * fh))
     pw, ph = max(1, int(round(rw * fw))), max(1, int(round(rh * fh)))
@@ -652,6 +702,7 @@ def _render_roi(ctx: "AppContext", payload: EditPreviewPayload) -> np.ndarray:
         crop, payload.edit,
         roi=(ax0 / fw, ay0 / fh, (ax1 - ax0) / fw, (ay1 - ay0) / fh),
         meta=ctx.photo_meta(payload.rel_path),
+        geometry=False,          # already applied, and this is only a window
     )
     out = graded[py0 - ay0:py0 - ay0 + ph, px0 - ax0:px0 - ax0 + pw]
 
@@ -1537,17 +1588,39 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="photo not found")
         started = time.perf_counter()
         if payload.roi is None:
-            base = ctx.get_decoded_base(payload.rel_path)
-            if payload.max_edge and payload.max_edge < max(base.shape[:2]):
-                base = ctx.get_draft_base(payload.rel_path, payload.max_edge)
+            preview = ctx.get_decoded_base(payload.rel_path)
+            draft = (payload.max_edge
+                     if payload.max_edge and payload.max_edge < max(preview.shape[:2])
+                     else None)
+            base = ctx.get_geom_base(payload.rel_path, payload.edit, full=False,
+                                     draft_edge=draft,
+                                     with_crop=not payload.skip_crop)
             out = editing.render(base, payload.edit,
-                                 meta=ctx.photo_meta(payload.rel_path))
+                                 meta=ctx.photo_meta(payload.rel_path),
+                                 geometry=False)
         else:
             out = _render_roi(ctx, payload)
         buf = io.BytesIO()
         Image.fromarray(out).save(buf, "JPEG", quality=88)
+        # What the frame is now, at full resolution. Straightening and cropping
+        # change it, and the client lays the overlay and the 1:1 view out against
+        # it — reported rather than recomputed in JS so there is one copy of the
+        # arithmetic.
+        photo = ctx.photo_index[payload.rel_path]
+        src_w = int(photo.get("width") or out.shape[1])
+        src_h = int(photo.get("height") or out.shape[0])
+        uncropped = {**editing.normalize(payload.edit), "crop": None}
+        shown = uncropped if payload.skip_crop else payload.edit
+        fw, fh = editing.geometry_size(src_w, src_h, shown)
+        # Two sizes, because they answer different questions: X-Frame-Size is what
+        # is on screen right now (the overlay and the 1:1 view measure against it),
+        # X-Frame-Full is the straightened frame before cropping, which is what a
+        # crop box's own coordinates are fractions of.
+        cw, ch = editing.geometry_size(src_w, src_h, uncropped)
         return Response(content=buf.getvalue(), media_type="image/jpeg",
                         headers={"Cache-Control": "no-store",
+                                 "X-Frame-Size": f"{fw}x{fh}",
+                                 "X-Frame-Full": f"{cw}x{ch}",
                                  "X-Render-Ms": f"{(time.perf_counter() - started) * 1000:.0f}"})
 
     @app.post("/api/edit")

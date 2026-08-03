@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import threading
 from collections import OrderedDict
 from typing import Any
@@ -60,6 +61,8 @@ DEFAULT_EDIT: dict[str, Any] = {
     "glow": 0,         # highlight bloom, 0..100
     "pixelate": 0,     # mosaic block size, 0..100
     "vignette": 0,
+    "tilt": 0.0,       # straighten, degrees; + levels a horizon drooping right
+    "crop": None,      # {x, y, w, h} of the straightened frame; see "geometry"
     "curve": [[0.0, 0.0], [1.0, 1.0]],
     "masks": [],       # local adjustments; see the "masks" section below
     "watermark": None, # signature / shooting info; see the watermark module
@@ -85,7 +88,12 @@ _RANGES: dict[str, tuple[float, float]] = {
     "glow": (0, 100),
     "pixelate": (0, 100),
     "vignette": (-100, 100),
+    "tilt": (-45.0, 45.0),
 }
+
+# Kept out of the integer rounding in `normalize`: a tenth of a degree is the
+# difference between a level horizon and an almost-level one.
+_FLOAT_KEYS = frozenset({"exposure", "tilt"})
 
 _EPS = 1e-4
 _LUT_N = 1024  # tone-LUT sample count
@@ -93,6 +101,107 @@ _LUT_N = 1024  # tone-LUT sample count
 # (x0, y0, w, h) in normalized frame coordinates. Anything other than this means
 # the array being graded is a window onto a larger photo — see `render`.
 FULL_ROI = (0.0, 0.0, 1.0, 1.0)
+
+
+# ----- geometry: straighten and crop --------------------------------------
+#
+# Two settings, applied in this order and before anything tonal:
+#
+#   tilt   degrees to turn the frame by. The result is cut back to the largest
+#          rectangle of the original aspect that still lies inside the turned
+#          image, so straightening never leaves blank corners and never has to
+#          invent pixels at the edges.
+#   crop   {x, y, w, h} in normalized coordinates *of the straightened frame*,
+#          so a crop keeps meaning if the tilt is nudged afterwards.
+#
+# Everything downstream — masks, the vignette, frame-relative effects, the
+# watermark — then treats the cropped result as the whole photo. That is what
+# keeps one code path serving the thumbnail, the fit preview, a 1:1 window and
+# the export: geometry decides what the frame *is*, and the rest of the pipeline
+# only ever sees a frame.
+
+MIN_CROP = 0.02   # keep a crop big enough to still be a picture
+
+
+def normalize_crop(raw: Any) -> dict[str, float] | None:
+    """Clamp a crop to the frame, or None when it selects everything (which is
+    not a crop at all and must not make an edit look non-neutral)."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        x, y = float(raw.get("x", 0.0)), float(raw.get("y", 0.0))
+        w, h = float(raw.get("w", 1.0)), float(raw.get("h", 1.0))
+    except (TypeError, ValueError):
+        return None
+    w = min(1.0, max(MIN_CROP, w))
+    h = min(1.0, max(MIN_CROP, h))
+    x = min(1.0 - w, max(0.0, x))
+    y = min(1.0 - h, max(0.0, y))
+    if w > 1.0 - _EPS and h > 1.0 - _EPS:
+        return None
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
+def _tilt_scale(w: float, h: float, deg: float) -> float:
+    """How much of a `w`x`h` frame survives a turn of `deg`, as a fraction of
+    each side, if the result must keep the aspect and hold no blank corner.
+
+    A `w*t` x `h*t` rectangle sits inside the turned frame when both of its
+    half-extents, measured back in the frame's own axes, still fit:
+        t*(w*cos + h*sin) <= w   and   t*(w*sin + h*cos) <= h
+    """
+    c, s = abs(math.cos(math.radians(deg))), abs(math.sin(math.radians(deg)))
+    return min(w / (w * c + h * s), h / (w * s + h * c))
+
+
+def geometry_is_neutral(edit: dict[str, Any] | None) -> bool:
+    """True when the frame comes out the same shape and size it went in."""
+    e = normalize(edit)
+    return abs(e["tilt"]) < _EPS and e["crop"] is None
+
+
+def geometry_size(w: int, h: int, edit: dict[str, Any] | None) -> tuple[int, int]:
+    """What `apply_geometry` will return for a `w`x`h` frame, without touching a
+    pixel. The client needs it to lay out the view before the render arrives,
+    and the ROI path needs it to know what the window is a window *of*."""
+    e = normalize(edit)
+    if abs(e["tilt"]) >= _EPS:
+        t = _tilt_scale(w, h, e["tilt"])
+        w, h = max(1, int(round(w * t))), max(1, int(round(h * t)))
+    crop = e["crop"]
+    if crop is not None:
+        w = max(1, int(round(w * crop["w"])))
+        h = max(1, int(round(h * crop["h"])))
+    return w, h
+
+
+def apply_geometry(rgb: np.ndarray, edit: dict[str, Any] | None,
+                   *, with_crop: bool = True) -> np.ndarray:
+    """Straighten and crop `rgb`, which must be a whole frame.
+
+    `with_crop=False` straightens only — that is what the crop tool shows, so
+    you can drag the box over everything the tilt left available.
+    """
+    e = normalize(edit)
+    out = rgb
+    if abs(e["tilt"]) >= _EPS:
+        h, w = out.shape[:2]
+        m = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), e["tilt"], 1.0)
+        turned = cv2.warpAffine(out, m, (w, h), flags=cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_REPLICATE)
+        t = _tilt_scale(w, h, e["tilt"])
+        kw, kh = max(1, int(round(w * t))), max(1, int(round(h * t)))
+        x0, y0 = (w - kw) // 2, (h - kh) // 2
+        out = turned[y0:y0 + kh, x0:x0 + kw]
+    crop = e["crop"]
+    if with_crop and crop is not None:
+        h, w = out.shape[:2]
+        cw, ch = max(1, int(round(w * crop["w"]))), max(1, int(round(h * crop["h"])))
+        cx, cy = int(round(w * crop["x"])), int(round(h * crop["y"]))
+        cx, cy = min(cx, w - cw), min(cy, h - ch)
+        out = out[cy:cy + ch, cx:cx + cw]
+    # A view into the source would be handed to code that writes in place.
+    return np.ascontiguousarray(out) if out is not rgb else rgb
 
 
 # ----- mask schema (local adjustments) ------------------------------------
@@ -284,8 +393,11 @@ def normalize(edit: dict[str, Any] | None) -> dict[str, Any]:
     out["curve"] = [list(p) for p in DEFAULT_EDIT["curve"]]
     out["masks"] = []
     out["watermark"] = None
+    out["crop"] = None
     if not edit:
         return out
+    if edit.get("crop") is not None:
+        out["crop"] = normalize_crop(edit["crop"])
     for key, (lo, hi) in _RANGES.items():
         if key not in edit or edit[key] is None:
             continue
@@ -294,7 +406,7 @@ def normalize(edit: dict[str, Any] | None) -> dict[str, Any]:
         except (TypeError, ValueError):
             continue
         val = min(hi, max(lo, val))
-        out[key] = val if key == "exposure" else int(round(val))
+        out[key] = val if key in _FLOAT_KEYS else int(round(val))
     if "curve" in edit:
         out["curve"] = _clean_curve(edit["curve"])
     if isinstance(edit.get("masks"), (list, tuple)):
@@ -335,6 +447,8 @@ def merge_additive(base: dict[str, Any] | None,
         out["curve"] = [list(p) for p in over["curve"]]
     if over["watermark"] is not None:
         out["watermark"] = over["watermark"]
+    if over["crop"] is not None:
+        out["crop"] = dict(over["crop"])   # an aspect preset is worth carrying
     out["masks"] = (out["masks"] + over["masks"])[:MASK_MAX]
     return out
 
@@ -353,6 +467,8 @@ def is_neutral(edit: dict[str, Any] | None) -> bool:
         return False
     if e["watermark"] is not None:
         return False
+    if e["crop"] is not None:
+        return False   # a crop changes every pixel's place, if not its value
     return _curve_is_identity(e["curve"])
 
 
@@ -962,7 +1078,8 @@ def effect_padding(edit: dict[str, Any] | None, frame_long: float) -> float:
 def render(rgb: np.ndarray, edit: dict[str, Any] | None,
            roi: tuple[float, float, float, float] = FULL_ROI,
            meta: dict[str, Any] | None = None,
-           with_watermark: bool = True) -> np.ndarray:
+           with_watermark: bool = True,
+           geometry: bool = True) -> np.ndarray:
     """Apply `edit` to an RGB uint8 image and return a new RGB uint8 image.
     A neutral edit returns the input array unchanged (no copy).
 
@@ -970,6 +1087,13 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     inside the whole photo — pass it when grading a crop (the 1:1 editor view)
     so masks, the vignette and every frame-relative effect land where they would
     in the full-frame render. The default says `rgb` *is* the whole photo.
+
+    `geometry` runs the straighten-and-crop stage first, so `rgb` must then be a
+    whole frame. Pass False when the caller has already applied it and is handing
+    over a window of the result — that is the ROI path, which crops from a
+    geometry-applied base it keeps cached. It defaults to True because a forgotten
+    True double-crops visibly, while a forgotten False would silently drop the
+    crop from an export.
 
     `meta` is the photo's shooting info (see `exifinfo`), used to fill the
     watermark's tokens. `with_watermark=False` grades without stamping, for
@@ -980,10 +1104,17 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     if is_neutral(e):
         return rgb
 
+    if geometry and not geometry_is_neutral(e):
+        assert roi == FULL_ROI, \
+            "geometry needs the whole frame; pass geometry=False for a window"
+        rgb = apply_geometry(rgb, e)
+
     stamp = e["watermark"] if with_watermark else None
-    tone_neutral = is_neutral({**e, "watermark": None})
+    # Geometry is excluded: it has already happened, and on its own it leaves
+    # nothing for the tonal stages to do.
+    tone_neutral = is_neutral({**e, "watermark": None, "crop": None, "tilt": 0.0})
     if tone_neutral and stamp is None:
-        return rgb   # watermark-only edit, and the caller doesn't want it
+        return rgb   # cropped and/or straightened, and nothing else was asked
 
     if tone_neutral:
         out = rgb
