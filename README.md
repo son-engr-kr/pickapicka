@@ -27,8 +27,9 @@ network.
   frame and the crop is taken out of the result, so cropping never drags a mask
   off the thing you drew it on or changes its size. The watermark is the one
   thing that follows the crop, since a signature belongs on the picture you end
-  up with. Detection boxes are hidden on a cropped photo, since they describe the
-  frame the detector saw.
+  up with. Detection boxes are stored against the original frame but drawn
+  through the crop, so they stay on the car they were found on; one the crop cuts
+  out stops being drawn.
 - **Local adjustments (masks)**: grade just part of a photo. Draw a **radial**
   ellipse (drag to place, handles to resize and rotate), a **gradient** for
   skies and foregrounds, or **brush** an area freehand (Alt to erase). Each mask

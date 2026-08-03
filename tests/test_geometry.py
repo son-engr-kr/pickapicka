@@ -346,6 +346,29 @@ def test_the_source_box_covers_the_window() -> None:
             f"{edit}: the patch did not cover the window (min {placed.min()})"
 
 
+def test_the_client_is_told_where_the_original_frame_went() -> None:
+    """Detection boxes are stored against the original frame. The client needs
+    the output size and the transform to draw them on a cropped thumbnail — a car
+    plainly in the picture with no box around it reads as a missed detection."""
+    W, H = 1280, 653
+    edit = {"crop": {"x": 0.1, "y": 0.05, "w": 0.6, "h": 0.7}}
+    ow, oh = editing.geometry_size(W, H, edit)
+    n = editing.geometry_norm_matrix(W, H, edit)
+    # A crop is a shift and a scale, so the transform is separable: no rotation
+    # terms, and the scale is one over the crop's own size.
+    assert abs(n[1]) < 1e-9 and abs(n[3]) < 1e-9
+    assert abs(n[0] - 1 / 0.6) < 1e-3, n[0]
+    assert abs(n[4] - 1 / 0.7) < 1e-3, n[4]
+    assert abs(n[2] - -0.1 / 0.6) < 1e-3, n[2]
+    assert abs(n[5] - -0.05 / 0.7) < 1e-3, n[5]
+    # A point at the crop's top-left corner lands at the output's origin.
+    assert abs(n[0] * 0.1 + n[2]) < 1e-3
+    assert abs(n[4] * 0.05 + n[5]) < 1e-3
+    # ...and the crop's far corner at the far corner.
+    assert abs((n[0] * 0.7 + n[2]) - 1.0) < 1e-3
+    assert (ow, oh) == (int(round(W * 0.6)), int(round(H * 0.7)))
+
+
 def _main() -> None:
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

@@ -699,6 +699,27 @@ def _render_roi(ctx: "AppContext", payload: EditPreviewPayload) -> np.ndarray:
     return np.ascontiguousarray(out)
 
 
+def _photo_wire(photo: dict[str, Any]) -> dict[str, Any]:
+    """A photo as the client needs it, plus `geom` when the frame has been
+    straightened or cropped: the output size and where a point of the *original*
+    frame lands in it.
+
+    Detection boxes are stored against the original frame, because that is what
+    the detector saw. Without this the client could only either draw them in the
+    wrong place on a cropped thumbnail or not draw them at all — and a car that
+    is plainly in the picture but has no box looks like the detector missed it.
+    """
+    edit = photo.get("edit")
+    if not edit or editing.geometry_is_neutral(edit):
+        return photo
+    w, h = int(photo.get("width") or 0), int(photo.get("height") or 0)
+    if not (w and h):
+        return photo
+    ow, oh = editing.geometry_size(w, h, edit)
+    return {**photo, "geom": {"w": ow, "h": oh,
+                              "xform": editing.geometry_norm_matrix(w, h, edit)}}
+
+
 def _apply_edit_to_photo(photo: dict[str, Any], edit: dict[str, Any] | None) -> None:
     """Store a normalized edit on a photo dict, or drop it when neutral so
     unedited photos stay small in the db and keep their plain thumbnail."""
@@ -1440,7 +1461,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             "people": ctx.data.get("people", []),
             "brackets": ctx.data.get("brackets", []),
             "hdr_look": ctx.data.get("hdr_look") or hdr.DEFAULT_LOOK,
-            "photos": ctx.data["photos"],
+            "photos": [_photo_wire(p) for p in ctx.data["photos"]],
         }
 
     @app.post("/api/decide")
@@ -1638,7 +1659,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         _apply_edit_to_photo(photo, payload.edit)
         with ctx.save_lock:
             db.save(ctx.db_path, ctx.data)
-        return photo
+        return _photo_wire(photo)
 
     @app.post("/api/edit/bulk")
     def bulk_edit(payload: EditBulkPayload) -> dict[str, Any]:

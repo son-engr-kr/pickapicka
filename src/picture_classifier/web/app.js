@@ -343,29 +343,52 @@ function peakLayerHtml(p) {
 // Boxes are drawn as percentages of the photo, inside a layer that reproduces
 // the object-fit: contain rect via aspect-ratio — no measuring, and it stays
 // aligned through every resize.
-// A detection box says where something sits in the *original* frame. Crop or
-// straighten the photo and the thumbnail is a different frame, so the box would
-// point at the wrong thing — better not drawn than drawn wrong.
-function hasGeometry(edit) {
-  return !!(edit && (edit.crop || Math.abs(edit.tilt || 0) > 1e-4));
+// A detection box is stored against the original frame, because that is the
+// frame the detector saw. Once a photo is cropped or straightened the thumbnail
+// is a different frame, so each box is mapped through the photo's geometry
+// (supplied by the server as `geom`) before it is drawn. Boxes the crop excludes
+// are dropped; the rest land on the car they were found on.
+function boxToView(o, p) {
+  const [x, y, w, h] = o.bbox_xywh;
+  let l = x / p.width, t = y / p.height;
+  let r = (x + w) / p.width, b = (y + h) / p.height;
+  const g = p.geom;
+  if (g) {
+    const m = g.xform;
+    const at = (u, v) => [m[0] * u + m[1] * v + m[2], m[3] * u + m[4] * v + m[5]];
+    // All four corners, because a straighten turns the box: the axis-aligned
+    // bounds of the turned box are what can be drawn as a plain rectangle.
+    const pts = [at(l, t), at(r, t), at(l, b), at(r, b)];
+    l = Math.min(...pts.map((q) => q[0])); r = Math.max(...pts.map((q) => q[0]));
+    t = Math.min(...pts.map((q) => q[1])); b = Math.max(...pts.map((q) => q[1]));
+    if (r <= 0 || l >= 1 || b <= 0 || t >= 1) return null;   // cropped away
+    l = Math.max(0, l); t = Math.max(0, t);
+    r = Math.min(1, r); b = Math.min(1, b);
+  }
+  return { l, t, w: r - l, h: b - t };
 }
 
 function boxLayerHtml(p) {
   if (!state.showBoxes || !p.width || !p.height) return "";
-  if (hasGeometry(p.edit)) return "";
   const objs = p.objects || [];
   if (!objs.length) return "";
   const boxes = objs.map((o) => {
-    const [x, y, w, h] = o.bbox_xywh;
+    const v = boxToView(o, p);
+    if (!v) return "";
     const grouped = o.vehicle_id ? ` grouped` : "";
     const label = o.vehicle_id
-      ? (state.subjects.vehicles.find((v) => v.id === o.vehicle_id)?.label || o.cls)
+      ? (state.subjects.vehicles.find((x) => x.id === o.vehicle_id)?.label || o.cls)
       : o.cls;
-    return `<span class="det-box${grouped}" style="left:${x / p.width * 100}%;` +
-      `top:${y / p.height * 100}%;width:${w / p.width * 100}%;height:${h / p.height * 100}%">` +
+    return `<span class="det-box${grouped}" style="left:${v.l * 100}%;` +
+      `top:${v.t * 100}%;width:${v.w * 100}%;height:${v.h * 100}%">` +
       `<span class="det-label">${escapeHtml(label)} ${Math.round(o.score * 100)}</span></span>`;
   }).join("");
-  return `<span class="box-layer" style="aspect-ratio:${p.width}/${p.height}">${boxes}</span>`;
+  if (!boxes) return "";
+  // The layer reproduces the object-fit: contain rect via aspect-ratio, so it
+  // has to be the aspect of what is *shown* — the cropped frame, when there is
+  // one — rather than the original's.
+  const ar = p.geom ? `${p.geom.w}/${p.geom.h}` : `${p.width}/${p.height}`;
+  return `<span class="box-layer" style="aspect-ratio:${ar}">${boxes}</span>`;
 }
 
 function bestPriority(photo) {
@@ -3843,8 +3866,8 @@ function syncModalBoxes() {
   const layer = $("#modal-boxes"), img = $("#modal-image");
   if (!layer) return;
   const photo = state.modal.open ? state.filteredPhotos[state.modal.idx] : null;
-  const objs = (photo && !state.modal.compare && state.showBoxes
-                && !hasGeometry(photo.edit)) ? (photo.objects || []) : [];
+  const objs = (photo && !state.modal.compare && state.showBoxes)
+    ? (photo.objects || []) : [];
   layer.classList.toggle("hidden", !objs.length);
   if (!objs.length) { layer.innerHTML = ""; return; }
   layer.style.left = `${img.offsetLeft}px`;
@@ -3852,12 +3875,14 @@ function syncModalBoxes() {
   layer.style.width = `${img.offsetWidth}px`;
   layer.style.height = `${img.offsetHeight}px`;
   layer.innerHTML = objs.map((o) => {
-    const [x, y, w, h] = o.bbox_xywh;
+    // Same mapping the grid uses: the viewer shows the cropped frame too.
+    const v = boxToView(o, photo);
+    if (!v) return "";
     const label = o.vehicle_id
-      ? (state.subjects.vehicles.find((v) => v.id === o.vehicle_id)?.label || o.cls)
+      ? (state.subjects.vehicles.find((x) => x.id === o.vehicle_id)?.label || o.cls)
       : o.cls;
-    return `<span class="det-box${o.vehicle_id ? " grouped" : ""}" style="left:${x / photo.width * 100}%;` +
-      `top:${y / photo.height * 100}%;width:${w / photo.width * 100}%;height:${h / photo.height * 100}%">` +
+    return `<span class="det-box${o.vehicle_id ? " grouped" : ""}" style="left:${v.l * 100}%;` +
+      `top:${v.t * 100}%;width:${v.w * 100}%;height:${v.h * 100}%">` +
       `<span class="det-label">${escapeHtml(label)} ${Math.round(o.score * 100)}</span></span>`;
   }).join("");
 }
