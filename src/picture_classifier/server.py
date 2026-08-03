@@ -40,6 +40,10 @@ from .scorer import (
 
 THUMB_LONG_EDGE = 1280
 THUMB_QUALITY = 90
+# Bump when the *way* a thumb is baked changes rather than its size. The edit
+# hash in the filename cannot notice that the same edit now renders differently,
+# so without this a cached thumb would outlive the change.
+THUMB_VERSION = "v2"
 FACE_LONG_EDGE = 360
 FACE_QUALITY = 90
 FACE_PADDING = 0.85  # crop half-side = max(w, h) * FACE_PADDING (about 70% padding around face)
@@ -706,11 +710,22 @@ def _atomic_write(dst: Path) -> "Iterator[Path]":
 
 
 def _ensure_thumb(src: Path, thumbs_root: Path, rel_path: str,
-                  edit: dict[str, Any] | None = None) -> Path:
-    # A non-neutral edit gets its own cache file (…​.<hash>.jpg) so changing an
-    # edit invalidates automatically; unedited photos keep the plain name.
+                  edit: dict[str, Any] | None = None,
+                  meta: dict[str, Any] | None = None,
+                  watermark: bool = True) -> Path:
+    # A non-neutral edit gets its own cache file (…​.<hash>.<ver>.jpg) so changing
+    # an edit invalidates automatically; unedited photos keep the plain name and
+    # need no version, having nothing baked into them.
+    #
+    # `watermark=False` is for focus peaking, which reads a thumb: the text of a
+    # signature has edges as crisp as anything in the frame and would be
+    # reported as in focus. That variant gets its own cache entry.
     ehash = editing.edit_hash(edit)
-    dst = thumbs_root / (f"{rel_path}.{ehash}.jpg" if ehash else rel_path)
+    if ehash:
+        tag = f"{ehash}.{THUMB_VERSION}" + ("" if watermark else "-nw")
+        dst = thumbs_root / f"{rel_path}.{tag}.jpg"
+    else:
+        dst = thumbs_root / rel_path
 
     def fresh() -> bool:
         if not (dst.exists() and dst.stat().st_mtime >= src.stat().st_mtime):
@@ -733,9 +748,12 @@ def _ensure_thumb(src: Path, thumbs_root: Path, rel_path: str,
             img.thumbnail((THUMB_LONG_EDGE, THUMB_LONG_EDGE), Image.Resampling.LANCZOS)
             img = img.convert("RGB")
             if ehash:  # grade the downscaled thumb (cheap) so the grid shows the edit
-                # No watermark on grid thumbs: at tile size it is noise.
+                # Watermark included: it is part of how the photo will look, and
+                # the grid is where you decide whether it works. It scales with
+                # the frame, so a tile shows it at the proportion it will print.
                 img = Image.fromarray(
-                    editing.render(np.asarray(img), edit, with_watermark=False))
+                    editing.render(np.asarray(img), edit, meta=meta,
+                                   with_watermark=watermark))
             with _atomic_write(dst) as tmp:
                 img.save(tmp, "JPEG", quality=THUMB_QUALITY, optimize=True)
     return dst
@@ -1944,7 +1962,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         if not src.is_file():
             raise HTTPException(status_code=404, detail="not found")
         edit = photo.get("edit") if photo else None
-        thumb = _ensure_thumb(src, ctx.thumbs_root, rel_path, edit)
+        thumb = _ensure_thumb(src, ctx.thumbs_root, rel_path, edit,
+                              ctx.photo_meta(rel_path))
         return FileResponse(thumb, media_type="image/jpeg")
 
     @app.get("/peak/{rel_path:path}")
@@ -1964,7 +1983,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         if not src.is_file():
             raise HTTPException(status_code=404, detail="not found")
         edit = photo.get("edit") if photo else None
-        thumb = _ensure_thumb(src, ctx.thumbs_root, rel_path, edit)
+        thumb = _ensure_thumb(src, ctx.thumbs_root, rel_path, edit,
+                              ctx.photo_meta(rel_path), watermark=False)
         if level not in PEAK_LEVELS:
             raise HTTPException(status_code=400, detail=f"unknown level: {level}")
         out = _ensure_peak(thumb, ctx.peaks_root, rel_path,

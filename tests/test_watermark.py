@@ -233,10 +233,12 @@ def test_edit_carries_the_watermark() -> None:
     assert editing.is_neutral({"watermark": {"enabled": False}})
     # A watermark-only edit still renders…
     assert not np.array_equal(editing.render(img, {"watermark": wm}, meta=_META), img)
-    # …but thumbnails opt out, where it would only be noise.
+    # …and a caller that only measures the pixels can grade without stamping
+    # (focus peaking: a signature's lettering would read as the sharpest edge
+    # in the frame).
     assert np.array_equal(
         editing.render(img, {"watermark": wm}, meta=_META, with_watermark=False), img)
-    # Grading still happens on the thumbnail path.
+    # Grading still happens when the stamp is suppressed.
     assert not np.array_equal(
         editing.render(img, {"exposure": 0.5, "watermark": wm}, meta=_META,
                        with_watermark=False), img)

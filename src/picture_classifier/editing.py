@@ -972,8 +972,9 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     in the full-frame render. The default says `rgb` *is* the whole photo.
 
     `meta` is the photo's shooting info (see `exifinfo`), used to fill the
-    watermark's tokens. `with_watermark=False` is for grid thumbnails, where a
-    signature would be unreadable noise rather than information.
+    watermark's tokens. `with_watermark=False` grades without stamping, for
+    callers that measure the result rather than show it — focus peaking would
+    read a signature's crisp lettering as the sharpest thing in the frame.
     """
     e = normalize(edit)
     if is_neutral(e):

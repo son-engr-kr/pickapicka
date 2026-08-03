@@ -2280,7 +2280,14 @@ function overlayRect() {
     // the two share an origin.
     const ir = img.getBoundingClientRect();
     const wr = $(".edit-canvas-wrap").getBoundingClientRect();
-    const nw = img.naturalWidth, nh = img.naturalHeight;
+    // Shape the letterbox from the photo's own dimensions, never from whatever
+    // bitmap the element is holding. Assigning .src blanks naturalWidth until
+    // the new frame decodes, and painting swaps in a draft render several times
+    // a second: for those frames this measured 0, fell through to the whole
+    // wrap below, and every coordinate mapped through it landed hundreds of
+    // pixels sideways. That was the brush jumping mid-stroke.
+    const nw = editSession.natural.w || img.naturalWidth;
+    const nh = editSession.natural.h || img.naturalHeight;
     if (!nw || !nh || !ir.width || !ir.height) {
       return { x: 0, y: 0, w: wr.width || 1, h: wr.height || 1 };
     }
@@ -2372,6 +2379,16 @@ function resizeOverlay() {
 function evFrac(e) {
   const b = $("#edit-overlay").getBoundingClientRect(), r = overlayRect();
   return { x: (e.clientX - b.left - r.x) / r.w, y: (e.clientY - b.top - r.y) / r.h };
+}
+
+// Every position a pointermove stands for, oldest first, as frame fractions.
+// Usually that is just where the pointer is now; under load the browser packs
+// the positions it skipped into the same event, and a brush has to honour them
+// or it cuts the corner. `now` is the caller's already-computed evFrac(e), so
+// the common one-position case costs nothing extra.
+function pointerPath(e, now) {
+  const packed = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+  return packed.length > 1 ? packed.map(evFrac) : [now];
 }
 
 // Unit-circle coordinates of a radial mask -> canvas pixels. Mirrors the
@@ -2803,10 +2820,19 @@ function overlayMove(e) {
     }
     m.x2 = x; m.y2 = y;
   } else if (d.kind === "paint") {
-    const pts = d.stroke.points, last = pts[pts.length - 1];
+    // A pointermove can stand for several positions: when a frame runs long the
+    // browser reports only the newest and folds the rest into it. Painting just
+    // that one skips everything the pointer crossed in between, which is why a
+    // fast stroke over a slow render used to jump sideways instead of following
+    // the hand. getCoalescedEvents() hands back the positions that were folded
+    // in, in order, so the stroke is drawn through all of them.
+    const pts = d.stroke.points;
     // Decimate: one point per ~a third of the brush radius keeps strokes small.
     const step = Math.max(0.002, d.stroke.radius * 0.33);
-    if (Math.hypot(f.x - last[0], f.y - last[1]) >= step) pts.push([f.x, f.y]);
+    for (const q of pointerPath(e, f)) {
+      const last = pts[pts.length - 1];
+      if (Math.hypot(q.x - last[0], q.y - last[1]) >= step) pts.push([q.x, q.y]);
+    }
   }
   scheduleOverlay();
   setEditDirty();
