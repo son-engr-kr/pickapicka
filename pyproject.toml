@@ -1,13 +1,14 @@
 [project]
 name = "picture-classifier"
-version = "0.2.0"
-description = "Score photos for blur/exposure/face-clustering and cull via local web viewer"
+version = "0.4.0"
+description = "Score, cull, and edit photos (incl. RAW) via a local web viewer"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
     { name = "Hyoungseo Son", email = "son.engr.kr@gmail.com" }
 ]
-keywords = ["photography", "culling", "blur-detection", "face-clustering", "triage"]
+keywords = ["photography", "culling", "editing", "raw", "blur-detection",
+            "face-clustering", "object-detection", "watermark", "triage"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -28,6 +29,7 @@ dependencies = [
     "onnxruntime>=1.25.0",
     "opencv-python>=4.10",
     "pillow>=10.4",
+    "rawpy>=0.22",
     "scikit-learn>=1.8.0",
     "uvicorn[standard]>=0.30",
 ]

@@ -23,6 +23,12 @@ def main() -> None:
     help="Subdirectory under photo_dir holding the JPEGs (with optional Scene_* subfolders).",
 )
 @click.option(
+    "--raw-subdir",
+    default="",
+    help="Subdirectory under photo_dir holding RAW files, if they live in a separate "
+         "tree (e.g. RAW/). Leave empty when RAWs sit next to the JPEGs.",
+)
+@click.option(
     "--db-path",
     "-o",
     type=click.Path(path_type=Path),
@@ -41,16 +47,28 @@ def main() -> None:
     default=None,
     help="Score only the first N photos (for smoke testing).",
 )
+@click.option(
+    "--subjects",
+    default=None,
+    help="Detect subjects and score by them. A preset (vehicle, person, pet, bike) "
+         "or a comma-separated list of COCO class names (e.g. 'car,truck'). "
+         "Downloads a ~20 MB model on first use.",
+)
 def score(
     photo_dir: Path,
     jpeg_subdir: str,
+    raw_subdir: str,
     db_path: Path,
     with_faces: bool,
     limit: int | None,
+    subjects: str | None,
 ) -> None:
     """Compute scores and write JSON db."""
     from .scorer import run_scoring
-    run_scoring(photo_dir, jpeg_subdir, db_path, with_faces, limit)
+    from .scoring.objects import resolve_classes
+    subject_classes = resolve_classes(subjects) if subjects else None
+    run_scoring(photo_dir, jpeg_subdir, db_path, with_faces, limit,
+                raw_subdir=raw_subdir, subject_classes=subject_classes)
 
 
 @main.command()
@@ -90,7 +108,13 @@ def serve(db_path: Path | None, host: str, port: int, open_browser: bool) -> Non
 )
 @click.option("--eps", default=0.55, show_default=True, help="DBSCAN cosine distance threshold")
 @click.option("--min-samples", default=3, show_default=True, help="DBSCAN min samples per cluster")
-def cluster(db_path: Path, eps: float, min_samples: int) -> None:
+@click.option(
+    "--subjects",
+    is_flag=True,
+    help="Also group detected subjects (cars etc.) that look alike. Appearance-based, "
+         "so same-colour same-model vehicles land in one group.",
+)
+def cluster(db_path: Path, eps: float, min_samples: int, subjects: bool) -> None:
     """Cluster detected faces by identity (writes `people[]` to the db)."""
     from .cluster import run_clustering
     click.echo("Clustering faces…")
@@ -100,6 +124,17 @@ def cluster(db_path: Path, eps: float, min_samples: int) -> None:
     click.echo(f"Found {len(data.get('people', []))} person clusters:")
     for p in data.get("people", []):
         click.echo(f"  {p['id']:>4} priority={p['priority']} count={p['count']} label='{p['label']}'")
+    if subjects:
+        from functools import partial
+        from .cluster import run_vehicle_clustering
+        from .scorer import pixel_path
+        click.echo("Grouping subjects by appearance…")
+        n = run_vehicle_clustering(
+            db_path, partial(pixel_path, data, db_path, None))
+        data = db_mod.load(db_path)
+        click.echo(f"Found {n} subject group(s):")
+        for v in data.get("vehicles", []):
+            click.echo(f"  {v['id']:>4} count={v['count']} cls={v['cls']} label='{v['label']}'")
 
 
 @main.command()

@@ -11,6 +11,8 @@ import os
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_dynamic_libs
+
 ROOT = Path(SPECPATH).parent
 WEB_DIR = ROOT / "src" / "picture_classifier" / "web"
 ENTRY = ROOT / "src" / "picture_classifier" / "app_entry.py"
@@ -21,9 +23,15 @@ block_cipher = None
 a = Analysis(
     [str(ENTRY)],
     pathex=[str(ROOT / "src")],
-    binaries=[],
+    # rawpy bundles libraw as a shared lib inside its wheel; pull it in.
+    binaries=collect_dynamic_libs("rawpy"),
     datas=[(str(WEB_DIR), "picture_classifier/web")],
     hiddenimports=[
+        "rawpy",
+        "rawpy._rawpy",
+        # scoring.objects imports it lazily inside the session factory, so the
+        # static analysis only reaches it via insightface — be explicit.
+        "onnxruntime",
         # uvicorn pulls these dynamically; PyInstaller's static analysis misses them.
         "uvicorn.logging",
         "uvicorn.loops",

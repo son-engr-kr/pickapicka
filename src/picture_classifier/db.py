@@ -20,11 +20,12 @@ def save(path: Path, data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def init_db(photo_root: Path, jpeg_subdir: str) -> dict[str, Any]:
+def init_db(photo_root: Path, jpeg_subdir: str, raw_subdir: str = "") -> dict[str, Any]:
     return {
         "version": DB_VERSION,
         "photo_root": str(photo_root),
         "jpeg_subdir": jpeg_subdir,
+        "raw_subdir": raw_subdir,
         "scored_at": None,
         "brackets": [],
         "photos": [],

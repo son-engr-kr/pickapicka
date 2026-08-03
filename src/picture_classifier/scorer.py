@@ -9,12 +9,21 @@ from typing import Any
 import click
 import numpy as np
 
-from . import db, hdr
+from . import db, exifinfo, hdr, raw, scenes
 from .scoring import blur as blur_mod
 from .scoring import exposure as exp_mod
 from .scoring import faces as faces_mod
+from .scoring import objects as objects_mod
 
 EYE_CLOSED_THRESHOLD = 0.18  # EAR below this is treated as "eyes closed"
+
+# Subject (object-detection) weights, applied only when a project has target
+# classes set. Tuned so a missing subject dominates, prominence matters clearly,
+# and placement is only a tiebreaker — plenty of good shots are off-centre.
+SUBJECT_MISSING_PENALTY = 0.8
+SUBJECT_SMALL_WEIGHT = 0.4
+SUBJECT_OFFCENTER_WEIGHT = 0.2
+SUBJECT_FULL_AREA = 0.25  # a subject filling this much of the frame gets full credit
 
 
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png"}
@@ -32,7 +41,11 @@ def excluded_scan_dirs(db_path: Path, project_dir: Path | None) -> set[Path]:
     out = {
         db_path.with_suffix(db_path.suffix + ".thumbs").resolve(),
         db_path.with_suffix(db_path.suffix + ".faces").resolve(),
+        # Focus-peaking overlays are .png, i.e. a supported extension — without
+        # this they would be picked up as photos on the next re-score.
+        db_path.with_suffix(db_path.suffix + ".peaks").resolve(),
         db_path.with_suffix(db_path.suffix + ".hdr").resolve(),
+        db_path.with_suffix(db_path.suffix + ".rawcache").resolve(),
     }
     if project_dir is not None:
         out.add(project_dir.resolve())
@@ -48,14 +61,26 @@ def hdr_dir(db_path: Path, project_dir: Path | None) -> Path:
     return db_path.with_suffix(db_path.suffix + ".hdr")
 
 
+def raw_cache_dir(db_path: Path, project_dir: Path | None) -> Path:
+    """Directory holding cached RAW preview JPEGs (project .cache/raw, or beside
+    the db in the legacy layout)."""
+    if project_dir is not None:
+        return project_dir / ".cache" / "raw"
+    return db_path.with_suffix(db_path.suffix + ".rawcache")
+
+
 def source_rel_paths(data: dict[str, Any]) -> set[str]:
-    """Rel_paths of the on-disk source JPEGs a db was built from: standalone
-    photos plus every bracket member. A merged HDR result is not itself a
-    source file, so its synthetic rel_path is excluded."""
+    """Identities of the on-disk sources a db was built from, for change
+    detection. JPEG sources use their jpeg-root-relative rel_path (and bracket
+    members); a RAW is tagged `raw::<photo-root-relative src>` so it matches the
+    RAW scan regardless of layout. A merged HDR result is not itself a source."""
     out: set[str] = set()
     for p in data.get("photos", []):
-        if p.get("type") == "hdr":
+        t = p.get("type")
+        if t == "hdr":
             out.update(p.get("members", []))
+        elif t == "raw":
+            out.add("raw::" + p.get("src", p["rel_path"]))
         else:
             out.add(p["rel_path"])
     for b in data.get("brackets", []):
@@ -90,6 +115,23 @@ def _collect_jpegs(
     return out
 
 
+def _collect_raws(
+    raw_root: Path, exclude_dirs: Iterable[Path] = ()
+) -> list[tuple[str, Path]]:
+    """Recursively find RAW files under `raw_root`. Scene = first subdir
+    component relative to `raw_root` (mirrors `_collect_jpegs`)."""
+    out: list[tuple[str, Path]] = []
+    if not raw_root.is_dir():
+        return out
+    for img in sorted(walk_files(raw_root, exclude_dirs)):
+        if not raw.is_raw(img):
+            continue
+        rel = img.relative_to(raw_root)
+        scene = rel.parts[0] if len(rel.parts) > 1 else "(none)"
+        out.append((scene, img))
+    return out
+
+
 def _load_existing(db_path: Path) -> dict[str, Any] | None:
     """The previous db contents, or None on first scoring."""
     if not db_path.exists():
@@ -105,6 +147,17 @@ def _existing_decisions(data: dict[str, Any] | None) -> dict[str, tuple[Any, Any
     return {
         p["rel_path"]: (p.get("decision"), p.get("decided_at"))
         for p in data.get("photos", [])
+    }
+
+
+def _existing_edits(data: dict[str, Any] | None) -> dict[str, tuple[Any, Any]]:
+    """Map rel_path -> (edit, edited_at) so a re-score keeps prior grading."""
+    if not data:
+        return {}
+    return {
+        p["rel_path"]: (p.get("edit"), p.get("edited_at"))
+        for p in data.get("photos", [])
+        if p.get("edit")
     }
 
 
@@ -157,6 +210,22 @@ def _prune_hdr_dir(hdr_root: Path, keep: set[str]) -> None:
             f.unlink()
 
 
+def pixel_path(
+    data: dict[str, Any], db_path: Path, project_dir: Path | None, photo: dict[str, Any],
+) -> Path:
+    """Absolute path of the image the scorer actually measured for `photo`: the
+    merged result for an HDR bracket, the cached preview for a RAW, otherwise
+    the source JPEG. Anything re-reading scored pixels should go through this."""
+    rel = photo["rel_path"]
+    if photo.get("type") == "hdr" or hdr.is_hdr_rel(rel):
+        return hdr_dir(db_path, project_dir) / rel[len(hdr.HDR_PREFIX) + 1:]
+    if photo.get("type") == "raw":
+        return raw.raw_cache_path(raw_cache_dir(db_path, project_dir), rel)
+    photo_root = Path(data["photo_root"])
+    jpeg_subdir = data.get("jpeg_subdir", "")
+    return (photo_root / jpeg_subdir / rel) if jpeg_subdir else (photo_root / rel)
+
+
 def apply_scene_suggestions(items: list[dict[str, Any]]) -> None:
     """Mutates items in place to set 'auto_suggestion' based on per-scene normalized scores."""
     n = len(items)
@@ -166,7 +235,13 @@ def apply_scene_suggestions(items: list[dict[str, Any]]) -> None:
         items[0]["auto_suggestion"] = "review"
         return
 
-    blurs = np.array([p["scores"]["blur"] for p in items])
+    # Rank sharpness on the subject when one was detected, else on the whole
+    # frame. Both are measured at the same working scale so they rank together.
+    blurs = np.array([
+        p["scores"]["subject_blur"] if p["scores"].get("subject_blur") is not None
+        else p["scores"]["blur"]
+        for p in items
+    ])
     brights = np.array([p["scores"]["brightness"] for p in items])
     eyes = np.array([
         np.nan if p["scores"]["eye_open"] is None else p["scores"]["eye_open"]
@@ -181,6 +256,16 @@ def apply_scene_suggestions(items: list[dict[str, Any]]) -> None:
     badness = (1.0 - blur_pct) + 0.3 * b_zscore
     eyes_closed_mask = ~np.isnan(eyes) & (eyes < EYE_CLOSED_THRESHOLD)
     badness = badness + eyes_closed_mask.astype(float) * 1.0
+
+    # Subject terms only apply where the project asked for object detection —
+    # `subject_area` is None on photos that were never run through a detector.
+    if any(p["scores"].get("subject_area") is not None for p in items):
+        area = np.array([float(p["scores"].get("subject_area") or 0.0) for p in items])
+        off = np.array([float(p["scores"].get("subject_center") or 0.0) for p in items])
+        badness += (area <= 0.0).astype(float) * SUBJECT_MISSING_PENALTY
+        prominence = np.clip(area / SUBJECT_FULL_AREA, 0.0, 1.0)
+        badness += SUBJECT_SMALL_WEIGHT * (1.0 - prominence)
+        badness += SUBJECT_OFFCENTER_WEIGHT * off
 
     for i, p in enumerate(items):
         p["scores"]["blur_pct"] = float(blur_pct[i])
@@ -202,18 +287,50 @@ def apply_scene_suggestions(items: list[dict[str, Any]]) -> None:
             items[idx]["auto_suggestion"] = "review"
 
 
+def _subject_scores(
+    abs_path: Path, objects: list[dict[str, Any]], width: int, height: int,
+) -> dict[str, Any]:
+    """Prominence / placement / sharpness of the biggest detected subject.
+
+    "Biggest" rather than "most confident": for a car shoot the hero car is the
+    one filling the frame, and a background car detected at 0.9 is not the shot.
+    """
+    out: dict[str, Any] = {
+        "subject_count": len(objects),
+        "subject_area": 0.0,
+        "subject_center": 0.0,
+        "subject_blur": None,
+    }
+    if not objects or width <= 0 or height <= 0:
+        return out
+    biggest = max(objects, key=lambda o: o["bbox_xywh"][2] * o["bbox_xywh"][3])
+    x, y, bw, bh = biggest["bbox_xywh"]
+    out["subject_area"] = round(bw * bh / float(width * height), 5)
+    # Distance of the subject's centre from the frame's, as a fraction of the
+    # half-diagonal, so 0 is dead centre and 1 is the corner.
+    dx = (x + bw / 2) / width - 0.5
+    dy = (y + bh / 2) / height - 0.5
+    out["subject_center"] = round(float(np.hypot(dx, dy) / 0.7071), 4)
+    out["subject_blur"] = blur_mod.region_blur_score(str(abs_path), biggest["bbox_xywh"])
+    return out
+
+
 def _score_one(
-    scene: str,
-    abs_path: Path,
-    rel_path: str,
-    members: list[str] | None,
+    target: dict[str, Any],
     face_detect,
     existing: dict[str, tuple[Any, Any]],
+    existing_edits: dict[str, tuple[Any, Any]],
     embedding_sink: list[np.ndarray],
+    object_detect=None,
 ) -> dict[str, Any]:
-    """Score one entity. `abs_path` is the file actually read (a source JPEG,
-    or a merged HDR result); `rel_path` is its identity in the db. `members`
-    is the bracket's source frames when this entity is a merged HDR result."""
+    """Score one entity described by `target`: `score_path` is the file actually
+    read (a source JPEG, a merged HDR result, or a RAW's cached preview JPEG);
+    `rel` is its identity in the db; `members` is set for a merged HDR result;
+    `kind` is 'jpeg' | 'raw' | 'hdr'; `src`/`captured_at` are stored when set."""
+    scene = target["scene"]
+    abs_path = target["score_path"]
+    rel_path = target["rel"]
+    members = target["members"]
     blur_v = blur_mod.blur_score(str(abs_path))
     bright_v = exp_mod.brightness(str(abs_path))
     face_list, width, height = face_detect(str(abs_path))
@@ -228,13 +345,26 @@ def _score_one(
         f.setdefault("person_id", None)
     ears = [f["ear"] for f in face_list if f.get("ear") is not None]
     eye_v = min(ears) if ears else None
+    objects: list[dict[str, Any]] = []
+    subject: dict[str, Any] = {"subject_count": 0, "subject_area": None,
+                               "subject_center": None, "subject_blur": None}
+    if object_detect is not None:
+        objects, _, _ = object_detect(str(abs_path))
+        subject = _subject_scores(abs_path, objects, width, height)
     prior_decision, prior_decided_at = existing.get(rel_path, (None, None))
+    # Shooting info is read once here and cached in the db; the watermark and
+    # the viewer both read it back rather than re-parsing EXIF per render.
+    # A merged HDR result inherits the EXIF of its base frame.
+    exif_src = target.get("exif_path") or abs_path
+    exif = exifinfo.read_any(Path(exif_src), is_raw=target.get("kind") == "raw")
     photo: dict[str, Any] = {
         "rel_path": rel_path,
         "scene": scene,
         "width": width,
         "height": height,
         "faces": face_list,
+        "objects": objects,
+        "exif": exif,
         "scores": {
             "blur": blur_v,
             "brightness": bright_v,
@@ -242,14 +372,25 @@ def _score_one(
             "blur_pct": None,
             "exposure_zscore": None,
             "badness": None,
+            **subject,
         },
         "auto_suggestion": None,
         "decision": prior_decision,
         "decided_at": prior_decided_at,
     }
+    if target.get("captured_at"):
+        photo["captured_at"] = target["captured_at"]
     if members is not None:
         photo["type"] = "hdr"
         photo["members"] = members
+    if target.get("kind") == "raw":
+        photo["type"] = "raw"
+        photo["src"] = target["src"]
+    prior_edit, prior_edited_at = existing_edits.get(rel_path, (None, None))
+    if prior_edit:
+        photo["edit"] = prior_edit
+        if prior_edited_at:
+            photo["edited_at"] = prior_edited_at
     return photo
 
 
@@ -263,9 +404,15 @@ def run_scoring(
     project_dir: Path | None = None,
     bracket_groups: list[list[str]] | None = None,
     hdr_look: dict[str, float] | None = None,
+    raw_subdir: str = "",
+    subject_classes: list[str] | None = None,
 ) -> None:
     """Scan, merge HDR brackets, then score the standalone frames plus the
     merged results. An HDR bracket is scored once, as its merged output.
+
+    RAW files are first-class: when a shot exists as both a RAW and a JPEG (same
+    scene + base name), the RAW is preferred. RAW files are scored/thumbnailed
+    via a cached preview JPEG and exported as JPEG.
 
     `bracket_groups`, when given, is an explicit grouping (from the HDR-tab
     edit); otherwise a prior grouping is preserved across re-scores, and a
@@ -275,17 +422,22 @@ def run_scoring(
     before each photo, and once more with `idx == total` and current=None at the
     end. Otherwise a click progress bar prints to stdout."""
     verbose = progress_cb is None
-    jpeg_root = photo_dir / jpeg_subdir
+    jpeg_root = photo_dir / jpeg_subdir if jpeg_subdir else photo_dir
+    raw_root = photo_dir / raw_subdir if raw_subdir else jpeg_root
     assert jpeg_root.is_dir(), f"not a directory: {jpeg_root}"
 
-    collected = _collect_jpegs(jpeg_root, excluded_scan_dirs(db_path, project_dir))
+    excludes = excluded_scan_dirs(db_path, project_dir)
+    collected = _collect_jpegs(jpeg_root, excludes)
     scene_of = {str(p.relative_to(jpeg_root)): scene for scene, p in collected}
     src_rels = set(scene_of)
+    raw_collected = _collect_raws(raw_root, excludes)
     if verbose:
-        click.echo(f"Found {len(src_rels)} JPEGs under {jpeg_root}")
+        click.echo(f"Found {len(src_rels)} JPEG/PNG under {jpeg_root}"
+                   + (f" and {len(raw_collected)} RAW under {raw_root}" if raw_collected else ""))
 
     existing = _load_existing(db_path)
     existing_dec = _existing_decisions(existing)
+    existing_edits = _existing_edits(existing)
     if verbose and existing_dec:
         click.echo(
             f"Preserving {sum(1 for d in existing_dec.values() if d[0] is not None)} "
@@ -298,6 +450,11 @@ def run_scoring(
         (existing or {}).get("hdr_look") or hdr.DEFAULT_LOOK
     )
     look_changed = (existing or {}).get("hdr_look") != look
+
+    # Same precedence for the subject classes: explicit > what the project was
+    # last scored with, so a plain re-score keeps detecting what it detected.
+    if subject_classes is None:
+        subject_classes = (existing or {}).get("subject_classes") or []
 
     # ----- resolve & merge HDR brackets -----
     groups = _resolve_bracket_groups(bracket_groups, src_rels, jpeg_root, verbose)
@@ -324,17 +481,58 @@ def run_scoring(
         bracketed.update(members)
     _prune_hdr_dir(hdr_root, {hdr.merged_filename(b["members"]) for b in brackets_meta})
 
-    # ----- assemble what gets scored: standalone frames + merged results -----
-    targets: list[tuple[str, Path, str, list[str] | None]] = []
+    # ----- pair RAW + JPEG (prefer RAW) and assemble scoring targets -----
+    raw_cache_root = raw_cache_dir(db_path, project_dir)
+
+    def _key(scene: str, path: Path) -> tuple[str, str]:
+        return (scene, path.stem.lower())
+
+    raw_by_key: dict[tuple[str, str], tuple[str, Path]] = {}
+    for scene, abs_raw in raw_collected:
+        raw_by_key[_key(scene, abs_raw)] = (scene, abs_raw)
+    jpeg_by_key: dict[tuple[str, str], tuple[str, Path, str]] = {}
     for scene, jpg in collected:
         rel = str(jpg.relative_to(jpeg_root))
-        if rel not in bracketed:
-            targets.append((scene, jpg, rel, None))
+        if rel in bracketed:
+            continue  # consumed by an HDR merge
+        jpeg_by_key[_key(scene, jpg)] = (scene, jpg, rel)
+
+    targets: list[dict[str, Any]] = []
+    n_raw = 0
+    for key in sorted(set(raw_by_key) | set(jpeg_by_key)):
+        if key in raw_by_key:  # RAW wins when a shot has both
+            scene, abs_raw = raw_by_key[key]
+            rel = str(abs_raw.relative_to(raw_root))
+            n_raw += 1
+            if progress_cb is not None:
+                progress_cb(0, 0, f"Preparing RAW previews… ({n_raw})")
+            score_path = raw.ensure_cache(abs_raw, raw_cache_root, rel)
+            captured = raw.read_capture_time(abs_raw)
+            targets.append({
+                "scene": scene, "score_path": score_path, "rel": rel,
+                "members": None, "kind": "raw",
+                "src": str(abs_raw.relative_to(photo_dir)),
+                "exif_path": abs_raw,
+                "captured_at": captured.isoformat() if captured else None,
+            })
+        else:
+            scene, jpg, rel = jpeg_by_key[key]
+            captured = scenes.read_capture_time(jpg)
+            targets.append({
+                "scene": scene, "score_path": jpg, "rel": rel,
+                "members": None, "kind": "jpeg", "src": None,
+                "exif_path": jpg,
+                "captured_at": captured.isoformat() if captured else None,
+            })
     for b in brackets_meta:
-        targets.append((
-            b["scene"], hdr_root / hdr.merged_filename(b["members"]),
-            b["merged"], b["members"],
-        ))
+        captured = scenes.read_capture_time(jpeg_root / b["base"])
+        targets.append({
+            "scene": b["scene"],
+            "score_path": hdr_root / hdr.merged_filename(b["members"]),
+            "rel": b["merged"], "members": b["members"], "kind": "hdr", "src": None,
+            "exif_path": jpeg_root / b["base"],
+            "captured_at": captured.isoformat() if captured else None,
+        })
     if limit is not None:
         targets = targets[:limit]
 
@@ -348,18 +546,38 @@ def run_scoring(
             click.echo("Face detection + embedding enabled (insightface buffalo_l)")
         face_detect = faces_mod.detect
 
+    # Object detection is opt-in per project: with no target classes nothing is
+    # loaded and the pipeline costs exactly what it did before.
+    object_detect = None
+    classes = [c for c in (subject_classes or []) if c in objects_mod.COCO_CLASSES]
+    if classes:
+        if verbose:
+            click.echo(f"Subject detection enabled (YOLOX-tiny): {', '.join(classes)}")
+        if not objects_mod.is_model_ready():
+            msg = "Downloading the detection model (~20 MB, once)…"
+            if verbose:
+                click.echo(msg)
+            elif progress_cb is not None:
+                progress_cb(0, 0, msg)
+        objects_mod.ensure_model()
+
+        def object_detect(path: str) -> tuple[list[dict[str, Any]], int, int]:
+            return objects_mod.detect(path, classes=classes)
+
     scored: list[dict[str, Any]] = []
     embedding_sink: list[np.ndarray] = []
     if verbose:
         with click.progressbar(targets, label="Scoring", show_pos=True) as bar:
-            for scene, abs_path, rel, members in bar:
+            for t in bar:
                 scored.append(_score_one(
-                    scene, abs_path, rel, members, face_detect, existing_dec, embedding_sink))
+                    t, face_detect, existing_dec, existing_edits, embedding_sink,
+                    object_detect))
     else:
-        for i, (scene, abs_path, rel, members) in enumerate(targets):
-            progress_cb(i, len(targets), rel)
+        for i, t in enumerate(targets):
+            progress_cb(i, len(targets), t["rel"])
             scored.append(_score_one(
-                scene, abs_path, rel, members, face_detect, existing_dec, embedding_sink))
+                t, face_detect, existing_dec, existing_edits, embedding_sink,
+                object_detect))
         progress_cb(len(targets), len(targets), None)
 
     by_scene: dict[str, list[dict[str, Any]]] = {}
@@ -384,12 +602,14 @@ def run_scoring(
         emb_arr = np.zeros((0, 512), dtype=np.float32)
     np.save(emb_path, emb_arr)
 
-    data = db.init_db(photo_dir, jpeg_subdir)
+    data = db.init_db(photo_dir, jpeg_subdir, raw_subdir)
     data["scored_at"] = datetime.now().isoformat()
     data["clustered_at"] = None
     data["people"] = []
     data["brackets"] = brackets_meta
     data["hdr_look"] = look
+    data["subject_classes"] = classes
+    data["vehicles"] = []
     data["photos"] = scored
     db.save(db_path, data)
 
@@ -416,3 +636,10 @@ def run_scoring(
             f"Faces detected — {n_with_faces}/{len(scored)} photos contain faces "
             f"({total_faces} total)"
         )
+        if classes:
+            n_with = sum(1 for p in scored if p["objects"])
+            n_obj = sum(len(p["objects"]) for p in scored)
+            click.echo(
+                f"Subjects detected — {n_with}/{len(scored)} photos contain "
+                f"{', '.join(classes)} ({n_obj} total)"
+            )

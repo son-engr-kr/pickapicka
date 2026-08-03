@@ -40,6 +40,20 @@ def group_by_folder(photos: list[dict[str, Any]]) -> None:
         p["scene"] = parts[0] if len(parts) > 1 else "(none)"
 
 
+def _photo_time(photo: dict[str, Any], jpeg_root: Path) -> datetime | None:
+    """Capture time for grouping: the stored `captured_at` (set at scan time,
+    the only reliable source for RAW), falling back to reading the JPEG file."""
+    ca = photo.get("captured_at")
+    if ca:
+        try:
+            return datetime.fromisoformat(ca)
+        except ValueError:
+            pass
+    if photo.get("type") == "raw":
+        return None  # RAW file isn't PIL-readable; rely on captured_at
+    return read_capture_time(jpeg_root / _scene_ref(photo))
+
+
 def group_by_time_gap(
     photos: list[dict[str, Any]],
     jpeg_root: Path,
@@ -47,9 +61,7 @@ def group_by_time_gap(
 ) -> None:
     """Sort photos by capture time, start a new scene whenever the gap exceeds
     `gap_minutes`. Photos missing EXIF time go to '(no_time)'."""
-    times: list[datetime | None] = [
-        read_capture_time(jpeg_root / _scene_ref(p)) for p in photos
-    ]
+    times: list[datetime | None] = [_photo_time(p, jpeg_root) for p in photos]
     timed = sorted(
         ((i, t) for i, t in enumerate(times) if t is not None),
         key=lambda kv: kv[1],

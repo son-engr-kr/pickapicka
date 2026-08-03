@@ -16,8 +16,9 @@ import sys
 # the entire dependency graph. Lazy-imported in cli.py at runtime, but bundled
 # here at build time. Absolute imports — PyInstaller runs this script as
 # __main__ with no package context, so relative imports would fail.
-from picture_classifier import cli, cluster, db, hdr, scenes, scorer, server, userstate  # noqa: F401
+from picture_classifier import cli, cluster, db, editing, hdr, raw, scenes, scorer, server, userstate  # noqa: F401
 from picture_classifier.scoring import blur, exposure, faces  # noqa: F401
+import rawpy  # noqa: F401  # anchor the native libraw dependency into the bundle
 
 
 def run() -> None:

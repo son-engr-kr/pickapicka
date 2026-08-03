@@ -11,30 +11,45 @@
     <div class="landing-shell">
       <header class="landing-header">
         <h1>Picture Classifier</h1>
-        <p class="landing-tagline">Score your photos for blur, exposure, and faces — then cull fast.</p>
+        <p class="landing-tagline">Score your photos for blur, exposure, and faces — then cull &amp; edit fast.</p>
       </header>
 
       <section class="landing-card">
-        <h2>Start</h2>
-        <div class="start-cards">
-          <button class="start-card" id="start-new" type="button">
-            <span class="start-icon">＋</span>
-            <span class="start-title">New project</span>
-            <span class="start-sub">Pick a photo folder, name it, and we'll score it.</span>
-          </button>
-          <button class="start-card" id="start-open" type="button">
-            <span class="start-icon">📂</span>
-            <span class="start-title">Open project</span>
-            <span class="start-sub">Reopen a project folder you already created.</span>
-          </button>
+        <h2>Workspace</h2>
+        <p class="landing-hint">
+          A workspace is a folder that holds your projects. Create projects by
+          name — each becomes a folder inside the workspace. Your photos stay
+          wherever they are; a project just points at them.
+        </p>
+        <div class="workspace-row">
+          <select id="workspace-select" title="Switch workspace"></select>
+          <button id="workspace-add" class="browse-btn" type="button">Add workspace…</button>
+          <button id="workspace-forget" type="button" title="Remove this workspace from the list">×</button>
         </div>
-        <span id="landing-status"></span>
+        <div class="workspace-path" id="workspace-path"></div>
       </section>
 
       <section class="landing-card">
-        <h2>Recent</h2>
-        <div id="landing-recents"></div>
+        <h2>Projects <span class="count-pill" id="workspace-proj-count"></span></h2>
+        <div id="workspace-projects" class="project-grid"></div>
       </section>
+
+      <section class="landing-card">
+        <details id="landing-other">
+          <summary>Open a project folder directly · recent projects</summary>
+          <div class="start-cards" style="margin-top:12px;">
+            <button class="start-card" id="start-open" type="button">
+              <span class="start-icon">📂</span>
+              <span class="start-title">Open project folder</span>
+              <span class="start-sub">Reopen any project folder, even outside a workspace.</span>
+            </button>
+          </div>
+          <h3 class="landing-subhead">Recent</h3>
+          <div id="landing-recents"></div>
+        </details>
+      </section>
+      <span id="landing-status"></span>
+      <div id="landing-toast" class="hidden"></div>
     </div>
   </div>
 
@@ -42,16 +57,16 @@
     <div class="wizard-shell">
       <header class="wizard-header">
         <h2 id="wizard-title">New project</h2>
-        <span id="wizard-step-indicator">Step 1 of 4</span>
+        <span id="wizard-step-indicator">Step 1 of 3</span>
         <button id="wizard-close" type="button" title="Cancel">×</button>
       </header>
       <div class="wizard-body">
         <section class="wizard-step" data-step="1">
           <h3>1. Where are your photos?</h3>
           <p class="wizard-hint">
-            Pick the folder that contains the JPEGs you want to triage.
-            Sub-folders are scanned recursively. Videos and RAW files are
-            ignored automatically.
+            Pick the folder that contains the photos you want to triage.
+            Sub-folders are scanned recursively. RAW files are included — when a
+            shot has both a RAW and a JPEG, the RAW is used.
           </p>
           <div class="landing-row">
             <label>Photo folder</label>
@@ -59,43 +74,34 @@
             <button type="button" class="browse-btn" id="wiz-photo-browse">Browse…</button>
           </div>
           <details class="landing-advanced">
-            <summary>Advanced</summary>
+            <summary>Advanced (separate RAW / JPEG folders)</summary>
             <div class="landing-row">
               <label>JPEG subfolder</label>
-              <input type="text" id="wiz-jpeg-subdir" placeholder="(leave empty unless RAWs live alongside)" />
+              <input type="text" id="wiz-jpeg-subdir" placeholder="(leave empty unless JPEGs live in a subfolder)" />
               <span class="landing-help">If JPEGs live under <code>JPEG/</code>, enter that name.</span>
+            </div>
+            <div class="landing-row">
+              <label>RAW subfolder</label>
+              <input type="text" id="wiz-raw-subdir" placeholder="(leave empty if RAWs sit next to the JPEGs)" />
+              <span class="landing-help">If RAWs live under <code>RAW/</code>, enter that name.</span>
             </div>
           </details>
         </section>
 
         <section class="wizard-step hidden" data-step="2">
-          <h3>2. Where should the project live?</h3>
+          <h3>2. Name the project &amp; group scenes</h3>
           <p class="wizard-hint">
-            A project folder keeps your decisions, caches, and config together,
-            separate from the photos. You can move it later without affecting
-            the photos.
+            The project is created inside your current workspace. Just give it a
+            name — no need to pick a folder.
           </p>
           <div class="landing-row">
             <label>Project name</label>
             <input type="text" id="wiz-project-name" placeholder="wedding-2025" />
           </div>
-          <div class="landing-row">
-            <label>Project folder</label>
-            <input type="text" id="wiz-project-dir" placeholder="(auto-filled)" />
-            <button type="button" class="browse-btn" id="wiz-project-browse">Browse…</button>
-          </div>
           <p class="landing-help" style="padding-left:120px;">
-            Default: <code>~/PictureClassifier-Projects/&lt;name&gt;/</code>.
+            Creates <code id="wiz-target-hint">&lt;workspace&gt;/&lt;name&gt;/</code>
           </p>
-        </section>
-
-        <section class="wizard-step hidden" data-step="3">
-          <h3>3. How should scenes be grouped?</h3>
-          <p class="wizard-hint">
-            Scenes are how the photos are bucketed in the sidebar. Auto-suggestions
-            (top 30% pick, bottom 30% reject) are computed within each scene.
-            You can change this later without re-scoring.
-          </p>
+          <div class="section-label" style="margin-top:14px;">Group scenes</div>
           <div class="option-cards" id="wiz-scene-cards">
             <button class="option-card active" type="button" data-value="folder">
               <span class="option-title">By folder</span>
@@ -111,10 +117,30 @@
             <input type="number" id="wiz-gap" value="30" min="1" />
             <span class="unit">minutes</span>
           </div>
+
+          <div class="section-label" style="margin-top:14px;">What is this a shoot of?</div>
+          <div class="option-cards" id="wiz-subject-cards">
+            <button class="option-card active" type="button" data-value="">
+              <span class="option-title">Just photos</span>
+              <span class="option-sub">No subject detection. Scoring uses whole-frame sharpness and exposure, plus faces.</span>
+            </button>
+            <button class="option-card" type="button" data-value="vehicle">
+              <span class="option-title">Cars / vehicles</span>
+              <span class="option-sub">Detects cars, trucks, buses and motorcycles: sharpness is measured on the car, and frames without one sort down.</span>
+            </button>
+            <button class="option-card" type="button" data-value="pet">
+              <span class="option-title">Pets</span>
+              <span class="option-sub">Same idea for dogs, cats, birds and horses.</span>
+            </button>
+          </div>
+          <p class="landing-help">
+            Downloads a ~20 MB detection model on first use. You can change this
+            any time from the Subjects panel (it re-scores).
+          </p>
         </section>
 
-        <section class="wizard-step hidden" data-step="4">
-          <h3>4. Ready to create?</h3>
+        <section class="wizard-step hidden" data-step="3">
+          <h3>3. Ready to create?</h3>
           <p class="wizard-hint">
             Review the settings. The first run scores every photo and clusters
             faces, which can take a few minutes for a thousand photos.
@@ -195,6 +221,14 @@
       </div>
       <div id="people-chips"></div>
     </div>
+    <div id="subject-section" class="hidden">
+      <div id="subject-section-head">
+        <h2>Subjects</h2>
+        <button id="subject-settings-btn" title="Choose what to detect">⚙</button>
+      </div>
+      <div id="subject-classes"></div>
+      <div id="subject-groups"></div>
+    </div>
     <ul id="scene-list"></ul>
     <footer id="sidebar-footer">
       <h2>Auto-suggestion</h2>
@@ -234,6 +268,13 @@
       <span id="scene-stats"></span>
       <button id="reject-undecided-btn" title="Mark all undecided photos in this scene as reject" disabled>✕ reject undecided</button>
       <button id="export-picks-btn" title="Copy all PICK photos to a folder" disabled>📁 export picks</button>
+      <button id="peak-btn">◎ focus</button>
+      <span id="peak-level" class="hidden">
+        <button data-peak-level="tight">tight</button><button
+                data-peak-level="normal" class="active">normal</button><button
+                data-peak-level="loose">loose</button>
+      </span>
+      <button id="boxes-btn" class="hidden" title="Show detected subject boxes (B)">▣ boxes</button>
       <button id="hdr-btn" title="Review and fix auto-detected HDR brackets">🌅 HDR</button>
       <button id="rescore-btn" title="Re-run scoring on all photos (preserves decisions)">↻ rescore</button>
     </header>
@@ -432,12 +473,352 @@
     </div>
     <div id="modal-image-wrap">
       <img id="modal-image" alt="" />
+      <img id="modal-peak" class="hidden" alt="" />
+      <div id="modal-boxes" class="hidden"></div>
+      <div id="loupe-box" class="hidden"></div>
+      <div id="loupe-panel" class="hidden">
+        <canvas id="loupe-canvas"></canvas>
+        <span id="loupe-label"></span>
+      </div>
     </div>
     <div id="modal-bottom">
       <span id="modal-decision"></span>
       <button id="modal-compare" class="hidden" title="Toggle HDR merged vs 0 EV original (C)">showing: HDR merged</button>
+      <button id="modal-loupe">🔍 loupe</button>
+      <span id="loupe-scale" class="hidden">
+        <button data-loupe-scale="1">1:1</button><button
+                data-loupe-scale="2">2:1</button><button
+                data-loupe-scale="4">4:1</button>
+      </span>
+      <button id="modal-edit" title="Edit this photo (E)">✎ edit</button>
+      <span id="modal-exif"></span>
       <span id="modal-scores"></span>
-      <span id="modal-help">[1/R reject] [2/V review] [3/P/A pick] [C compare] [U undo] [F fit/100%] [←→ nav] [Esc close]</span>
+      <span id="modal-help">[1/R reject] [2/V review] [3/P/A pick] [C compare] [E edit] [U undo] [F fit/100%] [←→ nav] [Esc close]</span>
+    </div>
+  </div>
+
+  <div id="edit-modal" class="hidden">
+    <div class="edit-box">
+      <header>
+        <h2>Edit</h2>
+        <span id="edit-which">—</span>
+        <button id="edit-modal-close" title="Esc">×</button>
+      </header>
+      <div class="edit-body">
+        <div class="edit-preview">
+          <div class="edit-canvas-wrap">
+            <img id="edit-img" alt="preview" />
+            <canvas id="edit-overlay"></canvas>
+            <span id="edit-tool-hint" class="hidden"></span>
+          </div>
+          <div class="edit-preview-nav">
+            <button id="edit-prev" title="previous photo (←)">‹</button>
+            <button id="edit-compare" title="Hold to see the original (C)">Hold: original</button>
+            <button id="edit-next" title="next photo (→)">›</button>
+          </div>
+          <div class="edit-zoom-bar">
+            <span class="edit-zoom-label">zoom</span>
+            <button class="edit-zoom active" data-zoom="0" title="Fit the whole photo (F)">fit</button>
+            <button class="edit-zoom" data-zoom="0.5">50%</button>
+            <button class="edit-zoom" data-zoom="1" title="Original pixels (F)">100%</button>
+            <button class="edit-zoom" data-zoom="2">200%</button>
+            <span id="edit-zoom-hint">scroll to zoom · drag to pan (space or middle-drag over a mask)</span>
+          </div>
+          <span id="edit-status"></span>
+        </div>
+        <div class="edit-controls">
+          <div class="edit-actionbar">
+            <button id="edit-auto" class="primary" title="Auto-tone from the histogram">✨ Auto</button>
+            <button id="edit-reset"
+                    title="Reset the selected mask, or — on Global — every adjustment and mask">Reset</button>
+            <select id="edit-preset-select" title="Apply a saved preset">
+              <option value="">Presets…</option>
+            </select>
+            <span id="preset-mode">
+              <button data-preset-mode="add" class="active">add</button><button
+                      data-preset-mode="replace">replace</button>
+            </span>
+            <button id="edit-preset-save" title="Save current adjustments as a preset">Save preset…</button>
+            <button id="edit-preset-delete" title="Delete the selected preset">🗑</button>
+          </div>
+
+          <div class="mask-panel">
+            <div class="mask-head">
+              <span class="mask-head-title">Adjust</span>
+              <label class="mask-show" title="Tint the affected area red (\)">
+                <input type="checkbox" id="mask-show" /> show mask (red)
+              </label>
+            </div>
+            <div class="mask-list" id="mask-list"></div>
+            <div class="mask-add">
+              <span class="mask-add-label">＋ local</span>
+              <button class="mask-add-btn" data-add-mask="radial"
+                      title="Radial: drag an ellipse on the photo (R)">◎ Radial</button>
+              <button class="mask-add-btn" data-add-mask="linear"
+                      title="Gradient: drag a direction on the photo (G)">▤ Gradient</button>
+              <button class="mask-add-btn" data-add-mask="brush"
+                      title="Brush: paint on the photo (B)">🖌 Brush</button>
+            </div>
+            <p class="mask-help">Drag the handles on the photo to reshape · Shift constrains ·
+              <kbd>\</kbd> show mask · <kbd>Del</kbd> remove</p>
+            <div class="mask-detail hidden" id="mask-detail">
+              <label class="mask-name-row">
+                <span class="mask-name-label">Name</span>
+                <input type="text" id="mask-name" maxlength="40" />
+              </label>
+              <div class="mask-detail-bar">
+                <button id="mask-invert" title="Adjust the area inside or outside the shape">Affect: inside</button>
+                <button id="mask-duplicate" title="Copy this mask">Duplicate</button>
+                <button id="mask-delete" title="Remove this mask (Delete)">🗑 Delete</button>
+              </div>
+              <label class="look-row"><span class="look-name">Feather</span>
+                <input type="range" id="mask-feather" min="0" max="100" step="1" />
+                <span class="look-val" id="mask-feather-val"></span></label>
+              <label class="look-row"><span class="look-name">Amount</span>
+                <input type="range" id="mask-amount" min="0" max="100" step="1" />
+                <span class="look-val" id="mask-amount-val"></span></label>
+              <div id="mask-brush-tools" class="hidden">
+                <label class="look-row"><span class="look-name">Brush size</span>
+                  <input type="range" id="mask-brush-size" min="5" max="300" step="1" />
+                  <span class="look-val" id="mask-brush-size-val"></span></label>
+                <div class="mask-detail-bar">
+                  <button id="mask-brush-paint" class="active">Paint</button>
+                  <button id="mask-brush-erase" title="Or hold Alt while painting">Erase</button>
+                  <button id="mask-brush-undo" title="Remove the last stroke">↶ Undo stroke</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="mask-context" id="mask-context">Global adjustments</div>
+          <details class="edit-group" open>
+            <summary>Light</summary>
+            <div class="edit-group-body" data-group="light"></div>
+          </details>
+          <details class="edit-group" open>
+            <summary>Color</summary>
+            <div class="edit-group-body" data-group="color"></div>
+          </details>
+          <details class="edit-group" open>
+            <summary>Detail &amp; Effects</summary>
+            <div class="edit-group-body" data-group="detail"></div>
+          </details>
+          <details class="edit-group">
+            <summary>Creative</summary>
+            <div class="edit-group-body" data-group="creative"></div>
+          </details>
+          <details class="edit-group" id="edit-wm-group">
+            <summary>Watermark <span id="wm-summary-state"></span></summary>
+            <div class="wm-body">
+              <label class="wm-toggle">
+                <input type="checkbox" id="wm-enabled" /> Stamp this photo
+              </label>
+              <div class="wm-row">
+                <span class="wm-label">Style</span>
+                <div class="wm-seg" id="wm-style"></div>
+              </div>
+              <div class="wm-row">
+                <span class="wm-label">Position</span>
+                <div class="wm-seg wm-pos" id="wm-position"></div>
+              </div>
+              <label class="wm-row">
+                <span class="wm-label">Name</span>
+                <input type="text" id="wm-name" placeholder="your name" />
+              </label>
+              <label class="wm-row">
+                <span class="wm-label">Camera</span>
+                <input type="text" id="wm-camera" list="wm-camera-list"
+                       placeholder="auto from EXIF" />
+                <datalist id="wm-camera-list"></datalist>
+              </label>
+              <p class="wm-detected" id="wm-detected"></p>
+              <div class="wm-lines">
+                <label class="wm-row"><span class="wm-label">Line 1</span>
+                  <input type="text" id="wm-line1" data-wm-line /></label>
+                <label class="wm-row"><span class="wm-label">Line 2</span>
+                  <input type="text" id="wm-line2" data-wm-line /></label>
+                <label class="wm-row"><span class="wm-label">Line 3</span>
+                  <input type="text" id="wm-line3" data-wm-line /></label>
+                <div class="wm-tokens" id="wm-tokens"></div>
+              </div>
+              <label class="look-row"><span class="look-name">Size</span>
+                <input type="range" id="wm-size" min="30" max="300" step="1" />
+                <span class="look-val" id="wm-size-val"></span></label>
+              <label class="look-row"><span class="look-name">Opacity</span>
+                <input type="range" id="wm-opacity" min="0" max="100" step="1" />
+                <span class="look-val" id="wm-opacity-val"></span></label>
+              <label class="look-row"><span class="look-name">Inset</span>
+                <input type="range" id="wm-margin" min="0" max="300" step="1" />
+                <span class="look-val" id="wm-margin-val"></span></label>
+              <div class="wm-row">
+                <span class="wm-label">Colour</span>
+                <input type="color" id="wm-color" />
+                <button id="wm-white" class="linkish">white</button>
+                <button id="wm-black" class="linkish">black</button>
+              </div>
+              <p class="wm-note">
+                Not drawn on grid thumbnails — it would be unreadable at tile
+                size. Shows in the editor, the viewer and the export.
+              </p>
+            </div>
+          </details>
+          <details class="edit-group" open id="edit-curve-group">
+            <summary>Tone curve</summary>
+            <div class="edit-curve-wrap">
+              <canvas id="edit-curve" width="256" height="256"></canvas>
+            </div>
+            <button id="edit-curve-reset" class="linkish">Reset curve</button>
+          </details>
+        </div>
+      </div>
+      <footer>
+        <span id="edit-dirty"></span>
+        <button id="edit-apply-more">Apply to more…</button>
+        <button id="edit-cancel">Cancel</button>
+        <button id="edit-save" class="primary" disabled>Save</button>
+      </footer>
+    </div>
+  </div>
+
+  <div id="subject-modal" class="hidden">
+    <div class="subject-box">
+      <header>
+        <h2>Subject detection</h2>
+        <button id="subject-modal-close" title="Esc">×</button>
+      </header>
+      <div class="subject-body">
+        <p class="subject-intro">
+          Pick what this project is a shoot <em>of</em>. Detected subjects drive
+          three things: photos without one sort down, sharpness is measured on
+          the subject instead of the whole frame, and look-alike subjects get
+          grouped so you can filter by them.
+        </p>
+        <div class="subject-presets" id="subject-presets"></div>
+        <label class="subject-search-row">
+          <span>Classes</span>
+          <input type="text" id="subject-search" placeholder="filter the 80 COCO classes…" />
+        </label>
+        <div id="subject-class-picker"></div>
+        <p class="subject-note" id="subject-model-note"></p>
+        <div id="subject-group-editor">
+          <h3>Groups</h3>
+          <p class="subject-note">
+            Grouping is by appearance — colour and how it sits on the shape.
+            Two cars of the same colour and shape will land in one group; rename
+            or hide anything it gets wrong.
+          </p>
+          <div id="subject-group-rows"></div>
+        </div>
+      </div>
+      <footer>
+        <span id="subject-status"></span>
+        <button id="subject-cancel">Cancel</button>
+        <button id="subject-apply" class="primary">Save &amp; re-score</button>
+      </footer>
+    </div>
+  </div>
+
+  <div id="selection-bar" class="hidden">
+    <span id="selection-count"></span>
+    <button id="selection-download">⬇ download</button>
+    <button id="selection-apply" class="primary">Apply edit / preset…</button>
+    <button id="selection-clear" type="button">Clear</button>
+  </div>
+
+  <div id="download-toast" class="hidden"></div>
+
+  <div id="bulk-modal" class="hidden">
+    <div class="bulk-box">
+      <header>
+        <h2>Apply adjustments to many</h2>
+        <button id="bulk-modal-close" title="Esc">×</button>
+      </header>
+      <div class="bulk-body">
+        <p class="bulk-hint">
+          Apply an edit to several photos at once. Non-destructive — the
+          originals are never modified.
+        </p>
+        <div class="bulk-row" style="align-items:flex-start;">
+          <label>Apply to</label>
+          <div class="option-cards" id="bulk-scope-cards">
+            <button class="option-card" type="button" data-value="selected">
+              <span class="option-title">Selected</span>
+              <span class="option-sub" id="bulk-n-selected">—</span>
+            </button>
+            <button class="option-card" type="button" data-value="scene">
+              <span class="option-title">Whole scene</span>
+              <span class="option-sub" id="bulk-n-scene">—</span>
+            </button>
+            <button class="option-card" type="button" data-value="picks">
+              <span class="option-title">All picks</span>
+              <span class="option-sub" id="bulk-n-picks">—</span>
+            </button>
+          </div>
+        </div>
+        <div class="bulk-row" style="align-items:flex-start;">
+          <label>Adjustment</label>
+          <div class="option-cards" id="bulk-source-cards">
+            <button class="option-card" type="button" data-value="current">
+              <span class="option-title">Current editor edit</span>
+              <span class="option-sub">The adjustments open in the editor now.</span>
+            </button>
+            <button class="option-card" type="button" data-value="preset">
+              <span class="option-title">A preset</span>
+              <span class="option-sub">Pick one of your saved presets below.</span>
+            </button>
+            <button class="option-card" type="button" data-value="clear">
+              <span class="option-title">Clear edits</span>
+              <span class="option-sub">Remove all adjustments from the targets.</span>
+            </button>
+          </div>
+        </div>
+        <div class="bulk-row" id="bulk-preset-row">
+          <label>Preset</label>
+          <select id="bulk-preset-select"><option value="">Choose a preset…</option></select>
+        </div>
+        <div class="bulk-row" id="bulk-mode-row">
+          <label>Apply as</label>
+          <span id="bulk-mode">
+            <button data-bulk-mode="add" type="button" class="active">add on top</button><button
+                    data-bulk-mode="replace" type="button">replace</button>
+          </span>
+          <span class="bulk-mode-note" id="bulk-mode-note"></span>
+        </div>
+        <div id="bulk-status"></div>
+      </div>
+      <footer>
+        <span id="bulk-summary"></span>
+        <button id="bulk-cancel" type="button">Cancel</button>
+        <button id="bulk-confirm" type="button" class="primary">Apply</button>
+      </footer>
+    </div>
+  </div>
+
+  <div id="relink-modal" class="hidden">
+    <div class="relink-box">
+      <header>
+        <h2>Photos not found</h2>
+        <button id="relink-close" type="button" title="Esc">×</button>
+      </header>
+      <div class="relink-body">
+        <p class="relink-hint">
+          This project's photo folder isn't where it used to be (moved, renamed,
+          or on a drive that's disconnected). Pick the new location and I'll
+          re-link the photos — matching by folder structure first, then by file
+          name for anything that moved around.
+        </p>
+        <div class="relink-row"><label>Was</label><code id="relink-old"></code></div>
+        <div class="relink-row">
+          <label>Now</label>
+          <input type="text" id="relink-new" placeholder="/new/path/to/photos" />
+          <button id="relink-browse" class="browse-btn" type="button">Browse…</button>
+        </div>
+        <div id="relink-status"></div>
+      </div>
+      <footer>
+        <button id="relink-cancel" type="button">Cancel</button>
+        <button id="relink-confirm" type="button" class="primary">Re-link &amp; open</button>
+      </footer>
     </div>
   </div>
 
