@@ -1002,9 +1002,9 @@ body.landing-mode #welcome-banner { display: none !important; }
 #boxes-btn.hidden { display: none; }
 
 /* subject settings dialog */
-#subject-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8);
+#subject-modal, #rescore-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8);
   display: flex; align-items: center; justify-content: center; z-index: 190; }
-#subject-modal.hidden { display: none; }
+#subject-modal.hidden, #rescore-modal.hidden { display: none; }
 .subject-box { background: var(--bg-2); border: 1px solid var(--border);
   border-radius: 8px; width: min(640px, 94vw); max-height: 92vh;
   display: flex; flex-direction: column; }

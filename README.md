@@ -98,8 +98,8 @@ network.
   exposure-fuses each into one photo, with a tunable real-estate "look"
   (shadow lift, local contrast, saturation) and an HDR-vs-0 EV compare toggle.
 - **Subject detection (cars, pets, anything COCO)**: tell a project what it is
-  a shoot *of* — at creation, or any time afterwards from the **Subjects** panel's
-  ⚙ (it re-scores) — and object detection joins the scoring — frames missing the
+  a shoot *of* — at creation, or any time afterwards: *↻ rescore* asks, since
+  changing it is what a re-score is for — and object detection joins the scoring — frames missing the
   subject sort down, prominence counts, and **sharpness is measured on the
   subject instead of the whole frame** (so a panned or bokeh'd shot of a tack-
   sharp car stops reading as blurry). Boxes overlay the grid and viewer with
@@ -118,11 +118,13 @@ network.
   size and confidence so background traffic is ignored. Loosening the subject
   distance from 0.15 to 0.45 on the same shoot goes from 1 group to 3, so it is
   worth a try when the grouping looks wrong. Settings survive a re-score.
-- **One button for scoring and grouping**: scoring recomputes face embeddings,
-  which discards every group — so *↻ rescore* now re-groups in the same run
+- **One button for scoring and grouping**: *↻ rescore* opens a dialog asking
+  what to detect, then scores and groups in one run. Scoring recomputes face
+  embeddings, which discards every group, so grouping follows automatically
   rather than leaving a project with faces and nobody grouped into them. *↻
   group* on its own re-groups without re-scoring, which is what you want after
-  changing a setting.
+  changing a grouping setting. The Subjects ⚙ is for renaming and hiding groups
+  and never re-scores — doing so would throw away the names you just typed.
 - **Face clustering**: detects faces with `insightface` and clusters them
   per-person via DBSCAN on embeddings.
 - **Drag-and-drop people priority**: rank face clusters by importance; photos

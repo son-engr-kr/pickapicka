@@ -226,7 +226,7 @@
     <div id="subject-section" class="hidden">
       <div id="subject-section-head">
         <h2>Subjects</h2>
-        <button id="subject-settings-btn" title="Choose what to detect">⚙</button>
+        <button id="subject-settings-btn" title="Rename or hide subject groups">⚙</button>
       </div>
       <div id="subject-classes"></div>
       <div id="subject-groups"></div>
@@ -770,18 +770,20 @@
     </div>
   </div>
 
-  <div id="subject-modal" class="hidden">
+  <!-- What to detect lives with the action that applies it: changing it means
+       re-scoring, so it is the re-score dialog rather than a settings panel. -->
+  <div id="rescore-modal" class="hidden">
     <div class="subject-box">
       <header>
-        <h2>Subject detection</h2>
-        <button id="subject-modal-close" title="Esc">×</button>
+        <h2>Re-score photos</h2>
+        <button id="rescore-modal-close" title="Esc">&times;</button>
       </header>
       <div class="subject-body">
         <p class="subject-intro">
-          Pick what this project is a shoot <em>of</em>. Detected subjects drive
-          three things: photos without one sort down, sharpness is measured on
-          the subject instead of the whole frame, and look-alike subjects get
-          grouped so you can filter by them.
+          Scoring measures sharpness and exposure and detects faces. Pick what
+          this project is a shoot <em>of</em> and it detects that too: photos
+          without one sort down, sharpness is measured on the subject instead of
+          the whole frame, and look-alike subjects get grouped.
         </p>
         <div class="subject-presets" id="subject-presets"></div>
         <label class="subject-search-row">
@@ -790,12 +792,34 @@
         </label>
         <div id="subject-class-picker"></div>
         <p class="subject-note" id="subject-model-note"></p>
+        <p class="subject-note">
+          Decisions and edits are preserved. Grouping runs straight afterwards,
+          because scoring rebuilds the face embeddings the groups are built from.
+        </p>
+      </div>
+      <footer>
+        <span id="rescore-status"></span>
+        <button id="rescore-cancel">Cancel</button>
+        <button id="rescore-go" class="primary">Re-score</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Renaming and hiding groups is curation of a finished result, so it stays
+       on the Subjects panel and never re-scores. -->
+  <div id="subject-modal" class="hidden">
+    <div class="subject-box">
+      <header>
+        <h2>Subject groups</h2>
+        <button id="subject-modal-close" title="Esc">&times;</button>
+      </header>
+      <div class="subject-body">
         <div id="subject-group-editor">
-          <h3>Groups</h3>
           <p class="subject-note">
             Grouping is by appearance — colour and how it sits on the shape.
             Two cars of the same colour and shape will land in one group; rename
-            or hide anything it gets wrong.
+            or hide anything it gets wrong. Changing what is detected is part of
+            <em>&#8635; rescore</em>.
           </p>
           <div id="subject-group-rows"></div>
         </div>
@@ -803,7 +827,7 @@
       <footer>
         <span id="subject-status"></span>
         <button id="subject-cancel">Cancel</button>
-        <button id="subject-apply" class="primary">Save &amp; re-score</button>
+        <button id="subject-apply" class="primary">Save</button>
       </footer>
     </div>
   </div>

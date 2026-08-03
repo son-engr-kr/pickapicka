@@ -216,7 +216,7 @@ const SHORTCUT_TIPS = {
   "#peak-btn": ["Highlight what is actually in focus", "K"],
   "#boxes-btn": ["Show detected subject boxes", "B"],
   "#hdr-btn": ["Review and fix auto-detected HDR brackets", null],
-  "#rescore-btn": ["Re-score every photo, then re-group. Keeps decisions", null],
+  "#rescore-btn": ["Choose what to detect and re-score. Keeps decisions", null],
   "#people-cluster-btn": ["Group faces into people and subjects into groups", null],
   "#cluster-settings-btn": ["How strictly to group faces and subjects", null],
   "#people-manage-btn": ["Rename people, set priority, exclude clusters", null],
@@ -513,8 +513,8 @@ function renderSubjectPanel() {
   if (!on) {
     $("#subject-classes").innerHTML =
       `<div class="subject-empty">Not detecting anything in this project. ` +
-      `Use ⚙ to pick what it is a shoot of — cars, pets, anything COCO. ` +
-      `Turning it on re-scores the photos.</div>`;
+      `Press <b>↻ rescore</b> and pick what it is a shoot of — cars, pets, ` +
+      `anything COCO.</div>`;
     $("#subject-groups").innerHTML = "";
     return;
   }
@@ -739,16 +739,30 @@ function syncModalPeak() {
 // ---------- subject settings ----------
 const subjectEdit = { classes: new Set(), search: "" };
 
-function openSubjectModal() {
+// The re-score dialog owns *what to detect*, because changing it means
+// re-scoring anyway. It used to live in a settings panel that was itself hidden
+// on projects which had never detected anything — so a car shoot created as
+// "just photos" had no way in at all.
+function openRescoreModal() {
   subjectEdit.classes = new Set(state.subjects.classes || []);
   subjectEdit.search = "";
   $("#subject-search").value = "";
-  $("#subject-status").textContent = "";
+  $("#rescore-status").textContent = "";
   $("#subject-model-note").textContent = state.subjects.model_ready
     ? "Detection model ready."
     : "First run downloads a ~20 MB detection model (YOLOX-tiny, Apache-2.0).";
+  $("#rescore-go").textContent = `Re-score ${state.photos.length} photos`;
   renderSubjectPresets();
   renderSubjectClassPicker();
+  $("#rescore-modal").classList.remove("hidden");
+}
+
+function closeRescoreModal() { $("#rescore-modal").classList.add("hidden"); }
+
+// Groups are curation of a finished result, so this never re-scores: doing so
+// would discard the groups and undo the renaming along with them.
+function openSubjectModal() {
+  $("#subject-status").textContent = "";
   renderSubjectGroupEditor();
   $("#subject-modal").classList.remove("hidden");
 }
@@ -835,23 +849,15 @@ async function saveSubjectGroups() {
 
 async function applySubjectSettings() {
   if (!await saveSubjectGroups()) return;
+  renderSubjectPanel();
+  renderGrid();
+  closeSubjectModal();
+}
+
+// Always re-scores, even when the classes were left alone: this dialog *is* the
+// re-score button, so pressing go has to do what the button says.
+async function runRescore() {
   const next = [...subjectEdit.classes];
-  const prev = state.subjects.classes || [];
-  const changed = next.length !== prev.length || next.some((c) => !prev.includes(c));
-  if (!changed) {
-    renderSubjectPanel();
-    renderGrid();
-    closeSubjectModal();
-    return;
-  }
-  const ok = confirm(
-    next.length
-      ? `Re-score all ${state.photos.length} photos detecting: ${next.join(", ")}?\n\n` +
-        `Decisions and edits are preserved.`
-      : `Turn subject detection off and re-score all ${state.photos.length} photos?\n\n` +
-        `Decisions and edits are preserved.`
-  );
-  if (!ok) return;
   const res = await fetch("/api/score", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -859,10 +865,10 @@ async function applySubjectSettings() {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    $("#subject-status").textContent = "re-score failed: " + (err.detail || res.status);
+    $("#rescore-status").textContent = "re-score failed: " + (err.detail || res.status);
     return;
   }
-  closeSubjectModal();
+  closeRescoreModal();
   $("#score-progress").classList.remove("hidden");
   $("#score-bar-fill").style.width = "0%";
   $("#score-progress-text").textContent = "starting…";
@@ -4152,9 +4158,12 @@ function bindUi() {
   $("#next-page").addEventListener("click", () => gotoPage(+1));
   $("#modal-close").addEventListener("click", closeModal);
   $("#modal-compare").addEventListener("click", toggleCompare);
-  $("#rescore-btn").addEventListener("click", startRescore);
+  $("#rescore-btn").addEventListener("click", openRescoreModal);
   // Subjects
   $("#subject-settings-btn").addEventListener("click", openSubjectModal);
+  $("#rescore-modal-close").addEventListener("click", closeRescoreModal);
+  $("#rescore-cancel").addEventListener("click", closeRescoreModal);
+  $("#rescore-go").addEventListener("click", runRescore);
   $("#subject-modal-close").addEventListener("click", closeSubjectModal);
   $("#subject-cancel").addEventListener("click", closeSubjectModal);
   $("#subject-apply").addEventListener("click", applySubjectSettings);
@@ -4650,31 +4659,6 @@ function pollClusterStatus() {
 // ---------- Scoring trigger ----------
 let scorePollTimer = null;
 
-async function startRescore() {
-  const total = state.photos.length;
-  const ok = confirm(
-    `Re-score all ${total} photos, then re-group?\n\n` +
-    `Scoring recomputes face embeddings, which discards the existing groups — ` +
-    `so grouping runs straight afterwards in the same pass.\n` +
-    `Decisions and edits are preserved, but disabled while it runs.`,
-  );
-  if (!ok) return;
-  const res = await fetch("/api/score", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ with_faces: false }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    alert("Rescore failed: " + (err.detail || res.status));
-    return;
-  }
-  $("#score-progress").classList.remove("hidden");
-  $("#score-bar-fill").style.width = "0%";
-  $("#score-progress-text").textContent = "starting…";
-  $("#score-current").textContent = "";
-  pollScoreStatus();
-}
 
 function pollScoreStatus() {
   if (scorePollTimer) clearInterval(scorePollTimer);
