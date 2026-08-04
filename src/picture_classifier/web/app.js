@@ -286,6 +286,20 @@ function hydrateIcons(root) {
   (root || document).querySelectorAll("[data-icon]").forEach((el) => {
     if (el.dataset.iconDone) return;
     el.dataset.iconDone = "1";
+    // The label goes in a span and an icon-only control is marked as such,
+    // because CSS cannot tell the two apart on its own: :only-child counts
+    // elements and not text, so a button holding an icon and a bare text node
+    // matched "icon only" and got squashed to a square with its words cut off.
+    const text = el.textContent.trim();
+    if (text) {
+      el.textContent = "";
+      const span = document.createElement("span");
+      span.className = "btn-label";
+      span.textContent = text;
+      el.appendChild(span);
+    } else {
+      el.classList.add("icon-only");
+    }
     el.insertAdjacentHTML("afterbegin", icon(el.dataset.icon));
   });
 }

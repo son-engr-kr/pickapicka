@@ -1,24 +1,75 @@
 :root {
-  --bg: #0e0e10;
-  --bg-2: #161618;
-  --bg-3: #1f1f23;
-  --fg: #e8e8ea;
-  --fg-dim: #9a9aa3;
-  --border: #2a2a30;
-  --pick: #3aa83a;
-  --review: #d6a31a;
-  --reject: #d84545;
-  --auto-pick: #1f4a1f;
-  --auto-review: #5a4109;
-  --auto-reject: #5e1c1c;
-  --accent: #4a90e2;
-  --header-h: 48px;
+  /* ---- surfaces ---------------------------------------------------------
+     Four steps, each one used for one thing, so depth reads consistently:
+     canvas is the page, panel is the rails, raised is a control at rest,
+     sunken is a well a control sits in. */
+  --canvas: #0d0d10;
+  --panel: #15151a;
+  --raised: #1e1e25;
+  --sunken: #101014;
+  --overlay: rgba(6, 6, 9, 0.72);
+
+  /* ---- ink -------------------------------------------------------------- */
+  --ink: #e9e9ee;
+  --ink-dim: #9b9baa;
+  --ink-faint: #6d6d7c;
+
+  /* ---- lines ------------------------------------------------------------ */
+  --line: #26262f;
+  --line-strong: #35353f;
+
+  /* ---- accent and state ------------------------------------------------- */
+  --accent: #5b8def;
+  --accent-ink: #ffffff;
+  --accent-quiet: #1c2a45;
+  --focus: #7aa7ff;
+
+  --pick: #46a758;
+  --review: #d4a02c;
+  --reject: #e05252;
+  --auto-pick: #1d3d24;
+  --auto-review: #45360d;
+  --auto-reject: #4d1d1d;
+
+  /* ---- type ------------------------------------------------------------
+     Four sizes. Anything that wanted a fifth wanted one of these instead. */
+  --fs-xs: 10.5px;   /* meta, counts, captions */
+  --fs-sm: 11.5px;   /* controls, chips */
+  --fs-md: 13px;     /* body */
+  --fs-lg: 15px;     /* dialog titles */
+  --font: -apple-system, "SF Pro Text", system-ui, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+
+  /* ---- space -----------------------------------------------------------
+     A 4px scale. Every gap and pad picks from here rather than inventing a
+     number, which is what made the panels look assembled. */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+
+  --r1: 4px;         /* controls */
+  --r2: 7px;         /* cards, panels */
+  --r3: 10px;        /* dialogs */
+
+  --header-h: 46px;
+  --sidebar-w: 288px;
+
+  /* Legacy names, still referenced in places this pass did not reach. Pointed
+     at the new tokens so nothing is left with two sources of truth. */
+  --bg: var(--canvas);
+  --bg-2: var(--panel);
+  --bg-3: var(--raised);
+  --fg: var(--ink);
+  --fg-dim: var(--ink-dim);
+  --border: var(--line);
 }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
   font-family: -apple-system, "SF Pro Text", system-ui, sans-serif; font-size: 13px; }
-body { display: grid; grid-template-columns: 280px 1fr; }
+body { display: grid; grid-template-columns: var(--sidebar-w) 1fr; }
 body.landing-mode { grid-template-columns: 1fr; }
 body.landing-mode > #sidebar, body.landing-mode > #main { display: none; }
 
@@ -1184,7 +1235,8 @@ body.landing-mode #welcome-banner { display: none !important; }
 /* A button holding an icon becomes a flex row, so the gap does the spacing and
    the two stay on one baseline whatever the label says. */
 button:has(> .icon), .start-card:has(.icon), span:has(> .icon) {
-  display: inline-flex; align-items: center; justify-content: center; gap: 0.45em; }
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.45em;
+  white-space: nowrap; }
 .tile-edit-btn:has(> .icon) { display: inline-flex; }
 .mask-icon .icon, .drag-handle { opacity: 0.8; }
 /* The reorder grip: dots drawn in CSS rather than typed as a glyph. */
@@ -1193,3 +1245,192 @@ button:has(> .icon), .start-card:has(.icon), span:has(> .icon) {
   background-size: 5px 5px; background-position: 0 3px; opacity: 0.45; }
 .drag-handle:hover { opacity: 0.8; }
 .project-new-icon .icon { width: 1.6em; height: 1.6em; }
+
+/* =====================================================================
+   Controls
+   One button, one input, one checkbox, appended last so they win over the
+   per-feature rules that accumulated above. Variants are opt-in classes;
+   everything else inherits the same shape, weight and focus treatment.
+   ===================================================================== */
+
+button, .btn {
+  font: inherit; font-size: var(--fs-sm); color: var(--ink);
+  background: var(--raised); border: 1px solid var(--line);
+  border-radius: var(--r1); padding: 5px 10px; cursor: pointer;
+  transition: background 90ms ease, border-color 90ms ease, color 90ms ease;
+}
+button:hover:not(:disabled), .btn:hover { background: #262630; border-color: var(--line-strong); }
+button:active:not(:disabled) { background: #2c2c38; }
+button:disabled { opacity: 0.38; cursor: default; }
+
+/* One visible focus ring, keyboard only, on every interactive thing. There
+   was effectively none before. */
+:where(button, .btn, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus); outline-offset: 1px; }
+
+button.primary, .btn.primary {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+  font-weight: 550; }
+button.primary:hover:not(:disabled) { background: #6d9bf5; border-color: #6d9bf5; }
+
+button.quiet {
+  background: transparent; border-color: transparent; color: var(--ink-dim); }
+button.quiet:hover:not(:disabled) { background: var(--raised); color: var(--ink); }
+
+button.danger:hover:not(:disabled) {
+  background: #3a1d1d; border-color: var(--reject); color: #ffd9d9; }
+
+/* Icon-only: square, so a row of them lines up. Flagged by hydrateIcons rather
+   than guessed at with :only-child, which cannot see a bare text node. */
+button.icon-only { padding: 5px; width: 26px; height: 26px; flex: 0 0 auto; }
+button:has(> .icon):not(.icon-only) { flex: 0 0 auto; }
+
+input[type="text"], input[type="number"], input[type="search"], select, textarea {
+  font: inherit; font-size: var(--fs-sm); color: var(--ink);
+  background: var(--sunken); border: 1px solid var(--line);
+  border-radius: var(--r1); padding: 5px 8px; }
+input::placeholder { color: var(--ink-faint); }
+
+input[type="checkbox"] { accent-color: var(--accent); width: 13px; height: 13px; }
+input[type="range"] { accent-color: var(--accent); }
+
+/* =====================================================================
+   Sidebar
+   Was five sections all expanded at once in a 288px rail, with the
+   scene-grouping cards overflowing it: a two-column grid of descriptive
+   cards cannot fit, and grid items default to min-width:auto so the copy
+   pushed straight past the edge. Grouping is a segmented control now, the
+   filters come first because they are used most, and the panels below are
+   collapsible.
+   ===================================================================== */
+
+#sidebar { background: var(--panel); border-right: 1px solid var(--line);
+  width: var(--sidebar-w); }
+#sidebar header { padding: var(--s3); gap: var(--s2); }
+#sidebar h1 { font-size: var(--fs-xs); letter-spacing: 0.8px;
+  color: var(--ink-faint); margin: 0; }
+#overall-progress { font-size: var(--fs-xs); color: var(--ink-dim);
+  line-height: 1.5; }
+
+/* The grouping choice: a segmented control, which fits and reads faster than
+   two paragraphs. The explanation moves to the tooltip. */
+#scene-grouping .section-label { font-size: var(--fs-xs); letter-spacing: 0.6px; }
+#scene-grouping .option-cards {
+  display: flex; background: var(--sunken); border: 1px solid var(--line);
+  border-radius: var(--r1); padding: 2px; gap: 2px; }
+#scene-grouping .option-card {
+  flex: 1 1 0; min-width: 0;              /* the actual overflow fix */
+  align-items: center; justify-content: center; text-align: center;
+  padding: 4px 6px; background: transparent; border: 0; border-radius: 3px;
+  box-shadow: none; }
+#scene-grouping .option-card:hover { background: var(--raised); }
+#scene-grouping .option-card.active {
+  background: var(--accent); border-color: transparent; box-shadow: none; }
+#scene-grouping .option-card.active .option-title { color: var(--accent-ink); }
+#scene-grouping .option-card .option-icon,
+#scene-grouping .option-card .option-sub { display: none; }
+#scene-grouping .option-card .option-title {
+  font-size: var(--fs-sm); font-weight: 500; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+
+#filter-row { padding: var(--s2) var(--s3); gap: var(--s1);
+  border-bottom: 1px solid var(--line); }
+.filter { font-size: var(--fs-sm); padding: 4px 9px; border-radius: 999px;
+  background: transparent; border-color: var(--line); color: var(--ink-dim); }
+.filter:hover { color: var(--ink); }
+.filter.active { background: var(--accent); border-color: var(--accent);
+  color: var(--accent-ink); font-weight: 550; }
+
+#people-section, #subject-section { padding: var(--s3);
+  border-bottom: 1px solid var(--line); }
+#people-section-head, #subject-section-head {
+  display: flex; align-items: center; gap: var(--s1); margin-bottom: var(--s2); }
+#people-section-head h2, #subject-section-head h2 {
+  flex: 1; margin: 0; font-size: var(--fs-xs); font-weight: 600;
+  letter-spacing: 0.8px; text-transform: uppercase; color: var(--ink-faint); }
+#people-empty, .subject-empty { font-size: var(--fs-xs); color: var(--ink-faint);
+  line-height: 1.5; }
+
+/* Scoring formula: reference material, not something to keep on screen. */
+#sidebar-footer { padding: var(--s2) var(--s3); border-top: 1px solid var(--line);
+  font-size: var(--fs-xs); color: var(--ink-faint); }
+#sidebar-footer .criteria, #sidebar-footer .criteria + * { display: none; }
+#sidebar-footer h2 { font-size: var(--fs-xs); letter-spacing: 0.8px; margin: 0; }
+
+/* Nothing in the rail may push it wider than it is. */
+#sidebar, #sidebar * { min-width: 0; }
+#sidebar { overflow-x: hidden; }
+
+/* =====================================================================
+   Top bar and grid
+   The bar was a wrapping pile of differently-shaped buttons. Grouped now:
+   scene and paging on the left, view density in the middle, the tools that
+   act on the whole set on the right, all one height.
+   ===================================================================== */
+
+/* min-height, not height: the bar wraps to a second row on a narrow window, and
+   pinning it to one row put that row underneath the grid where it could not be
+   seen or clicked. */
+#main > header, #grid-header {
+  min-height: var(--header-h); height: auto; flex-wrap: wrap;
+  padding: var(--s2) var(--s3); gap: var(--s2) var(--s2);
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  align-content: center; }
+#main > header button { height: 26px; }
+#scene-title, #shown-count { font-size: var(--fs-sm); color: var(--ink-dim); }
+#scene-title { font-weight: 600; color: var(--ink); }
+
+#cols-toggle { display: inline-flex; background: var(--sunken);
+  border: 1px solid var(--line); border-radius: var(--r1); padding: 2px; gap: 2px; }
+#cols-toggle .cols { border: 0; background: transparent; padding: 3px 9px;
+  border-radius: 3px; color: var(--ink-dim); }
+#cols-toggle .cols:hover { background: var(--raised); color: var(--ink); }
+#cols-toggle .cols.active { background: var(--accent); color: var(--accent-ink);
+  font-weight: 550; }
+
+.tile { border-radius: var(--r2); border: 1px solid var(--line);
+  background: var(--sunken); overflow: hidden; }
+.tile.focused { border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-quiet); }
+.tile-name { font-size: var(--fs-xs); color: var(--ink-dim);
+  font-family: var(--mono); }
+.badge, .auto-badge { font-size: var(--fs-xs); font-weight: 600;
+  letter-spacing: 0.4px; border-radius: 3px; padding: 2px 6px; }
+
+/* =====================================================================
+   Dialogs
+   Seven of them, each with its own shell. Until they are unified (#3) they
+   at least share a surface, a radius, a title size and a footer.
+   ===================================================================== */
+
+#relink-modal, #bulk-modal, #people-modal, #hdr-modal, #hdr-look-modal,
+#export-modal, #subject-modal, #rescore-modal, #cluster-modal, #edit-modal,
+#photo-modal { background: var(--overlay); }
+
+.people-box, .subject-box, .cluster-box, .bulk-box, .relink-box, .export-box,
+.hdr-box, .hdr-look-box, .edit-box {
+  background: var(--panel); border: 1px solid var(--line-strong);
+  border-radius: var(--r3); box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55); }
+
+.people-box header h2, .subject-box header h2, .cluster-box header h2,
+.bulk-box header h2, .export-box header h2, .hdr-box header h2 {
+  font-size: var(--fs-lg); font-weight: 600; letter-spacing: -0.1px; }
+
+.people-box footer, .subject-box footer, .cluster-box footer,
+.bulk-box footer, .export-box footer {
+  border-top: 1px solid var(--line); padding: var(--s3); gap: var(--s2); }
+
+/* =====================================================================
+   Editor panel
+   ===================================================================== */
+
+.edit-controls { background: var(--panel); }
+.edit-group > summary { font-size: var(--fs-xs); font-weight: 600;
+  letter-spacing: 0.8px; text-transform: uppercase; color: var(--ink-faint);
+  padding: var(--s2) 0; cursor: pointer; }
+.look-row { font-size: var(--fs-sm); }
+.look-name { color: var(--ink-dim); }
+.look-val { font-family: var(--mono); font-size: var(--fs-xs);
+  color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+.mask-context { font-size: var(--fs-xs); color: var(--ink-faint);
+  letter-spacing: 0.6px; text-transform: uppercase; }
