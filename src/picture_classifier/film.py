@@ -45,20 +45,20 @@ DEFAULT_FILM: dict[str, Any] = {
     "stock": "",          # which preset these came from, for the UI only
     "strength": 100,      # blend the whole chain against the ungraded input
     # --- characteristic curve -------------------------------------------
-    "contrast": 45,       # slope of the straight-line section
-    "toe": 40,            # how pronounced the shadow roll-off is
+    "contrast": 69,       # how far towards the film response to go
+    "toe": 60,            # how pronounced the shadow roll-off is
     "shoulder": 45,       # how pronounced the highlight roll-off is
     # --- colour ---------------------------------------------------------
-    "crosstalk": 25,      # strength of the dye-density matrix
-    "warmth": 0,          # -100 cool .. +100 warm, as a density offset
-    "split": 0,           # crossover: which way shadows and highlights part
+    "crosstalk": 61,      # strength of the dye-density matrix
+    "warmth": 32,         # -100 cool .. +100 warm, as a density offset
+    "split": -33,         # crossover: which way shadows and highlights part
     # --- halation -------------------------------------------------------
-    "halation": 30,
-    "halation_radius": 35,
+    "halation": 66,
+    "halation_radius": 29,
     # --- grain ----------------------------------------------------------
-    "grain": 35,
-    "grain_size": 40,
-    "grain_rough": 55,    # how correlated the structure is
+    "grain": 86,
+    "grain_size": 0,      # 0 is the finest grain that survives being looked at
+    "grain_rough": 49,    # how correlated the structure is
 }
 
 _RANGES: dict[str, tuple[float, float]] = {
@@ -83,6 +83,10 @@ _LUT_N = 256
 # six stops either side is about the latitude of a colour negative.
 _MID_GREY = 0.18
 _LATITUDE = 6.0
+
+# The preview size the grain lattice is calibrated against: at this width,
+# size 0 is 2.5 px per crystal and size 100 is 8 px.
+_GRAIN_REF = 1400.0
 
 
 def normalize(raw: Any) -> dict[str, Any] | None:
@@ -128,26 +132,32 @@ def _density_curve(f: dict[str, Any]) -> np.ndarray:
     sigmoid cannot do, and the whole thing stays monotone so no tone inverts.
     """
     x = np.linspace(0.0, 1.0, _LUT_N, dtype=np.float64)
-    # Into log exposure, in stops around mid grey. Anchoring on mid grey is the
-    # point: the response has to reshape contrast *about* the middle, and a range
-    # measured from an epsilon instead spans eleven decades, which puts mid grey
-    # up at 0.94 and makes every stock a brightening filter.
+    # Into log exposure, in stops around mid grey.
     lin = np.clip(x, _EPS, 1.0) ** 2.2
     stops = np.log2(lin / _MID_GREY)
     t = np.clip((stops + _LATITUDE) / (2.0 * _LATITUDE), 0.0, 1.0)
-    # Exponents at or above one, so the response is always an S and never an
-    # inverse one: below one the middle *flattens*, which made a higher contrast
-    # setting able to reduce contrast depending on where the toe happened to be.
-    # At zero both are exactly one, the logistic collapses to t, and the curve is
-    # the identity — which is what lets `contrast` blend cleanly from nothing.
+    # Where mid grey and diffuse white sit on that axis.
+    t_grey = 0.5
+    t_white = (np.log2(1.0 / _MID_GREY) + _LATITUDE) / (2.0 * _LATITUDE)
+
+    # Toe below the pivot, shoulder above it, meeting at mid grey. One logistic
+    # across the whole range cannot do this: it pivots wherever its own centre
+    # falls, which was below mid grey, so it brightened the midtones and pushed
+    # the upper ones past white — a sky came back as paper. Two segments pin
+    # (0,0), mid grey and white, so nothing clips and nothing drifts.
     toe = 1.0 + (f["toe"] / 100.0) * 1.3
     sho = 1.0 + (f["shoulder"] / 100.0) * 1.3
-    a = np.clip(t, _EPS, 1.0) ** toe
-    b = np.clip(1.0 - t, _EPS, 1.0) ** sho
-    s = a / (a + b)
-    # Back out the same way, so an unchanged shape is the identity. With toe and
-    # shoulder equal to 1 the logistic is t itself and this returns x exactly,
-    # which is what makes "no curve" mean no curve.
+    lower = t_grey * np.clip(t / t_grey, 0.0, 1.0) ** toe
+    span = max(t_white - t_grey, _EPS)
+    u = np.clip((t - t_grey) / span, 0.0, 1.0)
+    upper = t_grey + span * (1.0 - (1.0 - u) ** sho)
+    s = np.where(t <= t_grey, lower, upper)
+    # Above diffuse white the response keeps rising, or specular highlights would
+    # flatten into a solid patch.
+    over = np.clip((t - t_white) / max(1.0 - t_white, _EPS), 0.0, 1.0)
+    s = s + over * (1.0 - t_white)
+
+    # Back out the same way, so exponents of one give exactly the identity.
     out_lin = _MID_GREY * np.exp2(s * 2.0 * _LATITUDE - _LATITUDE)
     resp = np.clip(out_lin, 0.0, 1.0) ** (1.0 / 2.2)
     # Contrast is how far towards that response to go. At zero the stage is the
@@ -209,9 +219,11 @@ def _apply_halation(img: np.ndarray, f: dict[str, Any],
     # Radius against the frame, so the preview is the export.
     radius = max(1.0, (f["halation_radius"] / 100.0) * 0.035 * frame_long)
     lum = img @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
-    # A soft knee rather than a hard threshold: film does not start scattering at
-    # a particular code value, and a hard edge here shows as a contour.
-    hot = np.clip((lum - 0.55) / 0.45, 0.0, 1.0) ** 1.5
+    # A soft knee, but a high one. Scatter comes off specular highlights and
+    # bright edges, not off every light area: a knee at 0.55 catches a whole sky
+    # and washes it to paper white, which is the difference between halation and
+    # a veiling glare. The square keeps the ramp near the top end.
+    hot = np.clip((lum - 0.80) / 0.20, 0.0, 1.0) ** 2.0
     # Blurred at reduced resolution: a wide gaussian over a soft mask does not
     # need full resolution, and this is the expensive part.
     scale = min(1.0, 320.0 / max(1.0, radius * 6.0))
@@ -223,7 +235,7 @@ def _apply_halation(img: np.ndarray, f: dict[str, Any],
                             interpolation=cv2.INTER_LINEAR)
     else:
         spread = cv2.GaussianBlur(hot, (0, 0), radius)
-    glow = spread[..., None] * _HALATION_WEIGHT * (amount * 1.35)
+    glow = spread[..., None] * _HALATION_WEIGHT * (amount * 1.9)
     return img + glow * (1.0 - img)      # screen, so it cannot clip past white
 
 
@@ -247,7 +259,12 @@ def _grain_field(f: dict[str, Any], shape: tuple[int, int],
     # Deriving a cell size in pixels and then clamping it — which is what this
     # did first — makes the crystals relatively coarser in a small render, so a
     # thumbnail, the fit view and a 1:1 crop each showed different grain.
-    cells = max(8, int(round(700.0 / (0.35 + (f["grain_size"] / 100.0) * 2.2))))
+    # The whole slider has to stay resolvable. The first range reached 2000 cells
+    # across at size 0, which is 0.7 px per crystal on a 1400 px preview: below a
+    # pixel the lattice aliases, the preview stops predicting the export, and the
+    # grain is no longer the same size at every render resolution. The bottom of
+    # the range is now the finest grain that survives being looked at.
+    cells = max(8, int(round(_GRAIN_REF / (2.5 + (f["grain_size"] / 100.0) * 5.5))))
     if frame_w >= frame_h:
         gw, gh = cells, max(8, int(round(cells * frame_h / max(frame_w, _EPS))))
     else:
@@ -341,40 +358,36 @@ def padding(film: dict[str, Any] | None, frame_long: float) -> float:
 
 STOCKS: dict[str, dict[str, Any]] = {
     "Neutral negative": {
-        "contrast": 40, "toe": 45, "shoulder": 50, "crosstalk": 18,
-        "warmth": 4, "split": 8, "halation": 22, "halation_radius": 32,
-        "grain": 30, "grain_size": 42, "grain_rough": 55,
+        "contrast": 62, "toe": 52, "shoulder": 50, "crosstalk": 48,
+        "warmth": 14, "split": -18, "halation": 52, "halation_radius": 30,
+        "grain": 72, "grain_size": 14, "grain_rough": 50,
     },
     "Warm portrait": {
-        "contrast": 34, "toe": 55, "shoulder": 58, "crosstalk": 30,
-        "warmth": 18, "split": 22, "halation": 34, "halation_radius": 40,
-        "grain": 24, "grain_size": 36, "grain_rough": 60,
+        "contrast": 56, "toe": 64, "shoulder": 60, "crosstalk": 58,
+        "warmth": 38, "split": 26, "halation": 64, "halation_radius": 38,
+        "grain": 62, "grain_size": 10, "grain_rough": 55,
     },
     "Cool consumer": {
-        "contrast": 48, "toe": 35, "shoulder": 42, "crosstalk": 26,
-        "warmth": -16, "split": -20, "halation": 26, "halation_radius": 30,
-        "grain": 40, "grain_size": 48, "grain_rough": 50,
+        "contrast": 72, "toe": 44, "shoulder": 44, "crosstalk": 54,
+        "warmth": -30, "split": -34, "halation": 56, "halation_radius": 26,
+        "grain": 84, "grain_size": 22, "grain_rough": 48,
     },
     "Punchy slide": {
-        "contrast": 70, "toe": 22, "shoulder": 28, "crosstalk": 14,
-        "warmth": 6, "split": -8, "halation": 16, "halation_radius": 24,
-        "grain": 16, "grain_size": 28, "grain_rough": 45,
+        "contrast": 86, "toe": 26, "shoulder": 30, "crosstalk": 34,
+        "warmth": 12, "split": -12, "halation": 40, "halation_radius": 20,
+        "grain": 46, "grain_size": 4, "grain_rough": 42,
     },
     "Push-processed": {
-        "contrast": 62, "toe": 30, "shoulder": 34, "crosstalk": 34,
-        "warmth": 10, "split": 30, "halation": 40, "halation_radius": 46,
-        "grain": 70, "grain_size": 62, "grain_rough": 65,
+        "contrast": 80, "toe": 38, "shoulder": 38, "crosstalk": 66,
+        "warmth": 22, "split": 40, "halation": 78, "halation_radius": 44,
+        "grain": 96, "grain_size": 34, "grain_rough": 62,
     },
-    # Deliberately not called "black and white": the chain has no saturation
-    # stage, so it would be promising something it does not do. This is the
-    # fine-grain high-contrast shape, colour left alone.
     "Fine grain": {
-        "contrast": 52, "toe": 38, "shoulder": 44, "crosstalk": 0,
-        "warmth": 0, "split": 0, "halation": 18, "halation_radius": 28,
-        "grain": 34, "grain_size": 30, "grain_rough": 60,
+        "contrast": 70, "toe": 46, "shoulder": 48, "crosstalk": 30,
+        "warmth": 8, "split": -10, "halation": 44, "halation_radius": 22,
+        "grain": 70, "grain_size": 0, "grain_rough": 45,
     },
 }
-
 
 def stock(name: str) -> dict[str, Any] | None:
     """A stock as a full film dict, ready to store on an edit."""

@@ -217,6 +217,35 @@ def test_grain_size_does_not_follow_the_render_resolution() -> None:
     assert max(lengths) / min(lengths) < 1.35, lengths
 
 
+def test_the_whole_size_range_stays_resolvable() -> None:
+    """Found by using it: at the bottom of the range the lattice was 2000 cells
+    across, i.e. 0.7 px per crystal on a 1400 px preview. Below a pixel it
+    aliases, the preview stops predicting the export, and the grain is no longer
+    the same size at every resolution. Every point on the slider has to hold."""
+    for size in (0, 25, 50, 75, 100):
+        f = {**_GRAIN, "grain_size": size}
+        lengths = []
+        for scale in (1.0, 2.0, 3.0):
+            h, w = int(600 * scale), int(800 * scale)
+            flat = np.full((h, w, 3), 128, np.uint8)
+            n = editing.render(flat, {"film": f}, meta={"file": "a"})[..., 1]
+            n = n.astype(np.float32)
+            n = (n - n.mean()) / (n.std() + 1e-9)
+            lag = next((d for d in range(1, 90)
+                        if float((n[:, :-d] * n[:, d:]).mean()) < 0.5), 90)
+            lengths.append(lag / w)
+        spread = max(lengths) / min(lengths)
+        assert spread < 1.35, f"size {size} is resolution dependent ({spread:.2f}x)"
+
+
+def test_the_finest_grain_is_still_bigger_than_a_pixel() -> None:
+    """The arithmetic behind the test above, stated directly."""
+    finest = {**film.DEFAULT_FILM, "grain_size": 0}
+    cells = max(8, int(round(film._GRAIN_REF / (2.5 + 0.0))))
+    assert film._GRAIN_REF / cells >= 2.0, "the finest setting aliases"
+    assert finest["grain_size"] == 0
+
+
 def test_grain_is_the_same_grain_every_time() -> None:
     a = _grain_only(300, 400, "photo-one")
     b = _grain_only(300, 400, "photo-one")
