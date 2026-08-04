@@ -1170,3 +1170,9 @@ body.landing-mode #welcome-banner { display: none !important; }
 .cluster-box footer { display: flex; align-items: center; gap: 8px;
   margin-top: 14px; }
 .cluster-box footer .spacer { flex: 1; }
+
+.rescore-faces { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px;
+  align-items: center; margin: 0 0 12px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 6px; }
+.rescore-faces > span:first-of-type { font-size: 13px; }
+.rescore-faces .subject-note { grid-column: 2; margin: 0; }

@@ -455,7 +455,11 @@ function renderPeopleChips() {
   if (!state.people.length) {
     const empty = document.createElement("div");
     empty.id = "people-empty";
-    empty.textContent = "No people yet — click ↻ group.";
+    // Saying "click group" to a project that is not looking for faces would send
+    // someone round a loop that cannot produce anything.
+    empty.textContent = state.subjects.detect_faces === false
+      ? "Not looking for faces in this project — ↻ rescore to change that."
+      : "No people yet — click ↻ group.";
     wrap.appendChild(empty);
     return;
   }
@@ -752,6 +756,7 @@ function openRescoreModal() {
     ? "Detection model ready."
     : "First run downloads a ~20 MB detection model (YOLOX-tiny, Apache-2.0).";
   $("#rescore-go").textContent = `Re-score ${state.photos.length} photos`;
+  $("#rescore-faces").checked = state.subjects.detect_faces !== false;
   renderSubjectPresets();
   renderSubjectClassPicker();
   $("#rescore-modal").classList.remove("hidden");
@@ -861,7 +866,11 @@ async function runRescore() {
   const res = await fetch("/api/score", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ with_faces: false, subject_classes: next }),
+    body: JSON.stringify({
+      with_faces: false,
+      subject_classes: next,
+      detect_faces: $("#rescore-faces").checked,
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -3980,6 +3989,20 @@ function bindKeys() {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key;
 
+    // A text field owns its letters. Without this a filter box cannot be typed
+    // into at all, because "a" is pick and "r" is reject — which is exactly what
+    // happened to the class filter in the re-score dialog. Checkboxes, radios and
+    // sliders are deliberately not counted: clicking one should not swallow the
+    // grid shortcuts afterwards. Escape always gets through, so a dialog can
+    // still be dismissed from inside its own input.
+    const el = e.target || {};
+    const tag = (el.tagName || "").toLowerCase();
+    const type = (el.type || "").toLowerCase();
+    const textEntry = el.isContentEditable || tag === "textarea"
+      || (tag === "input"
+          && !["checkbox", "radio", "range", "button", "submit", "color"].includes(type));
+    if (textEntry && k !== "Escape") return;
+
     // The relink dialog (landing) — Esc only.
     if (!$("#relink-modal").classList.contains("hidden")) {
       if (k === "Escape") { closeRelinkModal(); e.preventDefault(); }
@@ -3992,9 +4015,21 @@ function bindKeys() {
       return;
     }
 
-    // Subject settings owns its text input; Esc only.
+    // Subject groups; Esc only.
     if (!$("#subject-modal").classList.contains("hidden")) {
       if (k === "Escape") { closeSubjectModal(); e.preventDefault(); }
+      return;
+    }
+
+    // The re-score dialog owns its class filter; Esc only.
+    if (!$("#rescore-modal").classList.contains("hidden")) {
+      if (k === "Escape") { closeRescoreModal(); e.preventDefault(); }
+      return;
+    }
+
+    // Clustering settings; Esc only.
+    if (!$("#cluster-modal").classList.contains("hidden")) {
+      if (k === "Escape") { closeClusterModal(); e.preventDefault(); }
       return;
     }
 

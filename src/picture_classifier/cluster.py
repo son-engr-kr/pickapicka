@@ -58,6 +58,17 @@ def run_clustering(
     )
     embeddings = np.load(emb_path)
     n = embeddings.shape[0]
+    if n == 0:
+        # A project that does not detect faces has nothing to cluster, and DBSCAN
+        # will not accept an empty array. Leave it with no people rather than
+        # stale ones from when it did.
+        for photo in photos:
+            for face in photo.get("faces", []):
+                face["person_id"] = None
+        data["people"] = []
+        data["clustered_at"] = datetime.now().isoformat()
+        db.save(db_path, data)
+        return
 
     # Build a parallel list of (photo_idx, face_idx) rows so we can map cluster
     # labels back to faces in the db.

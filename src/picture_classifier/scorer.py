@@ -9,6 +9,8 @@ from typing import Any
 import click
 import numpy as np
 
+from PIL import Image
+
 from . import db, exifinfo, hdr, raw, scenes
 from .scoring import blur as blur_mod
 from .scoring import exposure as exp_mod
@@ -315,6 +317,17 @@ def _subject_scores(
     return out
 
 
+def _image_dims(path: str) -> tuple[int, int]:
+    """Displayed width and height without decoding the pixels — for projects that
+    do not detect faces, where nothing else has read the file yet. Orientation is
+    applied because the db stores displayed dimensions (which is what the face
+    detector's cv2.imread produces)."""
+    with Image.open(path) as im:
+        w, h = im.size
+        orient = im.getexif().get(0x0112, 1)
+    return (h, w) if orient in (5, 6, 7, 8) else (w, h)
+
+
 def _score_one(
     target: dict[str, Any],
     face_detect,
@@ -333,7 +346,11 @@ def _score_one(
     members = target["members"]
     blur_v = blur_mod.blur_score(str(abs_path))
     bright_v = exp_mod.brightness(str(abs_path))
-    face_list, width, height = face_detect(str(abs_path))
+    if face_detect is None:          # this project does not look for people
+        face_list: list[dict[str, Any]] = []
+        width, height = _image_dims(str(abs_path))
+    else:
+        face_list, width, height = face_detect(str(abs_path))
     # Pop embeddings into a separate list; write them to a numpy sidecar later.
     for f in face_list:
         emb = f.pop("embedding", None)
@@ -406,6 +423,7 @@ def run_scoring(
     hdr_look: dict[str, float] | None = None,
     raw_subdir: str = "",
     subject_classes: list[str] | None = None,
+    detect_faces: bool | None = None,
 ) -> None:
     """Scan, merge HDR brackets, then score the standalone frames plus the
     merged results. An HDR bracket is scored once, as its merged output.
@@ -455,6 +473,11 @@ def run_scoring(
     # last scored with, so a plain re-score keeps detecting what it detected.
     if subject_classes is None:
         subject_classes = (existing or {}).get("subject_classes") or []
+    # None means "leave it as the project has it", so a re-score that does not
+    # mention faces does not silently change whether they are looked for.
+    if detect_faces is None:
+        stored = (existing or {}).get("detect_faces")
+        detect_faces = True if stored is None else bool(stored)
 
     # ----- resolve & merge HDR brackets -----
     groups = _resolve_bracket_groups(bracket_groups, src_rels, jpeg_root, verbose)
@@ -536,7 +559,13 @@ def run_scoring(
     if limit is not None:
         targets = targets[:limit]
 
-    if with_faces:
+    if not detect_faces:
+        # A car shoot does not want the bystanders clustered into People, and the
+        # eyes-closed penalty is meaningless on them.
+        if verbose:
+            click.echo("Face detection disabled for this project")
+        face_detect = None
+    elif with_faces:
         from .scoring import eyes as eyes_mod
         if verbose:
             click.echo("Face mesh + eye-open detection enabled (mediapipe)")
@@ -609,6 +638,7 @@ def run_scoring(
     data["brackets"] = brackets_meta
     data["hdr_look"] = look
     data["subject_classes"] = classes
+    data["detect_faces"] = bool(detect_faces)
     data["vehicles"] = []
     # Scoring throws the groups away — embeddings are recomputed and every
     # person_id goes back to None — but the *settings* that produced them are a

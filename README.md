@@ -91,7 +91,9 @@ network.
   project folder to `<name>.deleted-<timestamp>` and hides it from the list —
   decisions and edits stay inside, so renaming the folder back restores it.
 - **Per-photo scoring**: Laplacian blur, brightness exposure, optional
-  closed-eye detection.
+  closed-eye detection. Face detection can be switched off per project from the
+  re-score dialog — on a shoot where every person is a bystander, clustering them
+  into People and penalising their closed eyes is just noise.
 - **Per-scene auto-suggestion**: top 30% pick / middle review / bottom 30%
   reject, normalized within each scene.
 - **HDR bracket auto-merge**: detects auto-exposure brackets from EXIF and

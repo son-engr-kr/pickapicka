@@ -79,6 +79,9 @@ class ScorePayload(BaseModel):
     # COCO classes to detect as the subject; None keeps the project's setting,
     # [] turns subject detection off.
     subject_classes: list[str] | None = None
+    # Whether to look for faces at all; None keeps the project's setting. A car
+    # shoot does not want the bystanders clustered into People.
+    detect_faces: bool | None = None
 
 
 class HdrPreviewPayload(BaseModel):
@@ -1536,6 +1539,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                     hdr_look=hdr_look,
                     raw_subdir=ctx.data.get("raw_subdir", ""),
                     subject_classes=subject_classes,
+                    detect_faces=payload.detect_faces if payload else None,
                 )
                 ctx.reload_data()
                 ctx.wipe_face_cache()
@@ -1866,6 +1870,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             "counts": counts,
             "vehicles": ctx.data.get("vehicles", []),
             "model_ready": objects_mod.is_model_ready(),
+            # The re-score dialog offers this alongside the subject classes.
+            "detect_faces": ctx.data.get("detect_faces", True),
         }
 
     @app.post("/api/subjects/groups")
