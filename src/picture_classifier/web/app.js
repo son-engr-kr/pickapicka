@@ -2267,12 +2267,14 @@ const FILM_FIELDS = [
   { k: "grain_rough",     label: "· structure", min: 0,   max: 100, hint: "How much the grain clumps. At zero it is closer to sensor noise." },
 ];
 
-const filmState = { stocks: [] };
+const filmState = { stocks: [], defaults: null };
 
 async function loadFilmStocks() {
   const res = await fetch("/api/film/stocks", { cache: "no-store" });
   if (!res.ok) return;
-  filmState.stocks = (await res.json()).stocks || [];
+  const info = await res.json();
+  filmState.stocks = info.stocks || [];
+  filmState.defaults = info.defaults || null;
   renderFilmPanel();
 }
 
@@ -2308,11 +2310,21 @@ function renderFilmPanel() {
   $("#film-enabled").checked = on;
   $("#film-summary-state").textContent = on ? (f.stock ? `· ${f.stock}` : "· on") : "";
   $("#edit-film-group").classList.toggle("film-on", on);
-  $("#film-stocks").innerHTML = filmState.stocks.map((st) =>
-    `<button class="film-stock${st.name === f.stock ? " active" : ""}" ` +
-    `data-stock="${escapeHtml(st.name)}">${escapeHtml(st.name)}</button>`).join("");
+  // "Default" is a chip like the stocks, because getting back to the starting
+  // point is the same kind of action as picking one.
+  $("#film-stocks").innerHTML =
+    `<button class="film-stock film-default" data-stock="">Default</button>` +
+    filmState.stocks.map((st) =>
+      `<button class="film-stock${st.name === f.stock ? " active" : ""}" ` +
+      `data-stock="${escapeHtml(st.name)}">${escapeHtml(st.name)}</button>`).join("");
   $$("#film-stocks .film-stock").forEach((b) => {
     b.addEventListener("click", () => {
+      if (!b.dataset.stock) {
+        const d = filmState.defaults || FILM_DEFAULT;
+        const { enabled, stock, ...params } = d;
+        updateFilm({ ...params, enabled: true, stock: "" });
+        return;
+      }
       const st = filmState.stocks.find((x) => x.name === b.dataset.stock);
       if (!st) return;
       const { name, ...params } = st;

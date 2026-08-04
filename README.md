@@ -64,8 +64,8 @@ network.
   warm; and **grain** on a lattice defined against the frame — correlated rather
   than per-pixel, strongest in the mid-densities, the same size whether it is
   rendered as a thumbnail or at 1:1, and the same grain every time so the preview
-  is the export. Six stocks as starting points, then twelve parameters
-  underneath. Reading behind it: Newson/Delon/Galerne (CGF 2017) on
+  is the export. Seven stocks plus a Default button, each one click, then
+  twelve parameters underneath. Reading behind it: Newson/Delon/Galerne (CGF 2017) on
   resolution-independent grain, Norkin/Birkbeck (DCC 2018) and AV1 §7.18.3 on
   autoregressive grain synthesis.
 - **Watermarks**: stamp a signature and the shooting info in one of five styles

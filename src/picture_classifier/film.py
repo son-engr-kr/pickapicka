@@ -399,6 +399,13 @@ STOCKS: dict[str, dict[str, Any]] = {
         "warmth": 22, "split": 40, "halation": 78, "halation_radius": 44,
         "grain": 96, "grain_size": 34, "grain_rough": 62,
     },
+    # Overdone on purpose: a very long toe, halation at the stop and warmth well
+    # up. Reads like a flared, hazy frame rather than a clean negative.
+    "Heavy glow": {
+        "contrast": 77, "toe": 86, "shoulder": 39, "crosstalk": 25,
+        "warmth": 49, "split": 0, "halation": 100, "halation_radius": 35,
+        "grain": 90, "grain_size": 13, "grain_rough": 67,
+    },
     "Fine grain": {
         "contrast": 70, "toe": 46, "shoulder": 48, "crosstalk": 30,
         "warmth": 8, "split": -10, "halation": 44, "halation_radius": 22,
