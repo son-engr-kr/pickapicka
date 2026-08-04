@@ -25,8 +25,9 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel
 
 from . import (
-    cameras, db, editing, exifinfo, hdr, presets as presets_mod, raw, relink,
-    scenes, userstate, watermark as watermark_mod,
+    cameras, db, editing, exifinfo, film as film_mod, hdr,
+    presets as presets_mod, raw, relink, scenes, userstate,
+    watermark as watermark_mod,
 )
 from .scoring import objects as objects_mod
 from .scorer import (
@@ -1714,6 +1715,12 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     def _all_presets() -> list[dict[str, Any]]:
         """Built-ins first, then the user's own — one list for the picker."""
         return presets_mod.list_builtins() + userstate.list_presets()
+
+    @app.get("/api/film/stocks")
+    def film_stocks() -> dict[str, Any]:
+        """The named parameter sets, and the neutral one to reset to."""
+        return {"stocks": [{"name": n, **v} for n, v in film_mod.STOCKS.items()],
+                "defaults": film_mod.DEFAULT_FILM}
 
     @app.get("/api/presets")
     def get_presets() -> dict[str, Any]:

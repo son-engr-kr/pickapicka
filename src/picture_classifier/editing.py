@@ -37,6 +37,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from . import film as film_mod
 from . import watermark as watermark_mod
 
 # ----- schema -------------------------------------------------------------
@@ -65,6 +66,7 @@ DEFAULT_EDIT: dict[str, Any] = {
     "crop": None,      # {x, y, w, h} of the straightened frame; see "geometry"
     "curve": [[0.0, 0.0], [1.0, 1.0]],
     "masks": [],       # local adjustments; see the "masks" section below
+    "film": None,      # film emulation chain; see the film module
     "watermark": None, # signature / shooting info; see the watermark module
 }
 
@@ -464,8 +466,11 @@ def normalize(edit: dict[str, Any] | None) -> dict[str, Any]:
     out["masks"] = []
     out["watermark"] = None
     out["crop"] = None
+    out["film"] = None
     if not edit:
         return out
+    if edit.get("film") is not None:
+        out["film"] = film_mod.normalize(edit["film"])
     if edit.get("crop") is not None:
         out["crop"] = normalize_crop(edit["crop"])
     for key, (lo, hi) in _RANGES.items():
@@ -519,6 +524,8 @@ def merge_additive(base: dict[str, Any] | None,
         out["watermark"] = over["watermark"]
     if over["crop"] is not None:
         out["crop"] = dict(over["crop"])   # an aspect preset is worth carrying
+    if over["film"] is not None:
+        out["film"] = dict(over["film"])
     out["masks"] = (out["masks"] + over["masks"])[:MASK_MAX]
     return out
 
@@ -539,6 +546,8 @@ def is_neutral(edit: dict[str, Any] | None) -> bool:
         return False
     if e["crop"] is not None:
         return False   # a crop changes every pixel's place, if not its value
+    if e["film"] is not None:
+        return False
     return _curve_is_identity(e["curve"])
 
 
@@ -1066,7 +1075,8 @@ def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
 # ----- top-level render ---------------------------------------------------
 
 def _grade(img: np.ndarray, e: dict[str, Any],
-           roi: tuple[float, float, float, float] = FULL_ROI) -> np.ndarray:
+           roi: tuple[float, float, float, float] = FULL_ROI,
+           seed: int = 0) -> np.ndarray:
     """Run the adjustment stages of a normalized edit over float32 RGB in [0,1].
     Shared by the global pass and by every local mask (masks reuse the same maths
     on their own slider values, so a local +1 EV means what a global +1 EV means).
@@ -1109,6 +1119,10 @@ def _grade(img: np.ndarray, e: dict[str, Any],
         img = _apply_sharpen(img, e["sharpen"])
     if e["vignette"]:
         img = _apply_vignette(img, e["vignette"], roi)
+    # The capture medium goes on after the frame-wide falloff and before the
+    # mosaic, which is a deliberate post step rather than part of the photograph.
+    if e["film"] is not None:
+        img = film_mod.apply_film(np.clip(img, 0.0, 1.0), e["film"], roi, seed)
     if e["pixelate"]:
         img = _apply_pixelate(img, e["pixelate"], frame_long, origin)
     return img
@@ -1125,6 +1139,8 @@ def effect_padding(edit: dict[str, Any] | None, frame_long: float) -> float:
     """
     e = normalize(edit)
 
+    film_need = film_mod.padding(e.get("film"), frame_long)
+
     def for_adj(a: dict[str, Any]) -> float:
         need = 0.0
         if a.get("blur"):
@@ -1138,7 +1154,7 @@ def effect_padding(edit: dict[str, Any] | None, frame_long: float) -> float:
             need = max(need, 8.0 * 3.0 * frame_long / 512.0)
         return need
 
-    pad = for_adj(e)
+    pad = max(for_adj(e), film_need)
     for m in e["masks"]:
         if mask_is_active(m):
             pad = max(pad, for_adj(m["adj"]))
@@ -1198,7 +1214,10 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         out = rgb
     else:
         # Hand `_grade` the uint8 original so it can take the lookup path.
-        img = _grade(rgb, e, roi)
+        # Grain must be the same grain every time this photo is rendered, so it
+        # is seeded from the photo rather than from chance.
+        seed = film_mod.seed_for(str((meta or {}).get("file") or ""))
+        img = _grade(rgb, e, roi, seed)
         img = np.clip(img, 0.0, 1.0)
         if e["masks"]:
             img = _apply_masks(img, e["masks"], roi)

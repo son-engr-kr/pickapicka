@@ -53,6 +53,21 @@ network.
   neutral keeps your value. Switch to *replace* for a clean slate. Bulk apply
   has the same choice, so you can add one mask to every pick without touching
   their individual grades.
+- **Film emulation** — the chain, not a filter. A "film look" shipped as a colour
+  LUT plus white noise reads as a filter because that is what it is. This builds
+  the effects in the order the physics happens: a characteristic (Hurter-Driffield)
+  response applied to **log exposure** and anchored on mid grey, with independent
+  toe and shoulder; a **dye-density crosstalk matrix** in density space, which is
+  what produces the shadow/highlight colour crossover a per-channel curve cannot;
+  **halation**, light scattering off the film base and re-exposing from behind,
+  weighted red-first because that layer sits deepest, so a bright edge bleeds
+  warm; and **grain** on a lattice defined against the frame — correlated rather
+  than per-pixel, strongest in the mid-densities, the same size whether it is
+  rendered as a thumbnail or at 1:1, and the same grain every time so the preview
+  is the export. Six stocks as starting points, then twelve parameters
+  underneath. Reading behind it: Newson/Delon/Galerne (CGF 2017) on
+  resolution-independent grain, Norkin/Birkbeck (DCC 2018) and AV1 §7.18.3 on
+  autoregressive grain synthesis.
 - **Watermarks**: stamp a signature and the shooting info in one of five styles
   (minimal, gradient bar, plate, corner rule, filmstrip caption), anywhere in
   the frame. Lines are templates — `{name}`, `{camera}`, `{lens}`, `{focal}`,

@@ -107,7 +107,7 @@ const EDIT_NEUTRAL = (() => {
   // not a slider a mask could ever carry, and they are applied before anything
   // tonal. Mirrors editing.DEFAULT_EDIT.
   const e = { curve: CURVE_IDENTITY.map((p) => p.slice()), masks: [], watermark: null,
-              tilt: 0, crop: null };
+              film: null, tilt: 0, crop: null };
   for (const f of EDIT_FIELDS) e[f.k] = 0;
   return e;
 })();
@@ -125,6 +125,7 @@ function mergeNeutralEdit(edit) {
   e.watermark = (edit && edit.watermark) ? cloneWatermark(edit.watermark) : null;
   e.tilt = (edit && Number(edit.tilt)) || 0;
   e.crop = (edit && edit.crop) ? { ...edit.crop } : null;
+  e.film = (edit && edit.film) ? { ...edit.film } : null;
   if (edit) for (const f of EDIT_FIELDS) if (edit[f.k] != null) e[f.k] = edit[f.k];
   return e;
 }
@@ -137,7 +138,13 @@ function editsEqual(a, b) {
   if (canonWatermark(a.watermark) !== canonWatermark(b.watermark)) return false;
   if (Math.abs((a.tilt || 0) - (b.tilt || 0)) > 1e-4) return false;
   if (canonCrop(a.crop) !== canonCrop(b.crop)) return false;
+  if (canonFilm(a.film) !== canonFilm(b.film)) return false;
   return canonMasks(a.masks) === canonMasks(b.masks);
+}
+function canonFilm(f) {
+  if (!f || !f.enabled) return "";
+  return JSON.stringify(Object.keys(FILM_DEFAULT).sort()
+    .filter((k) => k !== "stock").map((k) => f[k]));
 }
 function canonCrop(c) {
   return c ? JSON.stringify([rnd4(c.x), rnd4(c.y), rnd4(c.w), rnd4(c.h)]) : "";
@@ -1929,6 +1936,7 @@ function openEditModal(absIdx) {
   $("#edit-zoom-hint").classList.add("hidden");
   layoutPreviewImage();
   renderWatermarkPanel();
+  renderFilmPanel();
   loadWatermarkInfo(photo.rel_path);
   selectMask(-1, { silent: true });
   setEditTool(null);
@@ -2158,6 +2166,7 @@ function resetEdit() {
     // claiming one is active.
     $("#edit-preset-select").value = "";
     renderWatermarkPanel();
+    renderFilmPanel();
   }
   syncEditSliders();
   drawCurve();
@@ -2229,6 +2238,99 @@ function editNav(delta) {
   const i = Math.max(0, Math.min(state.filteredPhotos.length - 1, editSession.idx + delta));
   if (i === editSession.idx) return;
   openEditModal(i);
+}
+
+// ---------- film emulation ----------
+// The panel is deliberately a short list: pick a stock, then the four things
+// worth pushing per photo. The rest of the chain's parameters live in the stock
+// definitions on the server, where they belong.
+const FILM_DEFAULT = {
+  enabled: false, stock: "", strength: 100,
+  contrast: 45, toe: 40, shoulder: 45,
+  crosstalk: 25, warmth: 0, split: 0,
+  halation: 30, halation_radius: 35,
+  grain: 35, grain_size: 40, grain_rough: 55,
+};
+
+const FILM_FIELDS = [
+  { k: "strength",        label: "Strength",   min: 0,    max: 100, hint: "How far towards the film response to go." },
+  { k: "contrast",        label: "Curve",      min: 0,    max: 100, hint: "How much of the characteristic response to apply. At zero the tone is untouched." },
+  { k: "toe",             label: "· toe",      min: 0,    max: 100, hint: "How pronounced the shadow roll-off is. Zero leaves the curve straight." },
+  { k: "shoulder",        label: "· shoulder", min: 0,    max: 100, hint: "How pronounced the highlight roll-off is — film's highlight retention. Zero leaves the curve straight." },
+  { k: "crosstalk",       label: "Crosstalk",  min: 0,    max: 100, hint: "Dye layers absorbing outside their own band, in density space. Half of what people call film colour." },
+  { k: "split",           label: "· crossover", min: -100, max: 100, hint: "Which way the shadows and the highlights part company." },
+  { k: "warmth",          label: "· warmth",   min: -100, max: 100, hint: "A density offset, so it acts like a filter over the lamp." },
+  { k: "halation",        label: "Halation",   min: 0,    max: 100, hint: "Light scattering off the film base and re-exposing from behind. Strongest in red because that layer sits deepest." },
+  { k: "halation_radius", label: "· radius",   min: 0,    max: 100, hint: "Relative to the frame, so the preview is the export." },
+  { k: "grain",           label: "Grain",      min: 0,    max: 100, hint: "Crystal density. Strongest in the mid-tones, as on real film." },
+  { k: "grain_size",      label: "· size",     min: 0,    max: 100, hint: "Crystal size, fixed against the frame — it will not turn to sand in a thumbnail." },
+  { k: "grain_rough",     label: "· structure", min: 0,   max: 100, hint: "How much the grain clumps. At zero it is closer to sensor noise." },
+];
+
+const filmState = { stocks: [] };
+
+async function loadFilmStocks() {
+  const res = await fetch("/api/film/stocks", { cache: "no-store" });
+  if (!res.ok) return;
+  filmState.stocks = (await res.json()).stocks || [];
+  renderFilmPanel();
+}
+
+function currentFilm() {
+  // The stock list loads at boot, before any photo is open, so this has to cope
+  // with there being no edit yet.
+  const e = editSession.edit;
+  return { ...FILM_DEFAULT, ...((e && e.film) || {}) };
+}
+
+function buildFilmFields() {
+  const wrap = $("#film-fields");
+  if (wrap.dataset.built) return;
+  wrap.dataset.built = "1";
+  wrap.innerHTML = FILM_FIELDS.map((f) =>
+    `<label class="look-row" data-film-row="${f.k}" title="${escapeHtml(f.hint)}">` +
+    `<span class="look-name">${f.label}</span>` +
+    `<input type="range" data-film="${f.k}" min="${f.min}" max="${f.max}" step="1" />` +
+    `<span class="look-val" data-film-val="${f.k}"></span></label>`).join("");
+  wrap.addEventListener("input", (e) => {
+    const sl = e.target.closest("input[type=range][data-film]");
+    if (!sl) return;
+    // Touching a slider means this is no longer that stock, it is yours.
+    updateFilm({ [sl.dataset.film]: parseInt(sl.value, 10), stock: "" });
+  });
+}
+
+function renderFilmPanel() {
+  if (!$("#film-fields")) return;
+  buildFilmFields();
+  const f = currentFilm();
+  const on = !!f.enabled;
+  $("#film-enabled").checked = on;
+  $("#film-summary-state").textContent = on ? (f.stock ? `· ${f.stock}` : "· on") : "";
+  $("#edit-film-group").classList.toggle("film-on", on);
+  $("#film-stocks").innerHTML = filmState.stocks.map((st) =>
+    `<button class="film-stock${st.name === f.stock ? " active" : ""}" ` +
+    `data-stock="${escapeHtml(st.name)}">${escapeHtml(st.name)}</button>`).join("");
+  $$("#film-stocks .film-stock").forEach((b) => {
+    b.addEventListener("click", () => {
+      const st = filmState.stocks.find((x) => x.name === b.dataset.stock);
+      if (!st) return;
+      const { name, ...params } = st;
+      updateFilm({ ...params, enabled: true, stock: name });
+    });
+  });
+  for (const fld of FILM_FIELDS) {
+    $(`#film-fields input[data-film="${fld.k}"]`).value = f[fld.k];
+    $(`#film-fields [data-film-val="${fld.k}"]`).textContent = f[fld.k];
+  }
+  $$("#film-fields input").forEach((i) => { i.disabled = !on; });
+}
+
+function updateFilm(patch) {
+  editSession.edit.film = { ...currentFilm(), ...patch };
+  renderFilmPanel();
+  setEditDirty();
+  previewDuringDrag();
 }
 
 // ---------- watermark ----------
@@ -3587,6 +3689,8 @@ function bindMaskUi() {
   $("#mask-brush-erase").addEventListener("click", () => setBrushErase(true));
   $("#mask-brush-undo").addEventListener("click", undoLastStroke);
   // Crop & straighten
+  $("#film-enabled").addEventListener("change", (e) =>
+    updateFilm({ enabled: e.target.checked }));
   $("#crop-tool").addEventListener("click", () =>
     setEditTool(editSession.tool === "crop" ? null : "crop"));
   $("#crop-reset").addEventListener("click", () => {
@@ -5466,6 +5570,7 @@ async function bootMain() {
   const view = await restoreView();
   loadPresets();
   loadSubjects();
+  loadFilmStocks();
   syncViewControls();
   renderSidebar();
   renderPeopleChips();

@@ -699,6 +699,23 @@
             <summary>Creative</summary>
             <div class="edit-group-body" data-group="creative"></div>
           </details>
+          <details class="edit-group" id="edit-film-group">
+            <summary>Film <span id="film-summary-state"></span></summary>
+            <div class="edit-group-body">
+              <label class="film-enable">
+                <input type="checkbox" id="film-enabled" />
+                <span>Emulate film</span>
+              </label>
+              <p class="film-note">
+                A response curve applied to log exposure, a dye-crosstalk matrix
+                in density space, highlight scatter that bleeds warm, and grain
+                whose size is fixed against the frame rather than the render.
+              </p>
+              <div class="film-stocks" id="film-stocks"></div>
+              <div class="film-fields" id="film-fields"></div>
+            </div>
+          </details>
+
           <details class="edit-group" id="edit-wm-group">
             <summary>Watermark <span id="wm-summary-state"></span></summary>
             <div class="wm-body">
