@@ -24,7 +24,7 @@
         <div class="workspace-row">
           <select id="workspace-select" title="Switch workspace"></select>
           <button id="workspace-add" class="browse-btn" type="button">Add workspace…</button>
-          <button id="workspace-forget" type="button" title="Remove this workspace from the list">×</button>
+          <button id="workspace-forget" type="button" title="Remove this workspace from the list" data-icon="close" aria-label="Close"></button>
         </div>
         <div class="workspace-path" id="workspace-path"></div>
       </section>
@@ -39,7 +39,7 @@
           <summary>Open a project folder directly · recent projects</summary>
           <div class="start-cards" style="margin-top:12px;">
             <button class="start-card" id="start-open" type="button">
-              <span class="start-icon">📂</span>
+              <span class="start-icon" data-icon="open"></span>
               <span class="start-title">Open project folder</span>
               <span class="start-sub">Reopen any project folder, even outside a workspace.</span>
             </button>
@@ -58,7 +58,7 @@
       <header class="wizard-header">
         <h2 id="wizard-title">New project</h2>
         <span id="wizard-step-indicator">Step 1 of 3</span>
-        <button id="wizard-close" type="button" title="Cancel">×</button>
+        <button id="wizard-close" type="button" title="Cancel" data-icon="close" aria-label="Close"></button>
       </header>
       <div class="wizard-body">
         <section class="wizard-step" data-step="1">
@@ -191,7 +191,7 @@
                 <circle cx="22" cy="20" r="2" fill="currentColor"/>
                 <circle cx="25" cy="20" r="2" fill="currentColor"/>
                 <circle cx="34" cy="20" r="2" fill="currentColor"/>
-                <text x="14" y="11" font-size="6" fill="currentColor" opacity="0.7">↤ gap ↦</text>
+                <text x="14" y="11" font-size="6" fill="currentColor" opacity="0.7">gap</text>
               </svg>
             </span>
             <span class="option-title">By time gap</span>
@@ -204,7 +204,7 @@
           <span class="unit">minutes</span>
         </div>
       </div>
-      <button id="switch-project-btn" title="Open a different project">⇄ switch project</button>
+      <button id="switch-project-btn" data-icon="swap" title="Open a different project">switch project</button>
     </header>
     <div id="filter-row">
       <button data-filter="all" class="filter active">all</button>
@@ -217,16 +217,16 @@
     <div id="people-section">
       <div id="people-section-head">
         <h2>People</h2>
-        <button id="people-cluster-btn">↻ group</button>
-        <button id="cluster-settings-btn" title="Clustering settings">⚙</button>
-        <button id="people-manage-btn" title="Edit labels &amp; priorities">👤</button>
+        <button id="people-cluster-btn" data-icon="refresh">group</button>
+        <button id="cluster-settings-btn" data-icon="settings" title="Clustering settings" aria-label="Clustering settings"></button>
+        <button id="people-manage-btn" data-icon="person" title="Edit labels &amp; priorities" aria-label="Edit labels and priorities"></button>
       </div>
       <div id="people-chips"></div>
     </div>
     <div id="subject-section" class="hidden">
       <div id="subject-section-head">
         <h2>Subjects</h2>
-        <button id="subject-settings-btn" title="Rename or hide subject groups">⚙</button>
+        <button id="subject-settings-btn" data-icon="settings" title="Rename or hide subject groups" aria-label="Rename or hide subject groups"></button>
       </div>
       <div id="subject-classes"></div>
       <div id="subject-groups"></div>
@@ -256,9 +256,9 @@
     <header id="main-header">
       <span id="scene-title">— select a scene —</span>
       <div id="page-nav">
-        <button id="prev-page" title="prev page (←)">‹</button>
+        <button id="prev-page" data-icon="left" title="prev page (←)" aria-label="Previous page"></button>
         <span id="page-indicator">—</span>
-        <button id="next-page" title="next page (→)">›</button>
+        <button id="next-page" data-icon="right" title="next page (→)" aria-label="Next page"></button>
       </div>
       <div id="cols-toggle">
         <span class="label">view:</span>
@@ -268,17 +268,17 @@
         <button data-cols="8" class="cols">8</button>
       </div>
       <span id="scene-stats"></span>
-      <button id="reject-undecided-btn" title="Mark all undecided photos in this scene as reject" disabled>✕ reject undecided</button>
-      <button id="export-picks-btn" title="Copy all PICK photos to a folder" disabled>📁 export picks</button>
-      <button id="peak-btn">◎ focus</button>
+      <button id="reject-undecided-btn" title="Mark all undecided photos in this scene as reject" disabled data-icon="close">reject undecided</button>
+      <button id="export-picks-btn" title="Copy all PICK photos to a folder" disabled data-icon="folder">export picks</button>
+      <button id="peak-btn" data-icon="focus">focus</button>
       <span id="peak-level" class="hidden">
         <button data-peak-level="tight">tight</button><button
                 data-peak-level="normal" class="active">normal</button><button
                 data-peak-level="loose">loose</button>
       </span>
-      <button id="boxes-btn" class="hidden" title="Show detected subject boxes (B)">▣ boxes</button>
-      <button id="hdr-btn" title="Review and fix auto-detected HDR brackets">🌅 HDR</button>
-      <button id="rescore-btn" title="Re-run scoring on all photos (preserves decisions)">↻ rescore</button>
+      <button id="boxes-btn" class="hidden" title="Show detected subject boxes (B)" data-icon="boxes">boxes</button>
+      <button id="hdr-btn" title="Review and fix auto-detected HDR brackets" data-icon="hdr">HDR</button>
+      <button id="rescore-btn" title="Re-run scoring on all photos (preserves decisions)" data-icon="refresh">rescore</button>
     </header>
     <div id="grid"></div>
     <div id="next-preview" class="hidden">
@@ -290,21 +290,21 @@
 
   <div id="welcome-banner" class="hidden">
     <span id="welcome-banner-text">
-      💡 Tip: you can change scene grouping (by folder vs time gap) any time
-      from the sidebar. Exclude irrelevant face clusters with the ⚙ button.
+      Tip: you can change scene grouping (by folder vs time gap) any time
+      from the sidebar. Exclude irrelevant face clusters from the People panel.
     </span>
     <button id="welcome-banner-dismiss" type="button">Got it</button>
   </div>
 
   <div id="help-popover" class="hidden" role="dialog">
     <div id="help-popover-body"></div>
-    <button id="help-popover-close" type="button" title="Close">×</button>
+    <button id="help-popover-close" type="button" title="Close" data-icon="close" aria-label="Close"></button>
   </div>
 
   <div id="undo-toast" class="hidden">
     <span id="undo-toast-msg"></span>
     <button id="undo-toast-btn" type="button">Undo <span class="kbd">⌘Z</span></button>
-    <button id="undo-toast-close" type="button" title="Dismiss">×</button>
+    <button id="undo-toast-close" type="button" title="Dismiss" data-icon="close" aria-label="Close"></button>
   </div>
 
   <div id="score-progress" class="hidden">
@@ -320,7 +320,7 @@
     <div class="export-box">
       <header>
         <h2>Export picks</h2>
-        <button id="export-modal-close" title="Esc">×</button>
+        <button id="export-modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
       <div class="export-body">
         <p class="export-hint">
@@ -365,7 +365,7 @@
     <div class="cluster-box">
       <header>
         <h2>Clustering settings</h2>
-        <button id="cluster-modal-close" title="Esc">&times;</button>
+        <button id="cluster-modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
       <p class="cluster-hint">
         Grouping runs two passes: faces into people, then detected subjects into
@@ -429,7 +429,7 @@
         <h2>People · labels &amp; priority
           <button class="help-btn" type="button" data-help="people" title="What is this?">?</button>
         </h2>
-        <button id="people-modal-close" title="Esc">×</button>
+        <button id="people-modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
       <p class="people-hint">
         Drag clusters to reorder priority — top of the Active list = highest priority.
@@ -450,8 +450,8 @@
         <h2>HDR brackets
           <button class="help-btn" type="button" data-help="hdr" title="What is this?">?</button>
         </h2>
-        <button id="hdr-look-btn" type="button" class="hdr-look-open">🎨 Adjust look…</button>
-        <button id="hdr-modal-close" title="Esc">×</button>
+        <button id="hdr-look-btn" type="button" class="hdr-look-open" data-icon="palette">Adjust look…</button>
+        <button id="hdr-modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
       <p class="hdr-hint">
         Brackets were auto-detected from EXIF and merged into one photo each
@@ -477,15 +477,15 @@
     <div class="hdr-look-box">
       <header>
         <h2>HDR look</h2>
-        <button id="hdr-look-close" title="Esc">×</button>
+        <button id="hdr-look-close" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
       <div class="hdr-look-body">
         <div class="hdr-look-preview">
           <img id="hdr-look-img" alt="preview" />
           <div class="hdr-look-nav">
-            <button id="hdr-look-prev" type="button" title="previous bracket">‹</button>
+            <button id="hdr-look-prev" type="button" data-icon="left" title="previous bracket" aria-label="Previous bracket"></button>
             <span id="hdr-look-which">—</span>
-            <button id="hdr-look-next" type="button" title="next bracket">›</button>
+            <button id="hdr-look-next" type="button" data-icon="right" title="next bracket" aria-label="Next bracket"></button>
           </div>
         </div>
         <div class="hdr-look-controls">
@@ -533,7 +533,7 @@
     <div id="modal-top">
       <span id="modal-title"></span>
       <span id="modal-meta"></span>
-      <button id="modal-close" title="Esc">×</button>
+      <button id="modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
     </div>
     <div id="modal-image-wrap">
       <img id="modal-image" alt="" />
@@ -548,13 +548,13 @@
     <div id="modal-bottom">
       <span id="modal-decision"></span>
       <button id="modal-compare" class="hidden" title="Toggle HDR merged vs 0 EV original (C)">showing: HDR merged</button>
-      <button id="modal-loupe">🔍 loupe</button>
+      <button id="modal-loupe" data-icon="loupe">loupe</button>
       <span id="loupe-scale" class="hidden">
         <button data-loupe-scale="1">1:1</button><button
                 data-loupe-scale="2">2:1</button><button
                 data-loupe-scale="4">4:1</button>
       </span>
-      <button id="modal-edit" title="Edit this photo (E)">✎ edit</button>
+      <button id="modal-edit" data-icon="pencil" title="Edit this photo (E)">edit</button>
       <span id="modal-exif"></span>
       <span id="modal-scores"></span>
       <span id="modal-help">[1/R reject] [2/V review] [3/P/A pick] [C compare] [E edit] [U undo] [F fit/100%] [←→ nav] [Esc close]</span>
@@ -566,7 +566,7 @@
       <header>
         <h2>Edit</h2>
         <span id="edit-which">—</span>
-        <button id="edit-modal-close" title="Esc">×</button>
+        <button id="edit-modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
       <div class="edit-body">
         <div class="edit-preview">
@@ -576,9 +576,9 @@
             <span id="edit-tool-hint" class="hidden"></span>
           </div>
           <div class="edit-preview-nav">
-            <button id="edit-prev" title="previous photo (←)">‹</button>
+            <button id="edit-prev" data-icon="left" title="previous photo (←)" aria-label="Previous photo"></button>
             <button id="edit-compare" title="Hold to see the original (C)">Hold: original</button>
-            <button id="edit-next" title="next photo (→)">›</button>
+            <button id="edit-next" data-icon="right" title="next photo (→)" aria-label="Next photo"></button>
           </div>
           <div class="edit-zoom-bar">
             <span class="edit-zoom-label">zoom</span>
@@ -592,7 +592,7 @@
         </div>
         <div class="edit-controls">
           <div class="edit-actionbar">
-            <button id="edit-auto" class="primary" title="Auto-tone from the histogram">✨ Auto</button>
+            <button id="edit-auto" class="primary" data-icon="wand" title="Auto-tone from the histogram">Auto</button>
             <button id="edit-reset"
                     title="Reset the selected mask, or — on Global — every adjustment and mask">Reset</button>
             <select id="edit-preset-select" title="Apply a saved preset">
@@ -603,7 +603,7 @@
                       data-preset-mode="replace">replace</button>
             </span>
             <button id="edit-preset-save" title="Save current adjustments as a preset">Save preset…</button>
-            <button id="edit-preset-delete" title="Delete the selected preset">🗑</button>
+            <button id="edit-preset-delete" data-icon="trash" title="Delete the selected preset" aria-label="Delete the selected preset"></button>
           </div>
 
           <div class="mask-panel">
@@ -615,13 +615,13 @@
             </div>
             <div class="mask-list" id="mask-list"></div>
             <div class="mask-add">
-              <span class="mask-add-label">＋ local</span>
+              <span class="mask-add-label" data-icon="plus">local</span>
               <button class="mask-add-btn" data-add-mask="radial"
-                      title="Radial: drag an ellipse on the photo (R)">◎ Radial</button>
+                      title="Radial: drag an ellipse on the photo (R)" data-icon="radial">Radial</button>
               <button class="mask-add-btn" data-add-mask="linear"
-                      title="Gradient: drag a direction on the photo (G)">▤ Gradient</button>
+                      title="Gradient: drag a direction on the photo (G)" data-icon="gradient">Gradient</button>
               <button class="mask-add-btn" data-add-mask="brush"
-                      title="Brush: paint on the photo (B)">🖌 Brush</button>
+                      title="Brush: paint on the photo (B)" data-icon="brush">Brush</button>
             </div>
             <p class="mask-help">Drag the handles on the photo to reshape · Shift constrains ·
               <kbd>\</kbd> show mask · <kbd>Del</kbd> remove</p>
@@ -633,7 +633,7 @@
               <div class="mask-detail-bar">
                 <button id="mask-invert" title="Adjust the area inside or outside the shape">Affect: inside</button>
                 <button id="mask-duplicate" title="Copy this mask">Duplicate</button>
-                <button id="mask-delete" title="Remove this mask (Delete)">🗑 Delete</button>
+                <button id="mask-delete" data-icon="trash" title="Remove this mask (Delete)">Delete</button>
               </div>
               <label class="look-row"><span class="look-name">Feather</span>
                 <input type="range" id="mask-feather" min="0" max="100" step="1" />
@@ -648,7 +648,7 @@
                 <div class="mask-detail-bar">
                   <button id="mask-brush-paint" class="active">Paint</button>
                   <button id="mask-brush-erase" title="Or hold Alt while painting">Erase</button>
-                  <button id="mask-brush-undo" title="Remove the last stroke">↶ Undo stroke</button>
+                  <button id="mask-brush-undo" data-icon="undo" title="Remove the last stroke">Undo stroke</button>
                 </div>
               </div>
             </div>
@@ -658,7 +658,7 @@
             <summary>Crop &amp; Straighten</summary>
             <div class="edit-group-body">
               <div class="crop-row">
-                <button id="crop-tool" class="crop-arm">✂ Crop</button>
+                <button id="crop-tool" class="crop-arm" data-icon="crop">Crop</button>
                 <button id="crop-reset">Reset</button>
               </div>
               <div class="crop-aspects" id="crop-aspects">
@@ -776,7 +776,7 @@
     <div class="subject-box">
       <header>
         <h2>Re-score photos</h2>
-        <button id="rescore-modal-close" title="Esc">&times;</button>
+        <button id="rescore-modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
       <div class="subject-body">
         <p class="subject-intro">
@@ -817,7 +817,7 @@
     <div class="subject-box">
       <header>
         <h2>Subject groups</h2>
-        <button id="subject-modal-close" title="Esc">&times;</button>
+        <button id="subject-modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
       <div class="subject-body">
         <div id="subject-group-editor">
@@ -840,7 +840,7 @@
 
   <div id="selection-bar" class="hidden">
     <span id="selection-count"></span>
-    <button id="selection-download">⬇ download</button>
+    <button id="selection-download" data-icon="download">download</button>
     <button id="selection-apply" class="primary">Apply edit / preset…</button>
     <button id="selection-clear" type="button">Clear</button>
   </div>
@@ -851,7 +851,7 @@
     <div class="bulk-box">
       <header>
         <h2>Apply adjustments to many</h2>
-        <button id="bulk-modal-close" title="Esc">×</button>
+        <button id="bulk-modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
       <div class="bulk-body">
         <p class="bulk-hint">
@@ -918,7 +918,7 @@
     <div class="relink-box">
       <header>
         <h2>Photos not found</h2>
-        <button id="relink-close" type="button" title="Esc">×</button>
+        <button id="relink-close" type="button" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
       <div class="relink-body">
         <p class="relink-hint">

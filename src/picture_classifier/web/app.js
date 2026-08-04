@@ -149,9 +149,9 @@ function isNeutralEdit(edit) { return editsEqual(mergeNeutralEdit(edit), EDIT_NE
 // normalized image coordinates (x = fraction of the width, y of the height), so
 // the same numbers describe the shape on the preview and on the export.
 const MASK_KINDS = {
-  radial: { icon: "◎", label: "Radial" },
-  linear: { icon: "▤", label: "Gradient" },
-  brush:  { icon: "🖌", label: "Brush" },
+  radial: { icon: "radial", label: "Radial" },
+  linear: { icon: "gradient", label: "Gradient" },
+  brush:  { icon: "brush", label: "Brush" },
 };
 
 function neutralAdj() {
@@ -202,6 +202,92 @@ function maskAdjNeutral(m) {
 
 function maskLabel(m, idx) {
   return m.name || `${MASK_KINDS[m.type].label} ${idx + 1}`;
+}
+
+// ---------- icons ----------
+// One stroked set, drawn in currentColor at a fixed weight, so an icon takes the
+// colour and size of the text beside it and looks the same on every platform.
+// This replaces the emoji and the assorted arrows and geometric glyphs that used
+// to stand in for icons: those rendered differently per OS, could not be sized or
+// coloured with the rest of the interface, and several of them were carrying real
+// navigational weight.
+//
+// 24x24 viewBox, 1.75 stroke, round caps. Static markup asks for one with
+// `data-icon="name"`; generated markup calls `icon("name")`.
+const ICONS = {
+  crop: "M6 2v14a2 2 0 0 0 2 2h14M2 6h14a2 2 0 0 1 2 2v14",
+  settings: "M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7z"
+    + "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06"
+    + "a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09"
+    + "a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06"
+    + "a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3"
+    + "a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 8.17a1.65 1.65 0 0 0-.33-1.82l-.06-.06"
+    + "a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3"
+    + "a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06"
+    + "a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V10a1.65 1.65 0 0 0 1.51 1H21"
+    + "a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z",
+  refresh: "M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6",
+  close: "M18 6 6 18M6 6l12 12",
+  download: "M12 3v12m0 0 4-4m-4 4-4-4M4 19h16",
+  pencil: "M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z",
+  plus: "M12 5v14M5 12h14",
+  undo: "M3 10h11a5 5 0 0 1 0 10H8M3 10l4-4M3 10l4 4",
+  trash: "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5",
+  more: "M12 6.5h.01M12 12h.01M12 17.5h.01",
+  left: "M15 18 9 12l6-6",
+  right: "M9 6l6 6-6 6",
+  person: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
+  folder: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+  open: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2H3zM3 9h18l-2 9H5z",
+  focus: "M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM12 2v3m0 14v3M2 12h3m14 0h3",
+  boxes: "M4 5h7v6H4zM13 5h7v6h-7zM4 13h7v6H4zM13 13h7v6h-7z",
+  hdr: "M3 17h18M6 13a6 6 0 0 1 12 0M12 3v3M5 6l2 2m12-2-2 2",
+  wand: "M5 19 17 7M15 3l1 3 3 1-3 1-1 3-1-3-3-1 3-1zM4 13l.7 2 2 .7-2 .7L4 19l-.7-2-2-.7 2-.7z",
+  loupe: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM16 16l5 5",
+  palette: "M12 21a9 9 0 1 1 9-9c0 2-1.5 3-3 3h-2a2 2 0 0 0-1 3.7A2 2 0 0 1 12 21zM7.5 11h.01M11 7.5h.01M15.5 9h.01",
+  swap: "M4 8h13l-3-3M20 16H7l3 3",
+  radial: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
+  gradient: "M4 4h16v16H4zM4 11h16M4 15h16M4 18h16",
+  brush: "M17 3a3 3 0 0 1 4 4l-9 9-4 1 1-4zM7 14c-2 1-3 3-3 6 3 0 5-1 6-3z",
+  warning: "M12 3 2 20h20zM12 9v5M12 17.5h.01",
+  check: "M20 6 9 17l-5-5",
+  eyeOpen: "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"
+    + "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
+  eyeShut: "M3 3l18 18M10.6 5.2A10.9 10.9 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-2.4 3.2M6.4 6.4A17 17 0 0 0 2 12s3.5 7 10 7c1.6 0 3-.4 4.2-1"
+};
+
+function icon(name, cls) {
+  const d = ICONS[name];
+  if (!d) return "";
+  return `<svg class="icon${cls ? " " + cls : ""}" viewBox="0 0 24 24" `
+    + `fill="none" stroke="currentColor" stroke-width="1.75" `
+    + `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">`
+    + `<path d="${d}"/></svg>`;
+}
+
+// Static markup carries `data-icon` and gets the svg put in front of its text, so
+// index.html stays readable instead of holding thirty path definitions.
+// Replace a button's words without disturbing its icon. The first call absorbs
+// whatever text the markup started with, so the label is not printed twice.
+function setBtnLabel(btn, text) {
+  let span = btn.querySelector(".btn-label");
+  if (!span) {
+    [...btn.childNodes].forEach((n) => {
+      if (n.nodeType === Node.TEXT_NODE) n.remove();
+    });
+    span = document.createElement("span");
+    span.className = "btn-label";
+    btn.appendChild(span);
+  }
+  span.textContent = text;
+}
+
+function hydrateIcons(root) {
+  (root || document).querySelectorAll("[data-icon]").forEach((el) => {
+    if (el.dataset.iconDone) return;
+    el.dataset.iconDone = "1";
+    el.insertAdjacentHTML("afterbegin", icon(el.dataset.icon));
+  });
 }
 
 // ---------- tooltips with keyboard shortcuts ----------
@@ -458,8 +544,8 @@ function renderPeopleChips() {
     // Saying "click group" to a project that is not looking for faces would send
     // someone round a loop that cannot produce anything.
     empty.textContent = state.subjects.detect_faces === false
-      ? "Not looking for faces in this project — ↻ rescore to change that."
-      : "No people yet — click ↻ group.";
+      ? "Not looking for faces in this project. Use rescore to change that."
+      : "No people yet — press group.";
     wrap.appendChild(empty);
     return;
   }
@@ -467,7 +553,7 @@ function renderPeopleChips() {
   if (!visible.length) {
     const empty = document.createElement("div");
     empty.id = "people-empty";
-    empty.textContent = "All clusters excluded — open ⚙ to restore.";
+    empty.textContent = "All clusters excluded — open the People settings to restore.";
     wrap.appendChild(empty);
     return;
   }
@@ -517,7 +603,7 @@ function renderSubjectPanel() {
   if (!on) {
     $("#subject-classes").innerHTML =
       `<div class="subject-empty">Not detecting anything in this project. ` +
-      `Press <b>↻ rescore</b> and pick what it is a shoot of — cars, pets, ` +
+      `Press <b>rescore</b> and pick what it is a shoot of — cars, pets, ` +
       `anything COCO.</div>`;
     $("#subject-groups").innerHTML = "";
     return;
@@ -543,7 +629,7 @@ function renderSubjectPanel() {
         `<img loading="lazy" src="/subject/${enc(v.ref.rel_path)}?idx=${v.ref.obj_idx}" alt="" />` +
         `<span class="lbl">${escapeHtml(v.label)}</span>` +
         `<span class="cnt">${v.count}</span></button>`).join("")
-    : `<div class="subject-empty">No groups yet — click ↻ group.</div>`;
+    : `<div class="subject-empty">No groups yet — press group.</div>`;
   groupWrap.querySelectorAll("[data-group]").forEach((b) =>
     b.addEventListener("click", () => toggleSubjectFilter(state.subjectGroupFilter, b.dataset.group)));
 }
@@ -980,18 +1066,20 @@ function renderHeader() {
     : "—";
   $("#prev-page").disabled = pageIdx() === 0 || total === 0;
   $("#next-page").disabled = pageIdx() >= pageCount() - 1 || total === 0;
+  // These three carry both an icon and a changing count. Writing to textContent
+  // would delete the injected svg, so the label lives in its own span.
   const rejectBtn = $("#reject-undecided-btn");
   rejectBtn.disabled = sceneUndecided === 0;
-  rejectBtn.textContent = sceneUndecided > 0
-    ? `✕ reject ${sceneUndecided} undecided`
-    : "✕ reject undecided";
+  setBtnLabel(rejectBtn, sceneUndecided > 0
+    ? `reject ${sceneUndecided} undecided`
+    : "reject undecided");
   const totalPicks = state.photos.reduce((n, p) => n + (p.decision === "pick" ? 1 : 0), 0);
   const exportBtn = $("#export-picks-btn");
   exportBtn.disabled = totalPicks === 0;
-  exportBtn.textContent = totalPicks > 0
-    ? `📁 export ${totalPicks} pick${totalPicks > 1 ? "s" : ""}`
-    : "📁 export picks";
-  $("#hdr-btn").textContent = `🌅 HDR (${state.brackets.length})`;
+  setBtnLabel(exportBtn, totalPicks > 0
+    ? `export ${totalPicks} pick${totalPicks > 1 ? "s" : ""}`
+    : "export picks");
+  setBtnLabel($("#hdr-btn"), `HDR (${state.brackets.length})`);
 }
 
 function renderGrid() {
@@ -1037,7 +1125,7 @@ function renderGrid() {
           ${auto ? `<span class="auto-badge ${auto}">auto: ${auto}</span>` : ""}
           ${p.type === "hdr" ? `<span class="hdr-tile-badge">HDR · ${(p.members || []).length}</span>` : ""}
           <span class="badness">${badness}</span>
-          <button class="tile-edit-btn${p.edit ? " edited" : ""}" data-action="edit" title="Edit (E)">✎</button>
+          <button class="tile-edit-btn${p.edit ? " edited" : ""}" data-action="edit" title="Edit (E)" aria-label="Edit">${icon("pencil")}</button>
         </div>
       </div>
       <div class="tile-name">${fname}${faceCount ? ` · ${faceCount} face${faceCount>1?"s":""}` : ""}</div>
@@ -1244,7 +1332,7 @@ async function confirmExport() {
     return;
   }
   const result = await res.json();
-  let html = `✓ Copied <b>${result.copied}</b> photos to<br><code>${result.target_dir}</code>`;
+  let html = `${icon("check")} Copied <b>${result.copied}</b> photos to<br><code>${result.target_dir}</code>`;
   if (result.skipped) html += `<br>Skipped ${result.skipped} (missing source).`;
   if (result.per_combo && Object.keys(result.per_combo).length) {
     const sorted = Object.entries(result.per_combo).sort((a, b) => b[1] - a[1]);
@@ -2299,7 +2387,7 @@ function setEditTool(tool) {
   const text = tool === "radial" ? "Drag on the photo to place the ellipse"
     : tool === "linear" ? "Drag on the photo to set the gradient direction"
     : tool === "brush" ? "Paint over the area · Alt = erase · [ ] = brush size"
-    : tool === "crop" ? "Drag the box or its corners · ✂ again when you are done"
+    : tool === "crop" ? "Drag the box or its corners · press Crop again when done"
     : "";
   const hint = $("#edit-tool-hint");
   hint.textContent = text;
@@ -2356,7 +2444,7 @@ function renderMaskList() {
   const masks = (editSession.edit && editSession.edit.masks) || [];
   const rows = [
     `<div class="mask-row${editSession.activeMask < 0 ? " active" : ""}" data-mask="-1">` +
-    `<span class="mask-eye-spacer"></span><span class="mask-icon">▢</span>` +
+    `<span class="mask-eye-spacer"></span>` +
     `<span class="mask-name">Global — whole photo</span></div>`,
   ];
   masks.forEach((m, i) => {
@@ -2366,8 +2454,8 @@ function renderMaskList() {
       `<div class="mask-row${i === editSession.activeMask ? " active" : ""}` +
       `${m.enabled ? "" : " off"}" data-mask="${i}">` +
       `<button class="mask-eye" data-mask-toggle="${i}" title="Show / hide this mask">` +
-      `${m.enabled ? "◉" : "◌"}</button>` +
-      `<span class="mask-icon">${MASK_KINDS[m.type].icon}</span>` +
+      `${icon(m.enabled ? "eyeOpen" : "eyeShut")}</button>` +
+      `<span class="mask-icon">${icon(MASK_KINDS[m.type].icon)}</span>` +
       `<span class="mask-name">${escapeHtml(maskLabel(m, i))}</span>` +
       `<span class="mask-hint">${hint}</span>` +
       `<button class="mask-del" data-mask-del="${i}" title="Delete this mask">×</button></div>`
@@ -3688,10 +3776,10 @@ async function downloadSelection() {
   const rels = [...state.selection];
   if (!rels.length) return;
   const btn = $("#selection-download");
-  const label = btn.textContent;
+  const label = btn.textContent.trim();
   btn.disabled = true;
   // RAW and edited photos are rendered at full size, which is not instant.
-  btn.textContent = `⬇ saving ${rels.length}…`;
+  setBtnLabel(btn, `saving ${rels.length}…`);
   try {
     const res = await fetch("/api/download", {
       method: "POST",
@@ -3710,7 +3798,7 @@ async function downloadSelection() {
       info.target_dir);
   } finally {
     btn.disabled = false;
-    btn.textContent = label;
+    setBtnLabel(btn, label);
   }
 }
 
@@ -4370,7 +4458,7 @@ function bindUi() {
 // ---------- People modal ----------
 function openPeopleModal() {
   if (!state.people.length) {
-    alert("No people yet. Click ↻ group first.");
+    alert("No people yet. Press group first.");
     return;
   }
   const list = $("#people-list");
@@ -4409,7 +4497,7 @@ function buildPersonCard(person, isExcluded) {
   card.dataset.excluded = isExcluded ? "1" : "0";
   card.draggable = !isExcluded;
   card.innerHTML = `
-    <span class="drag-handle" title="Drag to reorder">⋮⋮</span>
+    <span class="drag-handle" title="Drag to reorder" aria-hidden="true"></span>
     <span class="priority-badge"></span>
     <img src="/face/${enc(person.ref.rel_path)}?idx=${person.ref.face_idx}" alt="" />
     <div class="fields">
@@ -4667,11 +4755,11 @@ function pollClusterStatus() {
       renderSidebar();
       renderPeopleChips();
       loadSubjects();
-      $("#score-title").textContent = `✓ Done · ${state.people.length} clusters`;
+      $("#score-title").textContent = `Done · ${state.people.length} groups`;
       $("#score-bar-fill").style.width = "100%";
       $("#score-progress-text").textContent =
         `Total faces grouped: ${state.people.reduce((s, p) => s + p.count, 0)}`;
-      $("#score-current").textContent = "Click anywhere to dismiss · ⚙ in sidebar to edit labels";
+      $("#score-current").textContent = "Click anywhere to dismiss";
       const dismiss = () => {
         $("#score-progress").classList.add("hidden");
         $("#score-progress").removeEventListener("click", dismiss);
@@ -4725,7 +4813,7 @@ function pollScoreStatus() {
       await loadDb();
       const totalFaces = state.photos.reduce((s, p) => s + (p.faces?.length || 0), 0);
       const groups = state.subjects.vehicles.length;
-      $("#score-title").textContent = `✓ Scored ${state.photos.length} photos`;
+      $("#score-title").textContent = `Scored ${state.photos.length} photos`;
       $("#score-bar-fill").style.width = "100%";
       // Scoring throws the groups away and rebuilds them in the same run, so the
       // summary reports both rather than telling anyone to press another button.
@@ -4855,7 +4943,8 @@ function renderProjectGrid(projects) {
   const add = document.createElement("button");
   add.className = "project-card project-new";
   add.type = "button";
-  add.innerHTML = `<span class="project-new-icon">＋</span><span class="project-new-label">New project</span>`;
+  add.innerHTML = `<span class="project-new-icon">${icon("plus")}</span>`
+    + `<span class="project-new-label">New project</span>`;
   add.addEventListener("click", openWizard);
   wrap.appendChild(add);
 
@@ -4867,8 +4956,9 @@ function renderProjectGrid(projects) {
       <span class="project-name">${escapeHtml(p.name)}</span>
       <span class="project-meta">${p.photos} photo${p.photos === 1 ? "" : "s"} · ${decided}</span>
       <span class="project-path">${escapeHtml(p.photo_dir || "")}</span>
-      ${p.photos_exist ? "" : `<span class="project-missing">⚠ photos not found — click to re-link</span>`}
-      <button class="project-del" type="button" title="Delete this project (photos are kept)">🗑</button>`;
+      ${p.photos_exist ? "" : `<span class="project-missing">${icon("warning")} photos not found — click to re-link</span>`}
+      <button class="project-del" type="button" aria-label="Delete this project"
+        title="Delete this project (photos are kept)">${icon("trash")}</button>`;
     card.addEventListener("click", () => openProjectByDir(p.project_dir));
     card.querySelector(".project-del").addEventListener("click", (e) => {
       e.stopPropagation();   // don't open the project we're deleting
@@ -4985,7 +5075,7 @@ async function renderRecents() {
     const isProject = r.kind === "project" && r.project_dir;
     const name = r.name || basename(r.photo_dir || r.project_dir || "");
     const pathLine = isProject
-      ? `<div class="recent-path">📂 ${escapeHtml(r.project_dir)}</div>
+      ? `<div class="recent-path">${icon("open")} ${escapeHtml(r.project_dir)}</div>
          <div class="recent-path dim">photos: ${escapeHtml(r.photo_dir || "")}${r.jpeg_subdir ? ` / ${escapeHtml(r.jpeg_subdir)}` : ""}</div>`
       : `<div class="recent-path">${escapeHtml(r.photo_dir || "")}${r.jpeg_subdir ? ` <span class="dim">/ ${escapeHtml(r.jpeg_subdir)}</span>` : ""}</div>`;
     item.innerHTML = `
@@ -5110,7 +5200,7 @@ const HELP_CONTENT = {
     <p>Clicking <b>Exclude</b> on a cluster moves it to the Excluded section.
     Excluded clusters are ignored for sorting and filtering, and their face
     crops are hidden in the grid — but the photos themselves still show.</p>
-    <p>Re-clustering (↻ in the sidebar) resets labels and priorities because
+    <p>Re-grouping resets labels and priorities because
     face indices change. Decisions per photo are kept.</p>`,
   "hdr": `
     <h3>HDR brackets</h3>
@@ -5425,6 +5515,7 @@ async function applySceneGrouping() {
   bindUi();
   bindKeys();
   bindHelp();
+  hydrateIcons();
   initTooltips();
   loupeInit();
   $("#welcome-banner-dismiss").addEventListener("click", dismissWelcomeBanner);

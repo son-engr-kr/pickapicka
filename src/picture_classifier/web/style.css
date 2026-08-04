@@ -1176,3 +1176,20 @@ body.landing-mode #welcome-banner { display: none !important; }
   border: 1px solid var(--border); border-radius: 6px; }
 .rescore-faces > span:first-of-type { font-size: 13px; }
 .rescore-faces .subject-note { grid-column: 2; margin: 0; }
+
+/* ----- icons ----- */
+/* Sized against the text it sits with rather than in absolute pixels, so an icon
+   in a small button and one in a heading stay in proportion. */
+.icon { width: 1.15em; height: 1.15em; flex: 0 0 auto; pointer-events: none; }
+/* A button holding an icon becomes a flex row, so the gap does the spacing and
+   the two stay on one baseline whatever the label says. */
+button:has(> .icon), .start-card:has(.icon), span:has(> .icon) {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.45em; }
+.tile-edit-btn:has(> .icon) { display: inline-flex; }
+.mask-icon .icon, .drag-handle { opacity: 0.8; }
+/* The reorder grip: dots drawn in CSS rather than typed as a glyph. */
+.drag-handle { width: 10px; height: 16px; display: inline-block; cursor: grab;
+  background-image: radial-gradient(currentColor 1px, transparent 1.2px);
+  background-size: 5px 5px; background-position: 0 3px; opacity: 0.45; }
+.drag-handle:hover { opacity: 0.8; }
+.project-new-icon .icon { width: 1.6em; height: 1.6em; }
