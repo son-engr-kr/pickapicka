@@ -86,7 +86,8 @@ _LATITUDE = 6.0
 
 # The preview size the grain lattice is calibrated against: at this width,
 # size 0 is 2.5 px per crystal and size 100 is 8 px.
-_GRAIN_REF = 1400.0
+_GRAIN_FINE = 2400     # crystals across the frame at the fine end
+_GRAIN_COARSE = 300    # ...and at the coarse, pushed end
 
 
 def normalize(raw: Any) -> dict[str, Any] | None:
@@ -255,16 +256,14 @@ def _grain_field(f: dict[str, Any], shape: tuple[int, int],
         does not turn to fine sand in a thumbnail and boulders at 1:1.
     """
     h, w = shape
-    # The lattice is counted across the frame, not measured in render pixels.
-    # Deriving a cell size in pixels and then clamping it — which is what this
-    # did first — makes the crystals relatively coarser in a small render, so a
-    # thumbnail, the fit view and a 1:1 crop each showed different grain.
-    # The whole slider has to stay resolvable. The first range reached 2000 cells
-    # across at size 0, which is 0.7 px per crystal on a 1400 px preview: below a
-    # pixel the lattice aliases, the preview stops predicting the export, and the
-    # grain is no longer the same size at every render resolution. The bottom of
-    # the range is now the finest grain that survives being looked at.
-    cells = max(8, int(round(_GRAIN_REF / (2.5 + (f["grain_size"] / 100.0) * 5.5))))
+    # Crystal size belongs to the negative, so it is counted across the frame and
+    # never in render pixels. The range spans a fine modern emulsion to a coarse
+    # pushed one; at a 1280 px view the middle of it is about a pixel per crystal,
+    # which is what a 35 mm scan at that size actually looks like. The previous
+    # range started at 2.5 px per crystal, i.e. already coarser than anything
+    # natural, which is why the finest setting was the only one that read right.
+    cells = max(8, int(round(_GRAIN_FINE
+                             - (f["grain_size"] / 100.0) * (_GRAIN_FINE - _GRAIN_COARSE))))
     if frame_w >= frame_h:
         gw, gh = cells, max(8, int(round(cells * frame_h / max(frame_w, _EPS))))
     else:
@@ -272,17 +271,35 @@ def _grain_field(f: dict[str, Any], shape: tuple[int, int],
     rng = np.random.default_rng(seed)
     lattice = rng.standard_normal((gh, gw), dtype=np.float32)
     # Correlate it. White noise is sensor noise; grain has structure, and the
-    # AR-style neighbour mixing is what gives it a clump size.
+    # neighbour mixing is what gives it a clump size.
     rough = f["grain_rough"] / 100.0
     if rough > 0:
         k = cv2.GaussianBlur(lattice, (0, 0), 0.4 + rough * 1.1)
-        # Keep the variance up: blurring alone would just make it quieter.
-        k /= max(1e-6, float(k.std()))
+        k /= max(1e-6, float(k.std()))   # blurring alone would just be quieter
         lattice = k
     # The window, in lattice coordinates. Straight from the frame fractions, so
     # the same part of the photo always lands on the same crystals.
     x0, x1 = roi[0] * gw, (roi[0] + roi[2]) * gw
     y0, y1 = roi[1] * gh, (roi[1] + roi[3]) * gh
+
+    # Crystals finer than the output pixels are averaged, not point-sampled.
+    # Point-sampling aliases, which is what forced the range to stop at 2.5 px per
+    # crystal; area-averaging is what downsampling the export would do, so the
+    # preview keeps predicting the file at any grain size.
+    # The factor comes from the *frame*, not from this window. Deriving it from
+    # the window makes the supersample step differ between a full render and a
+    # crop of it, so the averaging lands on different phases and the 1:1 view
+    # stops matching the export — it drifted by three levels before this.
+    k = max(1, int(np.ceil(gw / max(frame_w, 1.0))),
+            int(np.ceil(gh / max(frame_h, 1.0))))
+    if k > 1:
+        fine = _sample_lattice(lattice, x0, y0, x1, y1, w * k, h * k)
+        return cv2.resize(fine, (w, h), interpolation=cv2.INTER_AREA)
+    return _sample_lattice(lattice, x0, y0, x1, y1, w, h)
+
+
+def _sample_lattice(lattice: np.ndarray, x0: float, y0: float, x1: float,
+                    y1: float, w: int, h: int) -> np.ndarray:
     map_x = np.linspace(x0, x1, w, endpoint=False, dtype=np.float32)
     map_y = np.linspace(y0, y1, h, endpoint=False, dtype=np.float32)
     grid_x = np.tile(map_x, (h, 1))

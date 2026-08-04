@@ -217,33 +217,68 @@ def test_grain_size_does_not_follow_the_render_resolution() -> None:
     assert max(lengths) / min(lengths) < 1.35, lengths
 
 
-def test_the_whole_size_range_stays_resolvable() -> None:
-    """Found by using it: at the bottom of the range the lattice was 2000 cells
-    across, i.e. 0.7 px per crystal on a 1400 px preview. Below a pixel it
-    aliases, the preview stops predicting the export, and the grain is no longer
-    the same size at every resolution. Every point on the slider has to hold."""
-    for size in (0, 25, 50, 75, 100):
-        f = {**_GRAIN, "grain_size": size}
-        lengths = []
-        for scale in (1.0, 2.0, 3.0):
-            h, w = int(600 * scale), int(800 * scale)
-            flat = np.full((h, w, 3), 128, np.uint8)
-            n = editing.render(flat, {"film": f}, meta={"file": "a"})[..., 1]
-            n = n.astype(np.float32)
-            n = (n - n.mean()) / (n.std() + 1e-9)
-            lag = next((d for d in range(1, 90)
-                        if float((n[:, :-d] * n[:, d:]).mean()) < 0.5), 90)
-            lengths.append(lag / w)
-        spread = max(lengths) / min(lengths)
-        assert spread < 1.35, f"size {size} is resolution dependent ({spread:.2f}x)"
+def _grain_stats(f: dict, w: int, h: int) -> tuple[float, float]:
+    """Amplitude in levels, and structure size as a fraction of the frame."""
+    flat = np.full((h, w, 3), 128, np.uint8)
+    n = editing.render(flat, {"film": f}, meta={"file": "a"})[..., 1]
+    n = n.astype(np.float32) - 128.0
+    sigma = float(n.std())
+    nn = (n - n.mean()) / (n.std() + 1e-9)
+    lag = next((d for d in range(1, 90)
+                if float((nn[:, :-d] * nn[:, d:]).mean()) < 0.5), 90)
+    return sigma, lag / w
 
 
-def test_the_finest_grain_is_still_bigger_than_a_pixel() -> None:
-    """The arithmetic behind the test above, stated directly."""
-    finest = {**film.DEFAULT_FILM, "grain_size": 0}
-    cells = max(8, int(round(film._GRAIN_REF / (2.5 + 0.0))))
-    assert film._GRAIN_REF / cells >= 2.0, "the finest setting aliases"
-    assert finest["grain_size"] == 0
+def test_finer_than_a_pixel_is_averaged_rather_than_aliased() -> None:
+    """Crystals smaller than an output pixel are the natural case, not an error: a
+    35 mm negative viewed at 1280 px has sub-pixel grain, which is why the finest
+    setting was the only one that read as film. Point-sampling the lattice there
+    aliases, which is what forced the range to stop at 2.5 px per crystal.
+    Area-averaged instead, fine grain simply gets quieter in a small render — what
+    a small print does — and no resolution shows structure the export lacks."""
+    fine = [_grain_stats({**_GRAIN, "grain_size": 0}, int(800 * s), int(600 * s))[0]
+            for s in (1.0, 2.0, 3.0)]
+    assert fine == sorted(fine), f"not monotone with resolution: {fine}"
+    assert fine[-1] > fine[0] * 1.15, f"nothing is being averaged: {fine}"
+    # A coarse setting has nothing to average away, so it must not be attenuated.
+    coarse = [_grain_stats({**_GRAIN, "grain_size": 100},
+                           int(800 * s), int(600 * s))[0] for s in (1.0, 3.0)]
+    assert abs(coarse[0] - coarse[1]) < 0.6, f"coarse grain attenuated: {coarse}"
+
+
+def test_the_size_range_reaches_a_natural_scale() -> None:
+    """What prompted the rework: the old range began at 2.5 px per crystal, already
+    coarser than a real scan at a normal viewing size, so the only natural-looking
+    setting was pinned at one end of the slider. About a pixel per crystal has to
+    fall somewhere in the middle."""
+    def px_per_crystal(sz: int) -> float:
+        cells = film._GRAIN_FINE - (sz / 100.0) * (film._GRAIN_FINE - film._GRAIN_COARSE)
+        return 1280.0 / cells
+    assert px_per_crystal(0) < 0.7
+    assert 0.7 < px_per_crystal(50) < 1.6, \
+        f"a pixel per crystal is not mid-slider: {px_per_crystal(50):.2f}"
+    assert px_per_crystal(100) > 3.0
+
+
+def test_a_window_of_fine_grain_still_matches_the_export() -> None:
+    """The averaging factor has to come from the frame. Derived from the window it
+    differs between a full render and a crop of it, the averaging lands on
+    different phases, and the 1:1 view stops being the export — three levels out
+    when this was wrong."""
+    src = np.random.default_rng(11).integers(0, 256, (600, 800, 3)).astype(np.uint8)
+    f = {**_GRAIN, "grain_size": 0}
+    full = editing.render(src, {"film": f}, meta={"file": "w"})
+    px0, py0, pw, ph = 200, 180, 320, 210
+    pad = int(round(editing.effect_padding({"film": f}, 800))) + 2
+    ax0, ay0 = max(0, px0 - pad), max(0, py0 - pad)
+    ax1, ay1 = min(800, px0 + pw + pad), min(600, py0 + ph + pad)
+    win = editing.render(src[ay0:ay1, ax0:ax1], {"film": f},
+                         roi=(ax0 / 800, ay0 / 600,
+                              (ax1 - ax0) / 800, (ay1 - ay0) / 600),
+                         meta={"file": "w"})
+    got = win[py0 - ay0:py0 - ay0 + ph, px0 - ax0:px0 - ax0 + pw].astype(int)
+    want = full[py0:py0 + ph, px0:px0 + pw].astype(int)
+    assert np.abs(got - want).max() == 0, "fine grain drifted in a window"
 
 
 def test_grain_is_the_same_grain_every_time() -> None:
