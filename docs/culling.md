@@ -39,9 +39,9 @@ shortcut, so the list is not something you have to have memorised.
   useful for a last pass over your own work, or for finding what still needs it.
 - **Reopens where you left it**: the filter, grid layout, page and scene are
   remembered per project, so a project opens on the shot you were looking at
-  rather than on page 1 of everything. Stored per project in
-  `~/.picture-classifier/state.json`; a scene that has since been regrouped away
-  falls back to the first one.
+  rather than on page 1 of everything. Stored per project in the app's
+  `state.json` (see [projects.md](projects.md#where-the-app-keeps-its-own-files));
+  a scene that has since been regrouped away falls back to the first one.
 - **Project history**: recent folders are remembered so you can reopen them
   from the landing page.
 

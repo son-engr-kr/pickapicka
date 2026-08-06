@@ -56,3 +56,31 @@ decisions are kept.
 
 Caches (`picks.json.thumbs/`, `picks.json.faces/`,
 `picks.json.embeddings.npy`) are recreated on demand and safe to delete.
+
+## Where the app keeps its own files
+
+Nothing about your photos lives here — that is all in `picks.json`. This is the
+app's own state: the workspace list, recent projects, the remembered per-project
+view, and saved edit presets.
+
+| | macOS | Windows | Linux |
+| --- | --- | --- | --- |
+| `state.json` | `~/Library/Application Support/picture-classifier/` | `%LOCALAPPDATA%\picture-classifier\` | `~/.local/share/picture-classifier/` |
+| model weights | `~/Library/Caches/picture-classifier/models/` | `%LOCALAPPDATA%\picture-classifier\Cache\models\` | `~/.cache/picture-classifier/models/` |
+
+Linux honours `$XDG_DATA_HOME` and `$XDG_CACHE_HOME` if they are set.
+
+The split is by what it costs to lose. `state.json` cannot be regenerated, so it
+sits in the data directory and gets backed up. The YOLOX weights (~20 MB)
+re-download on demand, so they sit in the cache directory and stay out of every
+Time Machine snapshot — deleting them only costs one download.
+
+Versions up to 0.5.0 kept both in `~/.picture-classifier/`. The first run of any
+`pcls` command moves an old install across and prints what it moved. It will not
+overwrite anything already at the destination, and it leaves the old directory in
+place if there is anything in it that it did not move.
+
+InsightFace's face models are the one exception: they stay in `~/.insightface/`,
+which is that library's own location, shared with any other tool on the machine
+that uses it. Redirecting them would force a several-hundred-MB re-download and
+duplicate a cache that is meant to be shared.

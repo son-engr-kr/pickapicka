@@ -29,6 +29,7 @@ dependencies = [
     "onnxruntime>=1.25.0",
     "opencv-python>=4.10",
     "pillow>=10.4",
+    "platformdirs>=4.0",
     "rawpy>=0.22",
     "scikit-learn>=1.8.0",
     "uvicorn[standard]>=0.30",

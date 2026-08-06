@@ -13,6 +13,7 @@ uv run python tests/test_watermark.py   # camera names, EXIF, stamping
 uv run python tests/test_objects.py     # subject detection
 uv run python tests/test_cluster.py     # grouping settings
 uv run python tests/test_userstate.py   # remembered view, presets
+uv run python tests/test_paths.py       # app-data dirs, legacy migration
 ```
 
 They lean on properties rather than golden images: that a window of a render

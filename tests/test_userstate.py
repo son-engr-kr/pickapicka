@@ -2,8 +2,9 @@
 
     uv run python tests/test_userstate.py
 
-Every test runs against a throwaway HOME, so the real ~/.picture-classifier is
-never touched. CONFIG_DIR is read at import time, so it is repointed here.
+Every test runs against a throwaway directory, so the real application-data
+directory is never touched. CONFIG_DIR is read at import time, so it is
+repointed here.
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ def _fresh(home: Path):
     """A userstate module writing inside `home`."""
     from picture_classifier import userstate
     importlib.reload(userstate)
-    userstate.CONFIG_DIR = home / ".picture-classifier"
+    userstate.CONFIG_DIR = home / "app-data"
     userstate.STATE_FILE = userstate.CONFIG_DIR / "state.json"
     return userstate
 

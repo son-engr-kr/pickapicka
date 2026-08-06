@@ -1,5 +1,5 @@
-"""User-level state in `~/.picture-classifier/state.json`: recents, last db, and
-app-global edit presets."""
+"""User-level state in `state.json`: recents, last db, and app-global edit
+presets. Lives in the platform's application-data directory — see `paths`."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-CONFIG_DIR = Path.home() / ".picture-classifier"
+from . import paths
+
+CONFIG_DIR = paths.DATA_DIR
 STATE_FILE = CONFIG_DIR / "state.json"
 MAX_RECENTS = 10
 

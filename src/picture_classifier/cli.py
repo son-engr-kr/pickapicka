@@ -5,10 +5,15 @@ from pathlib import Path
 
 import click
 
+from . import paths
+
 
 @click.group()
 def main() -> None:
     """Picture classifier — score photos and cull via web viewer."""
+    # One-shot, on whichever subcommand runs first after an upgrade.
+    for note in paths.migrate_legacy():
+        click.echo(f"Moved app data: {note}")
 
 
 @main.command()

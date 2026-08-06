@@ -4,9 +4,9 @@ Why YOLOX: it is Apache-2.0 and Megvii publish the ONNX export directly, so it
 drops onto the `onnxruntime` this project already depends on — no torch, and no
 AGPL entanglement the way YOLOv8/v11 would bring.
 
-The model file (~20 MB) is fetched on first use into
-`~/.picture-classifier/models/`, the same "download once, reuse forever" shape
-as insightface's buffalo_l. Everything after that is offline.
+The model file (~20 MB) is fetched on first use into the platform cache
+directory (see `paths`), the same "download once, reuse forever" shape as
+insightface's buffalo_l. Everything after that is offline.
 
 The exported graph is the raw head: boxes come out in per-stride grid units and
 have to be decoded here (`_decode`), then NMS'd. That mirrors YOLOX's own
@@ -22,6 +22,8 @@ from typing import Any, Callable, Iterable
 
 import cv2
 import numpy as np
+
+from .. import paths
 
 COCO_CLASSES: tuple[str, ...] = (
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
@@ -76,7 +78,7 @@ STRIDES = (8, 16, 32)
 
 _CONF_DEFAULT = 0.35
 _NMS_IOU = 0.45
-_MODEL_DIR = Path.home() / ".picture-classifier" / "models"
+_MODEL_DIR = paths.MODEL_DIR
 
 _session = None
 
