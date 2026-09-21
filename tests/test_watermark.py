@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from picture_classifier import cameras, editing, exifinfo, watermark
+from picture_classifier import cameras, editing, exifinfo, raw, watermark
 
 
 # ----- camera names -------------------------------------------------------
@@ -99,6 +99,32 @@ def test_missing_exif_is_empty_not_an_error(tmp_path) -> None:
     assert exifinfo.is_empty(info)
     assert info["camera"] == ""
     assert exifinfo.is_empty(exifinfo.read(tmp_path / "does-not-exist.jpg"))
+
+
+# ----- RAW capture time ---------------------------------------------------
+# A RAW's capture time comes off the libraw handle, not the embedded JPEG's
+# EXIF, because Sony writes a preview with no DateTimeOriginal in it. The rule
+# worth pinning is what libraw's "the file did not say" looks like: it reports
+# 0, and rawpy turns that into the Unix epoch rather than into None.
+
+class _Handle:
+    """Stands in for an open rawpy handle — `capture_time` wants only `other`."""
+    def __init__(self, stamp):
+        self.other = type("Other", (), {"timestamp": stamp})()
+
+
+def test_capture_time_reads_the_libraw_stamp() -> None:
+    from datetime import datetime
+    shot = datetime(2026, 5, 9, 9, 15, 3)
+    assert raw.capture_time(_Handle(shot)) == shot
+
+
+def test_capture_time_treats_the_epoch_as_unknown() -> None:
+    from datetime import datetime
+    epoch = datetime.fromtimestamp(0)
+    assert raw.capture_time(_Handle(epoch)) is None, "0 means the file did not say"
+    # One second either side is a real reading and must survive.
+    assert raw.capture_time(_Handle(datetime.fromtimestamp(1))) is not None
 
 
 # ----- templates ----------------------------------------------------------

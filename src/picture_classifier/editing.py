@@ -38,6 +38,12 @@ import cv2
 import numpy as np
 
 from . import film as film_mod
+from . import grading as grading_mod
+from . import healing as healing_mod
+from . import rangemask as rangemask_mod
+from . import redeye as redeye_mod
+from . import segment as segment_mod
+from . import sharpening as sharpening_mod
 from . import watermark as watermark_mod
 
 # ----- schema -------------------------------------------------------------
@@ -55,7 +61,16 @@ DEFAULT_EDIT: dict[str, Any] = {
     "vibrance": 0,
     "saturation": 0,
     "clarity": 0,
-    "sharpen": 0,      # 0..100 (one-sided)
+    "texture": 0,      # fine detail; - smooths skin, + finds pores and fabric
+    "dehaze": 0,       # - puts atmosphere back, + cuts through it
+    "denoise": 0,      # 0..100 (one-sided); the one stage judged at 1:1
+    # Sharpening, four sliders. `sharpen` keeps its name and its 0..100 meaning
+    # so an edit saved before the other three existed loads with its number in
+    # the same place; see the note above _apply_sharpen about what did change.
+    "sharpen": 0,           # amount, 0..100 (one-sided)
+    "sharpen_radius": 50,   # 0.5..3.0 px of detail scale; neutral at the middle
+    "sharpen_detail": 25,   # how much of the finest structure is admitted
+    "sharpen_masking": 0,   # confine it to edges; 0 sharpens everything
     "blur": 0,         # defocus / bokeh, 0..100
     "motion": 0,       # directional blur amount, 0..100
     "motion_angle": 0, # its direction in degrees
@@ -65,6 +80,15 @@ DEFAULT_EDIT: dict[str, Any] = {
     "tilt": 0.0,       # straighten, degrees; + levels a horizon drooping right
     "crop": None,      # {x, y, w, h} of the straightened frame; see "geometry"
     "curve": [[0.0, 0.0], [1.0, 1.0]],
+    # Per-channel point curves, applied after the master one. See CURVE_KEYS.
+    "curve_r": [[0.0, 0.0], [1.0, 1.0]],
+    "curve_g": [[0.0, 0.0], [1.0, 1.0]],
+    "curve_b": [[0.0, 0.0], [1.0, 1.0]],
+    "hsl": None,       # colour mixer; see the "colour mixer" section below
+    "grading": None,   # three-way colour wheels; see the grading module
+    # Repairs, applied before anything tonal. See `_repair`.
+    "healing": None,   # heal / clone / spot; see the healing module
+    "redeye": None,    # red-eye and pet-eye; see the redeye module
     "masks": [],       # local adjustments; see the "masks" section below
     "film": None,      # film emulation chain; see the film module
     "watermark": None, # signature / shooting info; see the watermark module
@@ -83,7 +107,13 @@ _RANGES: dict[str, tuple[float, float]] = {
     "vibrance": (-100, 100),
     "saturation": (-100, 100),
     "clarity": (-100, 100),
+    "texture": (-100, 100),
+    "dehaze": (-100, 100),
+    "denoise": (0, 100),
     "sharpen": (0, 100),
+    "sharpen_radius": (0, 100),
+    "sharpen_detail": (0, 100),
+    "sharpen_masking": (0, 100),
     "blur": (0, 100),
     "motion": (0, 100),
     "motion_angle": (-180, 180),
@@ -99,6 +129,15 @@ _FLOAT_KEYS = frozenset({"exposure", "tilt"})
 
 _EPS = 1e-4
 _LUT_N = 1024  # tone-LUT sample count
+
+# The master curve and the three per-channel ones. All four are the same shape —
+# a list of monotone control points — and all four fold into the single
+# per-channel lookup that `_wb_tone_lut` builds, so a channel curve costs nothing
+# at render time beyond the table it is baked into. The master runs first: it
+# says how bright a tone is, and the channel curves then say what colour it takes
+# there, which is the order that makes a split-toned shadow behave.
+CURVE_KEYS: tuple[str, ...] = ("curve", "curve_r", "curve_g", "curve_b")
+_CHANNEL_CURVES: tuple[str, ...] = ("curve_r", "curve_g", "curve_b")
 
 # (x0, y0, w, h) in normalized frame coordinates. Anything other than this means
 # the array being graded is a window onto a larger photo — see `render`.
@@ -291,19 +330,49 @@ def geometry_norm_matrix(w: int, h: int,
 # Common to all three: `feather` softens the edge, `amount` scales the whole
 # effect, `invert` flips inside/outside.
 
-MASK_TYPES = ("radial", "linear", "brush")
+MASK_TYPES = ("radial", "linear", "brush", "auto", "range")
+
+# An "auto" mask is the odd one out and the difference is worth stating up front.
+# The other three are pure functions of geometry, which is why their alpha can be
+# cached on the numbers that describe them. An automatic mask is a function of
+# the *pixels*, and of two specific sets of pixels: the WHOLE frame, because a
+# segmenter shown only a 1:1 window would find a different subject than the fit
+# preview found, and the ORIGINAL frame, because a mask derived from graded
+# pixels would crawl every time a slider moved.
+#
+# Neither of those is available where alphas are built — a window render only
+# ever holds a window, already graded. So the field arrives from outside:
+# `segment` computes it from the original whole frame, the caller caches it per
+# photo, and everything here does is crop the window out and scale it. That also
+# keeps onnxruntime out of this module's import path and leaves it testable
+# without the model present.
+#
+# A "range" mask, and the range refinement any mask may carry, are the third
+# kind of thing: also derived from the pixels, but cheaply and with pure numpy,
+# so they are computed here from a whole-frame array the caller hands over as
+# `src`. Two mechanisms rather than one, and the line between them is whether a
+# model and a per-photo cache are involved.
+#
+# Both share one rule, and it is the important one: the selection is measured on
+# the WHOLE frame at one fixed grid, never on the window being rendered. Measure
+# a luminance range on a 1:1 window and it would select a different set of tones
+# than the fit preview did, because the window's own histogram is not the
+# frame's — and the slider was tuned against the preview.
 
 # The sliders a mask may carry — everything except vignette (a frame-wide effect)
 # and the master curve (kept global so the histogram stays readable).
 LOCAL_KEYS: tuple[str, ...] = (
     "exposure", "contrast", "highlights", "shadows", "whites", "blacks",
-    "temp", "tint", "vibrance", "saturation", "clarity", "sharpen",
+    "temp", "tint", "vibrance", "saturation", "clarity", "texture",
+    "dehaze", "denoise", "sharpen", "sharpen_radius", "sharpen_detail",
+    "sharpen_masking",
     "blur", "motion", "motion_angle", "glow", "pixelate",
 )
 
 # Keys that describe *how* an effect looks rather than how much of it there is —
 # on their own they change nothing, so they do not make a mask "active".
-_MODIFIER_KEYS = frozenset({"motion_angle"})
+_MODIFIER_KEYS = frozenset({"motion_angle", "sharpen_radius", "sharpen_detail",
+                            "sharpen_masking"})
 
 MASK_MAX = 16              # masks per photo
 STROKE_MAX = 400           # brush strokes per mask
@@ -321,12 +390,23 @@ def _default_mask(kind: str) -> dict[str, Any]:
         "invert": False,
         "feather": 50,
         "amount": 100,
-        "adj": {k: (0.0 if k == "exposure" else 0) for k in LOCAL_KEYS},
+        "adj": _neutral_adj(),
+        "range_luma": None,
+        "range_color": None,
     }
     if kind == "radial":
         m.update(cx=0.5, cy=0.5, rx=0.25, ry=0.25, angle=0.0)
     elif kind == "linear":
         m.update(x1=0.5, y1=0.15, x2=0.5, y2=0.55, feather=100)
+    elif kind == "auto":
+        # Feather starts at zero here, unlike the drawn kinds: the model's own
+        # edge is already soft in the right places — half-covered hair comes out
+        # near 0.5 — and blurring that by default would throw the good edge away.
+        m.update(group="subject", feather=0)
+    elif kind == "range":
+        # Nothing but the range selection: the base covers the whole frame, so
+        # this kind is "everything that looks like this", with no shape at all.
+        m.update(feather=0)
     else:
         m.update(strokes=[])
     return m
@@ -339,9 +419,16 @@ def _fnum(raw: Any, lo: float, hi: float, fallback: float) -> float:
         return fallback
 
 
+def _neutral_adj() -> dict[str, Any]:
+    """A mask's sliders at their neutral values. Not all of those are zero —
+    `sharpen_radius` is neutral at its midpoint — so this reads them off
+    DEFAULT_EDIT rather than assuming."""
+    return {k: DEFAULT_EDIT[k] for k in LOCAL_KEYS}
+
+
 def _normalize_adj(raw: Any) -> dict[str, Any]:
     """Clamp a mask's slider dict to the local subset (missing keys stay neutral)."""
-    out: dict[str, Any] = {k: (0.0 if k == "exposure" else 0) for k in LOCAL_KEYS}
+    out: dict[str, Any] = _neutral_adj()
     if not isinstance(raw, dict):
         return out
     for key in LOCAL_KEYS:
@@ -391,6 +478,11 @@ def normalize_mask(raw: Any) -> dict[str, Any] | None:
     m["feather"] = int(round(_fnum(raw.get("feather"), 0, 100, m["feather"])))
     m["amount"] = int(round(_fnum(raw.get("amount"), 0, 100, 100)))
     m["adj"] = _normalize_adj(raw.get("adj"))
+    # Available on every kind, including "auto": "the subject, but only its
+    # highlights" is one mask, and it is the reason this is a refinement rather
+    # than a mask type of its own.
+    m["range_luma"] = rangemask_mod.normalize_luma(raw.get("range_luma"))
+    m["range_color"] = rangemask_mod.normalize_color(raw.get("range_color"))
 
     if kind == "radial":
         # Centres may sit off-frame (a corner ellipse), radii must stay positive.
@@ -406,15 +498,35 @@ def normalize_mask(raw: Any) -> dict[str, Any] | None:
         m["y2"] = _fnum(raw.get("y2"), -1.0, 2.0, 0.55)
         if abs(m["x2"] - m["x1"]) < 1e-4 and abs(m["y2"] - m["y1"]) < 1e-4:
             return None  # zero-length gradient has no direction
-    else:
+    elif kind == "auto":
+        group = raw.get("group")
+        if group not in segment_mod.CLASS_GROUPS:
+            return None  # a group the model cannot produce selects nothing
+        m["group"] = group
+    elif kind == "range":
+        if m["range_luma"] is None and m["range_color"] is None:
+            return None  # a range mask with no range selects everything
+    elif kind == "brush":
         m["strokes"] = _normalize_strokes(raw.get("strokes"))
         if not m["strokes"]:
             return None
+    else:
+        raise AssertionError(f"unhandled mask type {kind!r}")
     return m
 
 
 def _adj_is_neutral(adj: dict[str, Any]) -> bool:
-    return all(abs(float(adj.get(k, 0) or 0)) < _EPS
+    """True when a mask's sliders would leave its pixels alone.
+
+    Measured against DEFAULT_EDIT rather than against zero: `sharpen_radius` is
+    neutral at its midpoint, so a mask holding the default 50 there is doing
+    nothing and must not count as active. The modifier keys are excluded anyway
+    — they describe how an effect looks, not whether one was asked for — but
+    reading the neutral off DEFAULT_EDIT is what keeps this correct the next time
+    a slider arrives whose neutral is not zero.
+    """
+    return all(abs(float(adj.get(k, DEFAULT_EDIT[k]) or 0)
+                   - float(DEFAULT_EDIT[k])) < _EPS
                for k in LOCAL_KEYS if k not in _MODIFIER_KEYS)
 
 
@@ -462,13 +574,26 @@ def normalize(edit: dict[str, Any] | None) -> dict[str, Any]:
     """Merge `edit` over DEFAULT_EDIT, clamp every scalar to its range and repair
     the curve. Always returns a full dict with all keys present."""
     out = dict(DEFAULT_EDIT)
-    out["curve"] = [list(p) for p in DEFAULT_EDIT["curve"]]
+    for key in CURVE_KEYS:
+        out[key] = [list(p) for p in DEFAULT_EDIT[key]]
     out["masks"] = []
     out["watermark"] = None
     out["crop"] = None
     out["film"] = None
+    out["hsl"] = None
+    out["grading"] = None
+    out["healing"] = None
+    out["redeye"] = None
     if not edit:
         return out
+    if edit.get("healing") is not None:
+        out["healing"] = healing_mod.normalize(edit["healing"])
+    if edit.get("redeye") is not None:
+        out["redeye"] = redeye_mod.normalize(edit["redeye"])
+    if edit.get("hsl") is not None:
+        out["hsl"] = normalize_hsl(edit["hsl"])
+    if edit.get("grading") is not None:
+        out["grading"] = grading_mod.normalize(edit["grading"])
     if edit.get("film") is not None:
         out["film"] = film_mod.normalize(edit["film"])
     if edit.get("crop") is not None:
@@ -482,8 +607,9 @@ def normalize(edit: dict[str, Any] | None) -> dict[str, Any]:
             continue
         val = min(hi, max(lo, val))
         out[key] = val if key in _FLOAT_KEYS else int(round(val))
-    if "curve" in edit:
-        out["curve"] = _clean_curve(edit["curve"])
+    for key in CURVE_KEYS:
+        if key in edit:
+            out[key] = _clean_curve(edit[key])
     if isinstance(edit.get("masks"), (list, tuple)):
         masks = (normalize_mask(m) for m in edit["masks"][:MASK_MAX])
         out["masks"] = [m for m in masks if m is not None]
@@ -518,14 +644,41 @@ def merge_additive(base: dict[str, Any] | None,
     for key in _RANGES:
         if abs(float(over[key]) - float(DEFAULT_EDIT[key])) > _EPS:
             out[key] = over[key]
-    if not _curve_is_identity(over["curve"]):
-        out["curve"] = [list(p) for p in over["curve"]]
+    for key in CURVE_KEYS:
+        if not _curve_is_identity(over[key]):
+            out[key] = [list(p) for p in over[key]]
     if over["watermark"] is not None:
         out["watermark"] = over["watermark"]
     if over["crop"] is not None:
         out["crop"] = dict(over["crop"])   # an aspect preset is worth carrying
     if over["film"] is not None:
         out["film"] = dict(over["film"])
+    # Band by band, for the same reason the sliders merge one at a time: a
+    # preset that only cools the blues must not wipe someone's reds.
+    if over["hsl"] is not None:
+        merged = {b: dict(v) for b, v in (out["hsl"] or {}).items()}
+        for band, vals in over["hsl"].items():
+            merged.setdefault(band, {}).update(vals)
+        out["hsl"] = merged or None
+    if over["grading"] is not None:
+        # Zone by zone and key by key, for the same reason the mixer merges that
+        # way: a preset that only warms the highlights must not clear the rest.
+        merged = {k: (dict(v) if isinstance(v, dict) else v)
+                  for k, v in (out["grading"] or {}).items()}
+        for key, val in over["grading"].items():
+            if isinstance(val, dict):
+                merged.setdefault(key, {}).update(val)
+            else:
+                merged[key] = val
+        out["grading"] = grading_mod.normalize(merged)
+    # Repairs are appended, like masks, and for a concrete reason: sensor dust
+    # lands in the same place on every frame a body shoots, so "remove the dust
+    # spots" is exactly the kind of thing a preset should carry across a shoot.
+    for key, mod in (("healing", healing_mod), ("redeye", redeye_mod)):
+        if over[key] is None:
+            continue
+        base_ops = list((out[key] or {}).get("ops", []))
+        out[key] = mod.normalize({"ops": base_ops + list(over[key]["ops"])})
     out["masks"] = (out["masks"] + over["masks"])[:MASK_MAX]
     return out
 
@@ -548,7 +701,13 @@ def is_neutral(edit: dict[str, Any] | None) -> bool:
         return False   # a crop changes every pixel's place, if not its value
     if e["film"] is not None:
         return False
-    return _curve_is_identity(e["curve"])
+    if e["hsl"] is not None:
+        return False   # normalize_hsl returns None unless a band is off neutral
+    if e["grading"] is not None:
+        return False   # likewise: grading.normalize drops anything neutral
+    if e["healing"] is not None or e["redeye"] is not None:
+        return False   # both normalize to None unless they would change pixels
+    return all(_curve_is_identity(e[k]) for k in CURVE_KEYS)
 
 
 def edit_hash(edit: dict[str, Any] | None) -> str:
@@ -653,7 +812,9 @@ def _wb_tone_lut(e: dict[str, Any]) -> np.ndarray | None:
     """
     gains = _wb_gains(e)
     tone_flat = _tone_is_neutral(e)
-    if gains is None and tone_flat:
+    channel = [None if _curve_is_identity(e[k]) else _curve_lut(e[k], 256)
+               for k in _CHANNEL_CURVES]
+    if gains is None and tone_flat and not any(c is not None for c in channel):
         return None
     x = np.linspace(0.0, 1.0, 256, dtype=np.float32)
     cols = []
@@ -661,7 +822,9 @@ def _wb_tone_lut(e: dict[str, Any]) -> np.ndarray | None:
         v = np.clip(x * gains[c], 0.0, 1.0) if gains is not None else x
         if not tone_flat:
             v = np.interp(v, np.linspace(0.0, 1.0, _LUT_N), _tone_lut(e))
-        cols.append(v.astype(np.float32))
+        if channel[c] is not None:
+            v = np.interp(v, np.linspace(0.0, 1.0, 256), channel[c])
+        cols.append(np.clip(v, 0.0, 1.0).astype(np.float32))
     return np.stack(cols, axis=-1).reshape(256, 1, 3)
 
 
@@ -707,6 +870,239 @@ def _apply_clarity(rgb: np.ndarray, clarity: int, frame_long: float) -> np.ndarr
     mask = 1.0 - (2.0 * np.clip(y, 0, 1) - 1.0) ** 2
     delta = (amount * detail * mask)[..., None]
     return rgb + delta
+
+
+# ----- colour mixer (HSL) -------------------------------------------------
+#
+# Eight hue bands, each with hue / saturation / luminance. Stored sparsely —
+# only values that are actually off neutral — so a neutral mixer normalizes to
+# None and never makes an edit look non-neutral, and the edit hash stays short.
+#
+# Global only, no per-mask version, and deliberately so: the mixer is a
+# statement about a colour wherever it appears in the frame, and a mask already
+# answers "only here" better than eight bands could. Lightroom draws the same
+# line for the same reason.
+
+HSL_BANDS: tuple[str, ...] = ("red", "orange", "yellow", "green",
+                              "aqua", "blue", "purple", "magenta")
+HSL_KEYS: tuple[str, ...] = ("hue", "sat", "lum")
+
+# Where each band sits on the hue circle, in degrees.
+_HSL_CENTRES = (0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 285.0, 320.0)
+_HSL_HUE_SHIFT = 30.0    # degrees of hue rotation at +/-100
+_HSL_LUM_MAX = 0.7       # how far towards white or black at +/-100
+_HSL_GREY_GUARD = 0.12   # saturation below which the mixer lets go; see _apply_hsl
+
+
+def normalize_hsl(raw: Any) -> dict[str, dict[str, int]] | None:
+    """Clamp a colour-mixer dict, dropping neutral entries. Returns None when
+    nothing is left, which is what keeps a switched-on-but-untouched mixer from
+    counting as an edit."""
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, dict[str, int]] = {}
+    for band in HSL_BANDS:
+        src = raw.get(band)
+        if not isinstance(src, dict):
+            continue
+        vals = {}
+        for key in HSL_KEYS:
+            if src.get(key) is None:
+                continue
+            val = int(round(_fnum(src[key], -100.0, 100.0, 0.0)))
+            if val:
+                vals[key] = val
+        if vals:
+            out[band] = vals
+    return out or None
+
+
+def _hsl_luts(hsl: dict[str, dict[str, int]]) -> tuple[np.ndarray, ...]:
+    """One 360-entry lookup per parameter, indexed by hue in degrees.
+
+    The eight band values are interpolated around the circle with a smoothstep
+    between neighbours rather than a per-band window. Two things fall out of
+    that: a hue sitting on a band centre gets exactly that band's value, and the
+    weights are a partition of unity everywhere else — so no hue is skipped, no
+    hue is counted twice, and there is no seam between orange and yellow to find
+    later. Closing the circle is just a matter of repeating the centres either
+    side of 0 and 360.
+    """
+    hue = np.arange(360, dtype=np.float32)
+    centres = np.asarray(_HSL_CENTRES, dtype=np.float32)
+    xs = np.concatenate([centres - 360.0, centres, centres + 360.0])
+    luts = []
+    for key in HSL_KEYS:
+        vals = np.asarray([hsl.get(b, {}).get(key, 0) for b in HSL_BANDS],
+                          dtype=np.float32)
+        ys = np.concatenate([vals, vals, vals])
+        idx = np.searchsorted(xs, hue, side="right") - 1
+        span = np.maximum(xs[idx + 1] - xs[idx], 1e-6)
+        t = _smoothstep(np.clip((hue - xs[idx]) / span, 0.0, 1.0))
+        luts.append(ys[idx] * (1.0 - t) + ys[idx + 1] * t)
+    return tuple(luts)
+
+
+def _apply_hsl(rgb: np.ndarray, hsl: dict[str, dict[str, int]]) -> np.ndarray:
+    """Rotate, saturate and lighten each hue band.
+
+    Every change is scaled by the pixel's own saturation, and that guard is the
+    difference between a usable mixer and a noisy one. The hue of a near-grey
+    pixel is numerically meaningless — a rounding error decides whether a patch
+    of grey concrete is "blue" or "purple" — so pushing those pixels would
+    speckle a flat wall with two different corrections. Fading out below
+    `_HSL_GREY_GUARD` means the mixer only ever moves colours that are there.
+    """
+    hue_lut, sat_lut, lum_lut = _hsl_luts(hsl)
+    # H, L, S with H in degrees; the 1-degree quantization of the lookup is far
+    # below anything visible.
+    hls = cv2.cvtColor(np.clip(rgb, 0.0, 1.0), cv2.COLOR_RGB2HLS)
+    h, lum, sat = hls[..., 0], hls[..., 1], hls[..., 2]
+    at = np.clip(h, 0.0, 359.0).astype(np.int32)
+    grip = _smoothstep(np.clip(sat / _HSL_GREY_GUARD, 0.0, 1.0))
+
+    shift = hue_lut[at] / 100.0 * _HSL_HUE_SHIFT
+    hls[..., 0] = np.mod(h + shift * grip, 360.0)
+    gain = sat_lut[at] / 100.0
+    hls[..., 2] = np.clip(sat * (1.0 + gain * grip), 0.0, 1.0)
+    k = lum_lut[at] / 100.0 * _HSL_LUM_MAX * grip
+    # Towards white or towards black, never past either: a multiplier would
+    # clip the brightest band members and flatten them into one another.
+    hls[..., 1] = np.clip(np.where(k >= 0.0, lum + (1.0 - lum) * k,
+                                   lum * (1.0 + k)), 0.0, 1.0)
+    return cv2.cvtColor(hls, cv2.COLOR_HLS2RGB)
+
+
+# ----- texture, dehaze and noise -----------------------------------------
+#
+# Three stages between tone and clarity, in the order a frame wants them: cut
+# the haze first (it is a property of the light, not of the detail), then clean
+# the noise, then decide how much detail to bring back. Amplifying detail before
+# denoising only gives the denoiser more to chew on.
+
+_TEXTURE_WORK_EDGE = 1024   # finer than clarity's 512 — texture is pores, not regions
+_TEXTURE_SIGMA = 2.0
+_TEXTURE_MAX = 0.9          # detail multiplier at +/-100
+
+
+def _apply_texture(rgb: np.ndarray, texture: int, frame_long: float) -> np.ndarray:
+    """High-frequency detail amplitude on luma.
+
+    Texture and clarity are the same operation at two scales, and the scale is
+    the whole point. Clarity's wide radius and midtone mask move *regional*
+    contrast; texture's small radius moves the finest detail the frame holds.
+    So negative texture smooths skin without the flat look a blur gives — the
+    edges of a face live in the low frequencies and are left alone — and
+    positive texture finds fabric and bark rather than darkening one side of
+    the sky.
+    """
+    amount = texture / 100.0 * _TEXTURE_MAX
+    y = _luma(rgb)
+    detail = y - _lowfreq(y, frame_long, _TEXTURE_WORK_EDGE, _TEXTURE_SIGMA)
+    return rgb + (amount * detail)[..., None]
+
+
+_DEHAZE_WORK_EDGE = 512      # the transmission map is estimated on a copy this long
+_DEHAZE_PATCH_FRAC = 0.015   # dark-channel window, as a fraction of the long edge
+_DEHAZE_OMEGA = 0.92         # haze deliberately left in, so distance still reads
+_DEHAZE_TMIN = 0.12          # floor on transmission; without it dense haze explodes
+
+
+def _transmission(rgb: np.ndarray, frame_long: float) -> np.ndarray:
+    """Dark-channel-prior transmission: how much of each pixel reached the lens
+    directly rather than as scattered light.
+
+    The prior is that in a haze-free patch of an outdoor photo at least one
+    channel is nearly black, so whatever floor the darkest channel keeps over a
+    small window measures the haze in front of it.
+
+    Estimated on a downscaled copy and upscaled back, like `_lowfreq`, which
+    bounds the cost regardless of megapixels.
+
+    The low pass before the minimum is not cosmetic. A minimum filter does not
+    commute with downsampling — one dark pixel between two leaves survives at
+    full resolution and is averaged away in a preview — so reading the dark
+    channel straight off the pixels makes the strength of the effect depend on
+    the render size, which is exactly what this pipeline promises never to
+    happen. Haze is a smooth veil, so estimating it from a low-passed copy at a
+    frame-relative radius is both the physically right thing to measure and the
+    thing that is the same at every resolution.
+    """
+    h, w = rgb.shape[:2]
+    unit = min(float(_DEHAZE_WORK_EDGE), frame_long)
+    scale = unit / frame_long
+    if scale < 1.0:
+        small = cv2.resize(rgb, (max(4, int(w * scale)), max(4, int(h * scale))),
+                           interpolation=cv2.INTER_AREA)
+    else:
+        small = rgb
+    patch = max(3, int(round(_DEHAZE_PATCH_FRAC * unit)))
+    patch |= 1   # odd, so the window is centred
+    small = cv2.GaussianBlur(np.clip(small, 0.0, 1.0), (0, 0), patch / 2.0)
+    dark = small.min(axis=2)
+    dark = cv2.erode(dark, np.ones((patch, patch), np.uint8))
+    # The min filter leaves blocks; a blur of the same order turns them back
+    # into the gradient that haze actually is.
+    dark = cv2.GaussianBlur(dark, (0, 0), patch / 2.0)
+    t = np.clip(1.0 - _DEHAZE_OMEGA * dark, _DEHAZE_TMIN, 1.0)
+    if t.shape != (h, w):
+        t = cv2.resize(t, (w, h), interpolation=cv2.INTER_LINEAR)
+    return t
+
+
+def _apply_dehaze(rgb: np.ndarray, dehaze: int, frame_long: float) -> np.ndarray:
+    """Invert the haze model I = J*t + A*(1-t), or run it forwards for negative
+    values, which puts atmosphere back into a frame that has none.
+
+    The atmospheric light A is fixed at white rather than estimated from the
+    frame. Estimating it is the textbook step and it is better on a single whole
+    image — but A is a *global* statistic, so a 1:1 window would arrive at a
+    different one than the full-frame preview and the two renders would not
+    match. The contract here is that the preview is the export, so a slightly
+    weaker dehaze identical at every zoom beats a better one that drifts. Fixing
+    A also keeps the stage local, which is what lets `effect_padding` cover it.
+    """
+    amount = dehaze / 100.0
+    t = _transmission(rgb, frame_long)[..., None]
+    direct = (rgb - 1.0) / t + 1.0
+    return rgb + amount * (direct - rgb)
+
+
+_DENOISE_MAX_H = 12.0        # non-local-means strength at 100, in 8-bit levels
+_DENOISE_CHROMA_SIGMA = 3.0  # chroma blur at 100, in pixels
+_DENOISE_TEMPLATE = 5        # patch compared
+_DENOISE_SEARCH = 11         # neighbourhood searched for similar patches
+
+
+def _apply_denoise(rgb: np.ndarray, denoise: int) -> np.ndarray:
+    """Luminance and chroma noise reduction, split because the two look nothing
+    alike. Chroma noise is coloured blotches several pixels across, and the eye
+    carries almost no chroma detail, so it can simply be blurred away. Luma
+    noise has to go without the detail going with it — that part is non-local
+    means, which averages a pixel with the pixels whose neighbourhoods resemble
+    its own, so an edge is only ever averaged with other copies of that edge.
+
+    This is the one stage deliberately *not* resolution-independent. Noise is a
+    per-pixel quantity: a downscaled preview has already averaged most of it
+    away and there is nothing left there to remove. The strength is in 8-bit
+    levels at the array's own scale, so judge it at 1:1 — the same thing
+    Lightroom asks of you, for the same reason.
+
+    Non-local means needs 8-bit input, so luma makes a round trip through it.
+    That costs at most a level out of 255, the tolerance the tone LUT already
+    accepts.
+    """
+    amount = denoise / 100.0
+    ycc = cv2.cvtColor(np.clip(rgb, 0.0, 1.0), cv2.COLOR_RGB2YCrCb)
+    y8 = np.rint(ycc[..., 0] * 255.0).astype(np.uint8)
+    y8 = cv2.fastNlMeansDenoising(y8, None, _DENOISE_MAX_H * amount,
+                                  _DENOISE_TEMPLATE, _DENOISE_SEARCH)
+    ycc[..., 0] = y8.astype(np.float32) / 255.0
+    sigma = _DENOISE_CHROMA_SIGMA * amount
+    if sigma > 0.1:
+        ycc[..., 1:] = cv2.GaussianBlur(np.ascontiguousarray(ycc[..., 1:]),
+                                        (0, 0), sigma)
+    return cv2.cvtColor(ycc, cv2.COLOR_YCrCb2RGB)
 
 
 # ----- creative effects ---------------------------------------------------
@@ -826,10 +1222,28 @@ def _apply_color(rgb: np.ndarray, vibrance: int, saturation: int) -> np.ndarray:
     return y + factor * (rgb - y)
 
 
-def _apply_sharpen(rgb: np.ndarray, sharpen: int) -> np.ndarray:
-    amount = sharpen / 100.0 * 1.5
-    blur = cv2.GaussianBlur(rgb, (0, 0), 1.0)
-    return rgb + amount * (rgb - blur)
+def _sharpen_params(e: dict[str, Any]) -> dict[str, int]:
+    """The four sharpening sliders, in the shape the `sharpening` module wants."""
+    return {"amount": e["sharpen"], "radius": e["sharpen_radius"],
+            "detail": e["sharpen_detail"], "masking": e["sharpen_masking"]}
+
+
+def _apply_sharpen(rgb: np.ndarray, e: dict[str, Any],
+                   frame_long: float) -> np.ndarray:
+    """Capture sharpening; the operator lives in `sharpening`.
+
+    This replaced a bare unsharp mask — `rgb + amount * (rgb - blur(sigma=1))` —
+    and the replacement is NOT the same picture. `sharpen` keeps its name and its
+    scale so a saved edit loads unchanged, but at the same number the result now
+    differs by about 6 levels on average and up to 40 on a hard edge, because the
+    new operator clamps each pixel into the range of luma already present around
+    it and the old one was free to overshoot. No setting of the other three
+    reproduces the old look; the clamp is the point of it. That is a deliberate
+    improvement to every edit that carries a sharpen value — halos it used to
+    put there are gone — and it is recorded here because a non-destructive editor
+    changing what a saved edit renders to is worth saying out loud.
+    """
+    return sharpening_mod.apply_sharpen(rgb, _sharpen_params(e), frame_long)
 
 
 def _apply_vignette(rgb: np.ndarray, vignette: int, roi: tuple[float, float, float, float]) -> np.ndarray:
@@ -954,6 +1368,79 @@ def _brush_alpha(m: dict[str, Any], sh: int, sw: int,
 # being rebuilt on every keystroke of a drag. Bounded: the work size caps the
 # long edge at _MASK_WORK_EDGE, so an entry is at most a few MB.
 _ALPHA_CACHE: "OrderedDict[bytes, np.ndarray]" = OrderedDict()
+def _window_of(field: np.ndarray, sh: int, sw: int,
+               roi: tuple[float, float, float, float]) -> np.ndarray:
+    """Crop `roi` out of a whole-frame alpha and scale it to sh x sw.
+
+    Shared by the two pixel-derived mask sources. Both compute their field over
+    the whole photo — that is what makes them agree between the fit preview and
+    a 1:1 window — so both need the same last step.
+    """
+    fh, fw = field.shape[:2]
+    x0 = max(0, min(fw - 1, int(round(roi[0] * fw))))
+    y0 = max(0, min(fh - 1, int(round(roi[1] * fh))))
+    x1 = max(x0 + 1, min(fw, int(round((roi[0] + roi[2]) * fw))))
+    y1 = max(y0 + 1, min(fh, int(round((roi[1] + roi[3]) * fh))))
+    window = np.ascontiguousarray(field[y0:y1, x0:x1], dtype=np.float32)
+    if window.shape[:2] != (sh, sw):
+        window = cv2.resize(window, (sw, sh), interpolation=cv2.INTER_LINEAR)
+    return window
+
+
+def _range_alpha(mask: dict[str, Any], sh: int, sw: int,
+                 roi: tuple[float, float, float, float],
+                 src: np.ndarray | None) -> np.ndarray | None:
+    """A mask's range refinement, or None when it carries none.
+
+    `src` is the whole photo, ungraded. Both of those matter. Whole, because the
+    selection has to be the same one at every zoom. Ungraded, because a selection
+    measured on graded pixels would move every time a slider did — and a
+    luminance range in particular would then chase the exposure that is being
+    set through it.
+    """
+    if mask["range_luma"] is None and mask["range_color"] is None:
+        return None
+    assert src is not None, (
+        "a mask with a range refinement needs the whole ungraded frame: "
+        "pass src= to render()")
+    # The selector's own grid is the whole frame's mask grid, so the field is
+    # identical whatever window is being rendered out of it.
+    gh, gw = _work_size(*src.shape[:2])
+    alpha = None
+    if mask["range_luma"] is not None:
+        alpha = rangemask_mod.luma_alpha(src, mask["range_luma"], (gh, gw))
+    if mask["range_color"] is not None:
+        col = rangemask_mod.color_alpha(src, mask["range_color"], (gh, gw))
+        # Both present means both conditions: this tone AND this colour.
+        alpha = col if alpha is None else alpha * col
+    return _window_of(alpha, sh, sw, roi)
+
+
+_AUTO_FEATHER_FRAC = 0.02   # blur radius at feather 100, as a fraction of the edge
+
+
+def _auto_alpha(mask: dict[str, Any], sh: int, sw: int,
+                roi: tuple[float, float, float, float],
+                fields: dict[str, np.ndarray] | None) -> np.ndarray:
+    """Crop and scale a whole-frame automatic mask down to this render window.
+
+    `fields` maps a group name to its alpha over the whole photo, at whatever
+    resolution the caller computed it (the model's output is 256 px wide, so it
+    is a small array however big the photo is). See the note on MASK_TYPES for
+    why it has to come from outside rather than be computed here.
+    """
+    assert fields is not None and mask["group"] in fields, (
+        f"the {mask['group']!r} automatic mask needs its field supplied by the "
+        f"caller: pass auto={{'{mask['group']}': alpha}} to render()"
+    )
+    window = _window_of(fields[mask["group"]], sh, sw, roi)
+    if mask["feather"]:
+        sigma = mask["feather"] / 100.0 * _AUTO_FEATHER_FRAC * max(sh, sw)
+        if sigma > 0.3:
+            window = cv2.GaussianBlur(window, (0, 0), sigma)
+    return np.clip(window, 0.0, 1.0)
+
+
 _ALPHA_CACHE_MAX = 12
 _ALPHA_LOCK = threading.Lock()
 
@@ -970,6 +1457,9 @@ def _alpha_key(mask: dict[str, Any], sh: int, sw: int,
     elif mask["type"] == "linear":
         h.update(np.asarray([mask[k] for k in ("x1", "y1", "x2", "y2")],
                             dtype=np.float64).tobytes())
+    elif mask["type"] in ("auto", "range"):
+        raise AssertionError(
+            f"{mask['type']} masks depend on the pixels and are not cached here")
     else:
         for s in mask["strokes"]:
             h.update(f"{s['radius']}|{s['erase']}".encode())
@@ -978,11 +1468,46 @@ def _alpha_key(mask: dict[str, Any], sh: int, sw: int,
 
 
 def _mask_alpha_at(mask: dict[str, Any], sh: int, sw: int,
-                   roi: tuple[float, float, float, float] = FULL_ROI) -> np.ndarray:
+                   roi: tuple[float, float, float, float] = FULL_ROI,
+                   auto: dict[str, np.ndarray] | None = None,
+                   src: np.ndarray | None = None) -> np.ndarray:
     """Build a mask's alpha at exactly sh x sw, covering `roi` of the frame.
 
-    The result is cached and shared — treat it as read-only.
+    The result is cached and shared — treat it as read-only. Masks whose alpha
+    depends on the pixels are not cached at all: the cache is keyed on the
+    numbers describing a mask, and those say nothing about which photo it is
+    being applied to, so a hit would be plain wrong. Both such paths are a crop
+    and a resize of a small field, which is cheaper than hashing the photo.
     """
+    ranged = _range_alpha(mask, sh, sw, roi, src)
+
+    if mask["type"] == "auto":
+        alpha = _auto_alpha(mask, sh, sw, roi, auto)
+    elif mask["type"] == "range":
+        assert ranged is not None, "a range mask normalizes away without a range"
+        alpha = np.ones((sh, sw), dtype=np.float32)
+    else:
+        alpha = None
+
+    if alpha is not None:
+        if ranged is not None:
+            alpha = alpha * ranged
+        if mask["invert"]:
+            alpha = 1.0 - alpha
+        if mask["amount"] != 100:
+            alpha = alpha * (mask["amount"] / 100.0)
+        return np.clip(alpha, 0.0, 1.0).astype(np.float32)
+
+    if ranged is not None:
+        # A drawn shape refined by a range: the shape is cacheable, the
+        # refinement is not, so take the cached shape and narrow a copy of it.
+        shape = _mask_alpha_at({**mask, "range_luma": None, "range_color": None},
+                               sh, sw, roi)
+        # Inversion has already been applied to the cached shape. Applying the
+        # range after it is what "this shape, narrowed to these tones" means;
+        # inverting the product instead would select the whole rest of the frame.
+        return np.clip(shape * ranged, 0.0, 1.0).astype(np.float32)
+
     key = _alpha_key(mask, sh, sw, roi)
     with _ALPHA_LOCK:
         hit = _ALPHA_CACHE.get(key)
@@ -995,7 +1520,7 @@ def _mask_alpha_at(mask: dict[str, Any], sh: int, sw: int,
     elif mask["type"] == "linear":
         alpha = _linear_alpha(mask, sh, sw, roi)
     else:
-        alpha = _brush_alpha(mask, sh, sw, roi)
+        alpha = _brush_alpha(mask, sh, sw, roi)   # "auto" returned above
     if mask["invert"]:
         alpha = 1.0 - alpha
     if mask["amount"] != 100:
@@ -1011,10 +1536,12 @@ def _mask_alpha_at(mask: dict[str, Any], sh: int, sw: int,
 
 
 def mask_alpha(mask: dict[str, Any], h: int, w: int,
-               roi: tuple[float, float, float, float] = FULL_ROI) -> np.ndarray:
+               roi: tuple[float, float, float, float] = FULL_ROI,
+               auto: dict[str, np.ndarray] | None = None,
+               src: np.ndarray | None = None) -> np.ndarray:
     """Alpha map of a normalized mask for an h x w image: float32 in [0,1]."""
     sh, sw = _work_size(h, w)
-    alpha = _mask_alpha_at(mask, sh, sw, roi)
+    alpha = _mask_alpha_at(mask, sh, sw, roi, auto, src)
     if (sh, sw) != (h, w):
         alpha = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_LINEAR)
     return alpha
@@ -1029,7 +1556,9 @@ def _full_edit_from_adj(adj: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
-                 roi: tuple[float, float, float, float]) -> np.ndarray:
+                 roi: tuple[float, float, float, float],
+                 auto: dict[str, np.ndarray] | None = None,
+                 src: np.ndarray | None = None) -> np.ndarray:
     """Blend a locally graded copy through each mask, in order. `img` is float32
     RGB clipped to [0,1] and is modified in place."""
     h, w = img.shape[:2]
@@ -1037,7 +1566,7 @@ def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
     for m in masks:
         if not mask_is_active(m):
             continue
-        small = _mask_alpha_at(m, sh, sw, roi)
+        small = _mask_alpha_at(m, sh, sw, roi, auto, src)
         hits = np.argwhere(small > 1.0 / 512.0)
         if not len(hits):
             continue
@@ -1074,6 +1603,37 @@ def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
 
 # ----- top-level render ---------------------------------------------------
 
+def _repair(rgb: np.ndarray, e: dict[str, Any],
+            roi: tuple[float, float, float, float]) -> np.ndarray:
+    """Red-eye and healing, before anything tonal.
+
+    These two repair the captured image; everything after them interprets it.
+    Getting the order wrong is not cosmetic. A red pupil left in place is
+    amplified by every stage that follows — vibrance finds it, the curve lifts
+    it, a colour-range mask keys off it — and a heal applied after a grade
+    diffuses from pixels a curve has already crushed, baking the grade into the
+    repair so that changing the curve afterwards leaves a patch that no longer
+    matches its surroundings.
+
+    Both modules want float32, and the round trip back to 8 bits is on purpose:
+    it lets `_grade`'s white-balance-and-tone step stay a `cv2.LUT` lookup rather
+    than an interpolation over every float in the frame, which is the difference
+    between about 1 ms and 340 ms on a 2048 px frame. The cost is at most a level
+    out of 255 — the same tolerance the module already documents for a mask
+    grading an already-graded crop.
+    """
+    if e["redeye"] is None and e["healing"] is None:
+        return rgb
+    work = rgb.astype(np.float32) / 255.0 if rgb.dtype == np.uint8 else rgb.copy()
+    # Fixed order so a render is reproducible. The two are independent in
+    # practice: a heal over a corrected pupil would simply replace it.
+    if e["redeye"] is not None:
+        work = redeye_mod.apply_redeye(work, e["redeye"], roi)
+    if e["healing"] is not None:
+        work = healing_mod.apply_healing(work, e["healing"], roi)
+    return np.rint(np.clip(work, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
 def _grade(img: np.ndarray, e: dict[str, Any],
            roi: tuple[float, float, float, float] = FULL_ROI,
            seed: int = 0) -> np.ndarray:
@@ -1101,9 +1661,29 @@ def _grade(img: np.ndarray, e: dict[str, Any],
         if not _tone_is_neutral(e):
             xs = np.linspace(0.0, 1.0, _LUT_N).astype(np.float32)
             img = np.interp(np.clip(img, 0.0, 1.0), xs, _tone_lut(e)).astype(np.float32)
+        # Same order as the lookup path: master tone, then the channel curves.
+        cxs = np.linspace(0.0, 1.0, 256).astype(np.float32)
+        for c, key in enumerate(_CHANNEL_CURVES):
+            if not _curve_is_identity(e[key]):
+                img[..., c] = np.interp(np.clip(img[..., c], 0.0, 1.0), cxs,
+                                        _curve_lut(e[key], 256)).astype(np.float32)
 
+    if e["dehaze"]:
+        img = _apply_dehaze(img, e["dehaze"], frame_long)
+    if e["denoise"]:
+        img = _apply_denoise(img, e["denoise"])
+    if e["texture"]:
+        img = _apply_texture(img, e["texture"], frame_long)
     if e["clarity"]:
         img = _apply_clarity(img, e["clarity"], frame_long)
+    # The mixer before vibrance and saturation: it decides what each colour is,
+    # and those two then decide how much of all of them there is.
+    if e["hsl"] is not None:
+        img = _apply_hsl(img, e["hsl"])
+    # The wheels after the mixer: the mixer says what a colour is, the wheels
+    # then push a whole tonal region somewhere regardless of what was there.
+    if e["grading"] is not None:
+        img = grading_mod.apply_grading(img, e["grading"])
     if e["vibrance"] or e["saturation"]:
         img = _apply_color(img, e["vibrance"], e["saturation"])
     # Optical effects last, in the order a camera would produce them: defocus
@@ -1116,7 +1696,7 @@ def _grade(img: np.ndarray, e: dict[str, Any],
     if e["glow"]:
         img = _apply_glow(img, e["glow"], frame_long)
     if e["sharpen"]:
-        img = _apply_sharpen(img, e["sharpen"])
+        img = _apply_sharpen(img, e, frame_long)
     if e["vignette"]:
         img = _apply_vignette(img, e["vignette"], roi)
     # The capture medium goes on after the frame-wide falloff and before the
@@ -1152,20 +1732,50 @@ def effect_padding(edit: dict[str, Any] | None, frame_long: float) -> float:
         if a.get("clarity"):
             # _lowfreq blurs at sigma 8 on a 512-long working copy.
             need = max(need, 8.0 * 3.0 * frame_long / 512.0)
+        if a.get("texture"):
+            need = max(need, _TEXTURE_SIGMA * 3.0 * frame_long / _TEXTURE_WORK_EDGE)
+        if a.get("dehaze"):
+            # The min filter's window, plus the blur that smooths it, at scale.
+            patch = _DEHAZE_PATCH_FRAC * _DEHAZE_WORK_EDGE
+            need = max(need, patch * 2.0 * frame_long / _DEHAZE_WORK_EDGE)
+        if a.get("denoise"):
+            # Fixed in pixels, not in frame fractions: see _apply_denoise.
+            need = max(need, float(_DENOISE_SEARCH + _DENOISE_TEMPLATE))
+        if a.get("sharpen"):
+            need = max(need, sharpening_mod.padding(
+                {"amount": a["sharpen"],
+                 "radius": a.get("sharpen_radius", DEFAULT_EDIT["sharpen_radius"]),
+                 "detail": a.get("sharpen_detail", DEFAULT_EDIT["sharpen_detail"]),
+                 "masking": a.get("sharpen_masking", DEFAULT_EDIT["sharpen_masking"])},
+                frame_long))
         return need
 
-    pad = max(for_adj(e), film_need)
+    # `w` and `h` are not both known here — callers pass only the long edge —
+    # and a heal's radius is normalized against the width, so handing the long
+    # edge in for both is the conservative bound. Overestimating costs a slightly
+    # larger patch; underestimating would show a seam.
+    repair_need = max(healing_mod.padding(e["healing"], int(frame_long), int(frame_long)),
+                      redeye_mod.padding(e["redeye"], int(frame_long), int(frame_long)))
+    pad = max(for_adj(e), film_need, repair_need)
     for m in e["masks"]:
         if mask_is_active(m):
             pad = max(pad, for_adj(m["adj"]))
-    return pad + 4.0    # a few pixels for sharpen's 1 px kernel and rounding
+    # A few pixels for rounding and for the resampling at a patch's edge. The
+    # stages with a real reach — blur, smear, bloom, clarity, texture, dehaze,
+    # denoise, sharpening — report theirs in `for_adj`, so this is only the slack
+    # on top. Raising it is not free: it changes the patch size, which moves the
+    # grid a mask's alpha is built on, which costs byte-exactness on a pure crop
+    # (see test_a_window_matches_the_same_part_of_the_whole_render).
+    return pad + 4.0
 
 
 def render(rgb: np.ndarray, edit: dict[str, Any] | None,
            roi: tuple[float, float, float, float] = FULL_ROI,
            meta: dict[str, Any] | None = None,
            with_watermark: bool = True,
-           geometry: bool = True) -> np.ndarray:
+           geometry: bool = True,
+           auto: dict[str, np.ndarray] | None = None,
+           src: np.ndarray | None = None) -> np.ndarray:
     """Apply `edit` to an RGB uint8 image and return a new RGB uint8 image.
     A neutral edit returns the input array unchanged (no copy).
 
@@ -1187,6 +1797,21 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         cropping later does not drag a mask off the thing it was drawn on;
       - the watermark goes on afterwards and is placed against the frame that
         comes out, because a signature belongs on the picture you end up with.
+
+    `auto` supplies the fields any automatic mask needs: a dict from group name
+    (see `segment.CLASS_GROUPS`) to that group's alpha over the WHOLE photo,
+    computed from the ORIGINAL pixels. It is the caller's job because only the
+    caller knows which photo this is and can cache per photo; see the note on
+    MASK_TYPES for why neither constraint can be met from in here. An active
+    automatic mask whose field is missing raises rather than quietly grading
+    nothing.
+
+    `src` is the whole photo, ungraded, for any mask carrying a range
+    refinement. It must be the SAME array for every render of a photo — the
+    caller's cached preview decode is the right choice, not the full-resolution
+    frame for an export and the preview for a preview, because the selector is
+    measured on a fixed grid derived from whatever it is handed and two different
+    inputs would select two slightly different things.
 
     `meta` is the photo's shooting info (see `exifinfo`), used to fill the
     watermark's tokens. `with_watermark=False` grades without stamping, for
@@ -1217,10 +1842,10 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         # Grain must be the same grain every time this photo is rendered, so it
         # is seeded from the photo rather than from chance.
         seed = film_mod.seed_for(str((meta or {}).get("file") or ""))
-        img = _grade(rgb, e, roi, seed)
+        img = _grade(_repair(rgb, e, roi), e, roi, seed)
         img = np.clip(img, 0.0, 1.0)
         if e["masks"]:
-            img = _apply_masks(img, e["masks"], roi)
+            img = _apply_masks(img, e["masks"], roi, auto, src)
         out = np.rint(np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
     if do_geom:
         out = apply_geometry(out, e)
@@ -1248,3 +1873,67 @@ def auto_tone(rgb: np.ndarray) -> dict[str, Any]:
         "whites": whites,
         "contrast": contrast,
     })
+
+
+# ----- white-balance picker -----------------------------------------------
+#
+# The inverse of `_wb_gains`: click something that should be grey and get the
+# temp/tint that make it grey. Solved in the same space the gains are applied
+# in — the encoded 8-bit value, gamma and all — rather than in linear light.
+# Linearizing first would answer a different question correctly: the sliders
+# multiply the encoded value, so the pair that reads neutral there is the pair
+# that reads neutral here.
+
+_PICK_PATCH = 0.008   # sample half-width, as a fraction of the long edge
+_PICK_FLOOR = 10 / 255.0   # below this a patch is noise wearing a colour
+_PICK_CEIL = 250 / 255.0   # ...and above it, a clipped channel with no ratio left
+
+
+def neutral_wb(rgb: np.ndarray, x: float, y: float) -> dict[str, Any] | None:
+    """Solve for the temp/tint that turn the patch at (`x`, `y`) grey.
+
+    Two gains, two constraints (R = G and G = B), one solution. Writing the
+    slider values as kt, ki in [-1, 1], `_wb_gains` is (1 + kt/4, 1 - ki/5,
+    1 - kt/4), so the red and blue constraint is
+
+        r(1 + kt/4) = b(1 - kt/4)   =>   kt = 4(b - r)/(r + b)
+
+    and both channels land on 2rb/(r + b), their harmonic mean; green is then
+    whatever ki takes it to that same value.
+
+    `x` and `y` are fractions of the *original* frame, which is the space masks
+    are stored in and the space the editor's overlay reports — and the right
+    one here, since white balance runs before geometry ever crops anything.
+
+    Returns the pair plus `clamped`, which says the cast was further than the
+    sliders reach: the gains stop at 1.25/0.75, about 1.7 stops between red and
+    blue, and a deep tungsten frame wants more than that. Green is then aimed at
+    the midpoint of the red and blue it could actually reach, so what is left is
+    a smaller version of the same cast rather than a green one laid over it.
+
+    Returns None when the patch cannot answer the question: near-black has no
+    colour but the noise floor, and a clipped channel has no ratio left to read.
+    """
+    assert rgb.ndim == 3 and rgb.shape[2] == 3, f"expected RGB, got {rgb.shape}"
+    h, w = rgb.shape[:2]
+    rad = max(1, int(round(_PICK_PATCH * max(h, w))))
+    cx = int(round(min(max(x, 0.0), 1.0) * (w - 1)))
+    cy = int(round(min(max(y, 0.0), 1.0) * (h - 1)))
+    patch = rgb[max(0, cy - rad):cy + rad + 1, max(0, cx - rad):cx + rad + 1]
+    # The median, not the mean: a dust speck or one hot pixel inside the patch
+    # would drag a mean somewhere the eye never agreed to.
+    r, g, b = (float(v) / 255.0 for v in np.median(patch.reshape(-1, 3), axis=0))
+    if min(r, g, b) < _PICK_FLOOR or max(r, g, b) > _PICK_CEIL:
+        return None
+
+    kt = 4.0 * (b - r) / (r + b)
+    clamped = abs(kt) > 1.0
+    kt = min(1.0, max(-1.0, kt))
+    # Where red and blue actually ended up. Equal, and equal to the harmonic
+    # mean, whenever kt was not clamped — so this is one path, not two.
+    target = 0.5 * (r * (1.0 + 0.25 * kt) + b * (1.0 - 0.25 * kt))
+    ki = 5.0 * (1.0 - target / g)
+    clamped = clamped or abs(ki) > 1.0
+    ki = min(1.0, max(-1.0, ki))
+    return {"temp": int(round(kt * 100.0)), "tint": int(round(ki * 100.0)),
+            "clamped": clamped}

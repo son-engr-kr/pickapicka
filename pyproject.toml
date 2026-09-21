@@ -30,13 +30,22 @@ dependencies = [
     "opencv-python>=4.10",
     "pillow>=10.4",
     "platformdirs>=4.0",
-    "rawpy>=0.22",
+    # 0.27 is where RawPy.other landed, which is where the capture time of a
+    # RAW comes from — earlier releases have no way to read one.
+    "rawpy>=0.27",
     "scikit-learn>=1.8.0",
     "uvicorn[standard]>=0.30",
 ]
 
 [project.optional-dependencies]
 faces = ["mediapipe>=0.10"]
+
+# The suites that check a repair refuses bad input, or that stub a detector, use
+# pytest's raises/monkeypatch/skipif. Nothing declared it, so the one command
+# that runs every suite needed a --with flag to work at all. uv installs this
+# group by default, which makes `uv run pytest tests/` the plain answer.
+[dependency-groups]
+dev = ["pytest>=8.0"]
 
 [project.scripts]
 pcls = "picture_classifier.cli:main"

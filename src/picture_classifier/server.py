@@ -9,8 +9,10 @@ import shutil
 import subprocess
 import threading
 import time
+import traceback
 from collections import OrderedDict
 from collections.abc import Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -26,8 +28,8 @@ from pydantic import BaseModel
 
 from . import (
     cameras, db, editing, exifinfo, film as film_mod, hdr,
-    presets as presets_mod, raw, relink, scenes, userstate,
-    watermark as watermark_mod,
+    presets as presets_mod, raw, relink, scenes, segment as segment_mod,
+    userstate, watermark as watermark_mod,
 )
 from .scoring import objects as objects_mod
 from .scorer import (
@@ -55,6 +57,11 @@ EDIT_VIEW_EDGE = 2560      # long edge the full-size viewer renders edited/RAW p
 EDIT_BASE_CACHE_MAX = 4    # decoded-base LRU size (RAW A/B benefits from >1)
 FULL_BASE_CACHE_MAX = 2    # full-res decode LRU: big arrays, so keep very few
 EDIT_ZOOM_MAX_OUT = 3200   # cap on the pixels a 1:1 request may return
+# Per-photo edit slots: a scratchpad for "try this, keep that". Six fits one
+# row of chips in the editor and is more variants than anyone compares at once,
+# and the cap is what keeps picks.json sane — every slot is a whole edit dict,
+# masks and all.
+EDIT_SLOTS = 6
 
 Decision = Literal["pick", "review", "reject"]
 
@@ -90,6 +97,11 @@ class HdrPreviewPayload(BaseModel):
     look: dict[str, float] = {}
 
 
+class MaskPreviewPayload(BaseModel):
+    rel_path: str
+    mask: dict[str, Any]
+
+
 class EditPreviewPayload(BaseModel):
     rel_path: str
     edit: dict[str, Any] = {}
@@ -120,6 +132,23 @@ class EditBulkPayload(BaseModel):
 
 class AutoTonePayload(BaseModel):
     rel_path: str
+
+
+# Where the white-balance picker was clicked, as a fraction of the original
+# frame — the space the editor's overlay already reports for masks.
+class NeutralPickPayload(BaseModel):
+    rel_path: str
+    x: float
+    y: float
+
+
+# One of a photo's edit slots. `edit: None` clears the slot; anything else
+# replaces what is in it.
+class EditSlotPayload(BaseModel):
+    rel_path: str
+    slot: int
+    edit: dict[str, Any] | None = None
+    name: str | None = None
 
 
 # Where the grid was left. `scene` is remembered too because a page number only
@@ -443,6 +472,45 @@ class AppContext:
                 self.edit_base_cache.popitem(last=False)
         return arr
 
+    def auto_fields(self, rel_path: str,
+                    edit: dict[str, Any] | None) -> dict[str, np.ndarray] | None:
+        """Segmentation fields for whatever automatic masks `edit` actually uses.
+
+        This exists here rather than in `editing` because of two constraints that
+        module cannot satisfy from the inside (see its note on MASK_TYPES). The
+        segmenter has to see the whole frame — shown only a 1:1 window it would
+        find a different subject than the fit preview found — and it has to see
+        the *original* pixels, or the mask would crawl every time a slider moved.
+        The cached preview decode is both of those things.
+
+        Returns None when no automatic mask is active, so a photo without one
+        never pays for the model, not even to check whether it is downloaded.
+        """
+        groups = {m["group"] for m in editing.normalize(edit)["masks"]
+                  if m["type"] == "auto" and editing.mask_is_active(m)}
+        if not groups:
+            return None
+        base = self.get_decoded_base(rel_path)
+        return {g: segment_mod.class_mask(base, g, key=rel_path) for g in groups}
+
+    def range_src(self, rel_path: str,
+                  edit: dict[str, Any] | None) -> np.ndarray | None:
+        """The whole ungraded frame, for any mask carrying a range refinement.
+
+        `editing.render` needs the SAME array for every render of a photo, or the
+        selector's fixed grid would be derived from a different input for an
+        export than for a preview and the two would select slightly different
+        things. The cached preview decode is that array — deliberately not
+        `decode_full`, which would be a different one.
+
+        None when no mask asks for it, so a photo without a range refinement
+        never pays for a decode it does not need.
+        """
+        wanted = any(m["range_luma"] is not None or m["range_color"] is not None
+                     for m in editing.normalize(edit)["masks"]
+                     if editing.mask_is_active(m))
+        return self.get_decoded_base(rel_path) if wanted else None
+
     def photo_meta(self, rel_path: str) -> dict[str, Any]:
         """Shooting info for the watermark and the info panel. Normally cached
         in the db by the scorer; projects scored before that existed get it read
@@ -452,10 +520,16 @@ class AppContext:
             return dict(exifinfo.EMPTY)
         info = photo.get("exif")
         if info is None:
-            src = _thumb_source(self, rel_path, photo)
-            if photo.get("type") == "raw" and self.photo_root is not None:
-                src = self.photo_root / photo.get("src", rel_path)
-            info = exifinfo.read_any(src, is_raw=photo.get("type") == "raw")
+            # A RAW is read for its own EXIF, never through _thumb_source: that
+            # would decode a preview this does not want in order to reach a file
+            # whose metadata is the camera's, not the shot's.
+            is_raw = photo.get("type") == "raw"
+            src = self.source_path(rel_path) if is_raw else _thumb_source(self, rel_path, photo)
+            if not src.is_file():
+                # Photo volume detached. Report nothing for now, and do not
+                # remember it: caching EMPTY would outlive the drive coming back.
+                return {**exifinfo.EMPTY, "file": Path(rel_path).stem}
+            info = exifinfo.read_any(src, is_raw=is_raw)
             photo["exif"] = info
         return {**info, "file": Path(rel_path).stem}
 
@@ -637,7 +711,9 @@ def _bake_photo(ctx: "AppContext", photo: dict[str, Any], rel: str, dst: Path) -
     """Write one photo to `dst`, rendering it only when it has to be."""
     if _needs_render(photo):
         out = editing.render(ctx.decode_full(rel), photo.get("edit"),
-                             meta=ctx.photo_meta(rel))
+                             meta=ctx.photo_meta(rel),
+                             auto=ctx.auto_fields(rel, photo.get("edit")),
+                             src=ctx.range_src(rel, photo.get("edit")))
         Image.fromarray(out).save(dst, "JPEG", quality=95)
     else:
         shutil.copy2(ctx.source_path(rel), dst)
@@ -683,6 +759,8 @@ def _render_roi(ctx: "AppContext", payload: EditPreviewPayload) -> np.ndarray:
         meta=ctx.photo_meta(payload.rel_path),
         with_watermark=False,     # placed below, against the cropped frame
         geometry=False,           # this is a patch of the original, not a frame
+        auto=ctx.auto_fields(payload.rel_path, edit),
+        src=ctx.range_src(payload.rel_path, edit),
     )
     out = editing.geometry_window(graded, box, fw, fh, edit, window)
 
@@ -736,14 +814,48 @@ def _apply_edit_to_photo(photo: dict[str, Any], edit: dict[str, Any] | None) -> 
         photo["edited_at"] = datetime.now().isoformat()
 
 
+def _write_slot(photo: dict[str, Any], slot: int,
+                entry: dict[str, Any] | None) -> list[Any]:
+    """Set one of a photo's edit slots and return the rack, storing it on the
+    photo (or dropping the key when nothing is left in it).
+
+    Two details the endpoint should not have to think about. The rack is padded
+    and cut to `EDIT_SLOTS`, so a photo stashed under a different cap loads
+    instead of raising and keeps whatever still fits. And an all-empty rack is
+    removed rather than written as six nulls, which keeps an untouched photo
+    exactly as small in `picks.json` as it was before slots existed.
+    """
+    assert 0 <= slot < EDIT_SLOTS, f"slot out of range: {slot}"
+    rack = (list(photo.get("edit_slots") or []) + [None] * EDIT_SLOTS)[:EDIT_SLOTS]
+    rack[slot] = entry
+    if any(e is not None for e in rack):
+        photo["edit_slots"] = rack
+    else:
+        photo.pop("edit_slots", None)
+    return photo.get("edit_slots") or []
+
+
 def _thumb_source(ctx: "AppContext", rel_path: str, photo: dict[str, Any] | None) -> Path:
     """The file a thumbnail is generated from. A RAW photo uses its cached
     preview JPEG (PIL can't open a RAW); everything else uses its source file.
-    The cache is keyed by rel_path — the exact identity scorer.ensure_cache used."""
+    The cache is keyed by rel_path — the exact identity scorer.ensure_cache used.
+
+    Normally the scan has already written it. Building it here as well covers a
+    project scored by an older build, whose cached previews are the camera's
+    rendering rather than this one's, and means a RAW never falls through to a
+    file PIL would refuse to open. The lock is because the grid asks for a
+    dozen tiles at once and a RAW decode is not something to do twelve times."""
     if photo is not None and photo.get("type") == "raw" and ctx.raw_cache_root is not None:
         cached = raw.raw_cache_path(ctx.raw_cache_root, rel_path)
-        if cached.is_file():
+        src = ctx.source_path(rel_path)
+        # The photo volume being absent is a state this app expects — it is what
+        # relinking exists for — and a project on a detached drive stays
+        # browsable off its cached previews alone. Only rebuild when the RAW is
+        # actually there to be read.
+        if not src.is_file() or raw.cache_is_fresh(src, ctx.raw_cache_root, rel_path):
             return cached
+        with _cache_lock(cached):
+            return raw.ensure_cache(src, ctx.raw_cache_root, rel_path)
     return ctx.source_path(rel_path)
 
 
@@ -779,7 +891,10 @@ def _atomic_write(dst: Path) -> "Iterator[Path]":
 def _ensure_thumb(src: Path, thumbs_root: Path, rel_path: str,
                   edit: dict[str, Any] | None = None,
                   meta: dict[str, Any] | None = None,
-                  watermark: bool = True) -> Path:
+                  watermark: bool = True,
+                  auto_fields: Callable[[], dict[str, np.ndarray] | None] | None = None,
+                  range_src: Callable[[], "np.ndarray | None"] | None = None
+                  ) -> Path:
     # A non-neutral edit gets its own cache file (…​.<hash>.<ver>.jpg) so changing
     # an edit invalidates automatically; unedited photos keep the plain name and
     # need no version, having nothing baked into them.
@@ -787,6 +902,11 @@ def _ensure_thumb(src: Path, thumbs_root: Path, rel_path: str,
     # `watermark=False` is for focus peaking, which reads a thumb: the text of a
     # signature has edges as crisp as anything in the frame and would be
     # reported as in focus. That variant gets its own cache entry.
+    #
+    # `auto_fields` is a callable rather than a dict because most calls here
+    # return a cached file without rendering anything, and segmenting a photo to
+    # build a thumbnail that already exists would be pure waste. It is invoked
+    # only on the path that actually grades.
     ehash = editing.edit_hash(edit)
     if ehash:
         tag = f"{ehash}.{THUMB_VERSION}" + ("" if watermark else "-nw")
@@ -820,10 +940,45 @@ def _ensure_thumb(src: Path, thumbs_root: Path, rel_path: str,
                 # the frame, so a tile shows it at the proportion it will print.
                 img = Image.fromarray(
                     editing.render(np.asarray(img), edit, meta=meta,
-                                   with_watermark=watermark))
+                                   with_watermark=watermark,
+                                   auto=auto_fields() if auto_fields else None,
+                                   src=range_src() if range_src else None))
             with _atomic_write(dst) as tmp:
                 img.save(tmp, "JPEG", quality=THUMB_QUALITY, optimize=True)
     return dst
+
+
+# Saving an edit is followed, almost always, by the grid asking for that tile.
+# Building it here means the tile is already on disk under the project's thumbs
+# directory by the time the request lands, instead of the old thumbnail sitting
+# there through a render. One worker, so a bulk edit over 500 photos queues
+# instead of putting 500 decodes in flight; `_ensure_thumb`'s own lock means a
+# request that overtakes the prebuild waits for it rather than repeating it.
+_PREBUILD = ThreadPoolExecutor(max_workers=1, thread_name_prefix="thumb-prebuild")
+
+
+def _prebuild_thumbs(ctx: "AppContext", rel_paths: "list[str]") -> None:
+    def build() -> None:
+        for rel_path in rel_paths:
+            photo = ctx.photo_index.get(rel_path)
+            if photo is None or ctx.thumbs_root is None:
+                continue
+            _ensure_thumb(_thumb_source(ctx, rel_path, photo), ctx.thumbs_root,
+                          rel_path, photo.get("edit"), ctx.photo_meta(rel_path),
+                          auto_fields=lambda r=rel_path, p=photo:
+                              ctx.auto_fields(r, p.get("edit")),
+                          range_src=lambda r=rel_path, p=photo:
+                              ctx.range_src(r, p.get("edit")))
+
+    def report(fut: "Future[None]") -> None:
+        # An executor keeps a worker's exception inside the Future, where it
+        # would be lost. Nothing here can be recovered from, so print the trace
+        # and let the request path hit the same failure out loud.
+        exc = fut.exception()
+        if exc is not None:
+            traceback.print_exception(type(exc), exc, exc.__traceback__)
+
+    _PREBUILD.submit(build).add_done_callback(report)
 
 
 def _ensure_face_crop(
@@ -1622,7 +1777,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             if payload.max_edge and payload.max_edge < max(base.shape[:2]):
                 base = ctx.get_draft_base(payload.rel_path, payload.max_edge)
             out = editing.render(base, fit_edit,
-                                 meta=ctx.photo_meta(payload.rel_path))
+                                 meta=ctx.photo_meta(payload.rel_path),
+                                 auto=ctx.auto_fields(payload.rel_path, fit_edit),
+                                 src=ctx.range_src(payload.rel_path, fit_edit))
         else:
             out = _render_roi(ctx, payload)
         buf = io.BytesIO()
@@ -1664,6 +1821,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         _apply_edit_to_photo(photo, payload.edit)
         with ctx.save_lock:
             db.save(ctx.db_path, ctx.data)
+        _prebuild_thumbs(ctx, [payload.rel_path])
         return _photo_wire(photo)
 
     @app.post("/api/edit/bulk")
@@ -1683,6 +1841,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             _apply_edit_to_photo(photo, edit)
         with ctx.save_lock:
             db.save(ctx.db_path, ctx.data)
+        _prebuild_thumbs(ctx, list(payload.rel_paths))
         return {"updated": len(payload.rel_paths)}
 
     @app.post("/api/edit/auto")
@@ -1694,6 +1853,59 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="photo not found")
         base = ctx.get_decoded_base(payload.rel_path)
         return {"edit": editing.auto_tone(base)}
+
+    @app.post("/api/edit/slot")
+    def save_edit_slot(payload: EditSlotPayload) -> dict[str, Any]:
+        """Stash the working edit in one of the photo's slots, or clear one.
+
+        A slot is a scratchpad, not a second edit: nothing here changes what the
+        photo renders as, and `edited_at` does not move. That is exactly what
+        makes slots safe to fill while trying things — the cost of a wrong turn
+        becomes one click instead of the whole grade. They are written to
+        `picks.json` immediately, so backing out of the editor with Cancel
+        keeps them.
+        """
+        _require_loaded()
+        if ctx.scoring_state["running"]:
+            raise HTTPException(status_code=409, detail="scoring in progress; edits disabled")
+        photo = ctx.photo_index.get(payload.rel_path)
+        if photo is None:
+            raise HTTPException(status_code=404, detail="photo not found")
+        if not 0 <= payload.slot < EDIT_SLOTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"slot must be 0..{EDIT_SLOTS - 1}, got {payload.slot}")
+        entry = None if payload.edit is None else {
+            "edit": editing.normalize(payload.edit),
+            "saved_at": datetime.now().isoformat(),
+            "name": (payload.name or "")[:40],
+        }
+        slots = _write_slot(photo, payload.slot, entry)
+        with ctx.save_lock:
+            db.save(ctx.db_path, ctx.data)
+        return {"rel_path": payload.rel_path, "slots": slots}
+
+    @app.post("/api/edit/neutral")
+    def neutral_pick(payload: NeutralPickPayload) -> dict[str, Any]:
+        """The temp/tint that turn the clicked patch grey.
+
+        Sampled from the ungraded base rather than from the preview the user
+        clicked, which is the only way the answer can be absolute: white balance
+        is the first stage of the grade, so solving on pixels that already carry
+        a grade would fold the current sliders into their own replacement.
+        """
+        _require_loaded()
+        if ctx.photo_index.get(payload.rel_path) is None:
+            raise HTTPException(status_code=404, detail="photo not found")
+        base = ctx.get_decoded_base(payload.rel_path)
+        wb = editing.neutral_wb(base, payload.x, payload.y)
+        if wb is None:
+            raise HTTPException(
+                status_code=400,
+                detail="that spot is too dark or too bright to read a white "
+                       "balance from — pick something mid-grey",
+            )
+        return {"wb": wb}
 
     # ----- presets (app-global) --------------------------------------
 
@@ -2101,7 +2313,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         if photo is None:
             raise HTTPException(status_code=404, detail="photo not found")
         out = editing.render(ctx.decode_full(rel_path), photo.get("edit"),
-                             meta=ctx.photo_meta(rel_path))
+                             meta=ctx.photo_meta(rel_path),
+                             auto=ctx.auto_fields(rel_path, photo.get("edit")),
+                             src=ctx.range_src(rel_path, photo.get("edit")))
         buf = io.BytesIO()
         Image.fromarray(out).save(buf, "JPEG", quality=95)
         fname = Path(rel_path).stem + ".jpg"
@@ -2126,7 +2340,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         if is_raw or (edit and not editing.is_neutral(edit)):
             # RAW isn't browser-viewable, and edits must show — render a JPEG.
             out = editing.render(ctx.decode_view(rel_path), edit,
-                                 meta=ctx.photo_meta(rel_path))
+                                 meta=ctx.photo_meta(rel_path),
+                                 auto=ctx.auto_fields(rel_path, edit),
+                                 src=ctx.range_src(rel_path, edit))
             buf = io.BytesIO()
             Image.fromarray(out).save(buf, "JPEG", quality=90)
             return Response(content=buf.getvalue(), media_type="image/jpeg",
@@ -2145,7 +2361,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="not found")
         edit = photo.get("edit") if photo else None
         thumb = _ensure_thumb(src, ctx.thumbs_root, rel_path, edit,
-                              ctx.photo_meta(rel_path))
+                              ctx.photo_meta(rel_path),
+                              auto_fields=lambda: ctx.auto_fields(rel_path, edit),
+                              range_src=lambda: ctx.range_src(rel_path, edit))
         return FileResponse(thumb, media_type="image/jpeg")
 
     @app.get("/peak/{rel_path:path}")
@@ -2166,12 +2384,93 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="not found")
         edit = photo.get("edit") if photo else None
         thumb = _ensure_thumb(src, ctx.thumbs_root, rel_path, edit,
-                              ctx.photo_meta(rel_path), watermark=False)
+                              ctx.photo_meta(rel_path), watermark=False,
+                              auto_fields=lambda: ctx.auto_fields(rel_path, edit),
+                              range_src=lambda: ctx.range_src(rel_path, edit))
         if level not in PEAK_LEVELS:
             raise HTTPException(status_code=400, detail=f"unknown level: {level}")
         out = _ensure_peak(thumb, ctx.peaks_root, rel_path,
                            editing.edit_hash(edit), level)
         return FileResponse(out, media_type="image/png")
+
+    # ----- automatic masks -------------------------------------------
+
+    @app.get("/api/segment/status")
+    def segment_status() -> dict[str, Any]:
+        return {
+            "model_ready": segment_mod.is_model_ready(),
+            "groups": sorted(segment_mod.CLASS_GROUPS),
+            "size": segment_mod.MODEL_SIZE,
+        }
+
+    @app.post("/api/segment/download")
+    def segment_download() -> dict[str, Any]:
+        """Fetch the segmentation model. Blocking on purpose: it is 16 MB, it
+        happens once ever, and a progress stream for a download that takes a
+        couple of seconds would be more machinery than the problem deserves."""
+        segment_mod.ensure_model()
+        return {"model_ready": segment_mod.is_model_ready()}
+
+    @app.post("/api/mask/preview")
+    def mask_preview(payload: MaskPreviewPayload) -> Response:
+        """The alpha of one mask as an RGBA PNG — white, with the coverage in the
+        alpha channel so it drops straight into the editor's tint pipeline.
+
+        The editor rasterizes a radial, a gradient and a brush itself, from the
+        same numbers the server has. It cannot do that for the two kinds derived
+        from the pixels: a segmentation is not a shape, and a range selection is
+        measured on a fixed grid over the whole ungraded frame, which is not
+        something to reproduce in JS from a displayed preview. So those come back
+        from here, and what the user sees is what will be graded.
+        """
+        _require_loaded()
+        if payload.rel_path not in ctx.photo_index:
+            raise HTTPException(status_code=404, detail="photo not found")
+        mask = editing.normalize_mask(payload.mask)
+        if mask is None:
+            raise HTTPException(status_code=400, detail="not a usable mask")
+        base = ctx.get_decoded_base(payload.rel_path)
+        h, w = base.shape[:2]
+        one = {"masks": [mask]}
+        alpha = editing.mask_alpha(
+            mask, h, w,
+            auto=ctx.auto_fields(payload.rel_path, one),
+            src=ctx.range_src(payload.rel_path, one))
+        a8 = np.rint(np.clip(alpha, 0.0, 1.0) * 255.0).astype(np.uint8)
+        white = np.full_like(a8, 255)
+        ok, buf = cv2.imencode(".png", cv2.merge([white, white, white, a8]))
+        assert ok, "failed to encode the mask preview"
+        return Response(content=buf.tobytes(), media_type="image/png",
+                        headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/segment/preview")
+    def segment_preview(rel_path: str, group: str) -> Response:
+        """The alpha of one automatic mask as a greyscale PNG.
+
+        The editor draws the tint for a radial or a brush itself, from the same
+        numbers the server has. It cannot do that for an automatic mask — the
+        selection is a segmentation, not a shape — so the one thing that makes
+        the feature usable, seeing what it picked, has to be served from here.
+        """
+        _require_loaded()
+        if group not in segment_mod.CLASS_GROUPS:
+            raise HTTPException(status_code=400, detail=f"unknown group: {group}")
+        if rel_path not in ctx.photo_index:
+            raise HTTPException(status_code=404, detail="photo not found")
+        alpha = segment_mod.class_mask(
+            ctx.get_decoded_base(rel_path), group, key=rel_path)
+        # White with the mask in the alpha channel, rather than a greyscale
+        # image. The editor's tint pipeline paints a shape's *coverage* and then
+        # fills it through `source-in`, so an image whose alpha is the coverage
+        # drops straight into that path and an automatic mask tints exactly like
+        # a brush does. A greyscale PNG would arrive fully opaque and the client
+        # would have to convert luminance to alpha by hand.
+        a8 = np.rint(np.clip(alpha, 0.0, 1.0) * 255.0).astype(np.uint8)
+        white = np.full_like(a8, 255)
+        ok, buf = cv2.imencode(".png", cv2.merge([white, white, white, a8]))
+        assert ok, "failed to encode the mask preview"
+        return Response(content=buf.tobytes(), media_type="image/png",
+                        headers={"Cache-Control": "no-store"})
 
     @app.get("/face/{rel_path:path}")
     def get_face(rel_path: str, idx: int = 0) -> FileResponse:

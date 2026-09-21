@@ -1,8 +1,9 @@
 """Shooting metadata: what the watermark stamps and the viewer shows.
 
 One dict per photo, read once at scoring time and cached in the db. RAW files
-are not PIL-readable, but their embedded JPEG preview carries the same EXIF —
-the trick `raw.read_capture_time` already relies on.
+are not PIL-readable, but their embedded JPEG preview carries most of the same
+EXIF; the capture time, which some bodies leave out of that preview, comes from
+libraw instead.
 
 Values are stored both raw (numbers) and preformatted (`focal`, `aperture`, …)
 so the watermark, the UI and any export all print them identically.
@@ -15,7 +16,7 @@ from typing import Any
 
 from PIL import ExifTags, Image
 
-from . import cameras
+from . import cameras, raw
 
 _EXIF_IFD = 0x8769
 _TAG = {name: tag for tag, name in ExifTags.TAGS.items()}
@@ -115,20 +116,31 @@ def read(path: Path) -> dict[str, Any]:
 
 
 def read_raw(path: Path) -> dict[str, Any]:
-    """Shooting info for a RAW, via its embedded JPEG preview."""
+    """Shooting info for a RAW: two sources, each for what it actually holds.
+
+    The embedded JPEG preview carries the strings — camera, lens, and the
+    exposure triplet already formatted the way `read` produces them. Sony
+    leaves DateTimeOriginal out of that preview though, so the capture time
+    comes from libraw's own metadata, where every supported format has one.
+    """
     import rawpy
-    try:
-        with rawpy.imread(str(path)) as r:
-            try:
-                thumb = r.extract_thumb()
-            except Exception:
-                thumb = None
-        if thumb is not None and thumb.format == rawpy.ThumbFormat.JPEG:
-            with Image.open(io.BytesIO(thumb.data)) as img:
-                return _from_pil(img)
-    except Exception:
-        pass
-    return dict(EMPTY)
+    info = dict(EMPTY)
+    with rawpy.imread(str(path)) as r:
+        # Not every RAW carries a preview; that is a fact about the file, not a
+        # failure, and the capture time below does not depend on there being one.
+        try:
+            thumb = r.extract_thumb()
+        except (rawpy.LibRawNoThumbnailError, rawpy.LibRawUnsupportedThumbnailError):
+            thumb = None
+        stamp = raw.capture_time(r)
+    if thumb is not None and thumb.format == rawpy.ThumbFormat.JPEG:
+        with Image.open(io.BytesIO(thumb.data)) as img:
+            info = _from_pil(img)
+    if not info["captured_at"] and stamp is not None:
+        # Written the way EXIF spells it, because that is the one shape the
+        # watermark's {date}/{time} split expects from either kind of file.
+        info["captured_at"] = stamp.strftime("%Y:%m:%d %H:%M:%S")
+    return info
 
 
 def read_any(path: Path, is_raw: bool = False) -> dict[str, Any]:

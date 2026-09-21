@@ -56,8 +56,21 @@ const EDIT_SCHEMA = {
     { k: "saturation", label: "Saturation",  min: -100, max: 100, step: 1, fmt: 0 },
   ]},
   detail: { title: "Detail & Effects", fields: [
+    { k: "texture",    label: "Texture",     min: -100, max: 100, step: 1, fmt: 0,
+      hint: "The finest detail only. Negative smooths skin without flattening the face; positive finds fabric and bark." },
     { k: "clarity",    label: "Clarity",     min: -100, max: 100, step: 1, fmt: 0 },
-    { k: "sharpen",    label: "Sharpen",     min: 0,    max: 100, step: 1, fmt: 0 },
+    { k: "dehaze",     label: "Dehaze",      min: -100, max: 100, step: 1, fmt: 0,
+      hint: "Cuts through atmosphere, or puts it back when negative." },
+    { k: "denoise",    label: "Denoise",     min: 0,    max: 100, step: 1, fmt: 0,
+      hint: "Noise lives at the pixel level, so a fit preview has already averaged it away \u2014 judge this at 1:1." },
+    { k: "sharpen",    label: "Sharpen",     min: 0,    max: 100, step: 1, fmt: 0,
+      hint: "Amount. The other three do nothing until this is above zero." },
+    { k: "sharpen_radius",  label: "\u00b7 radius",  min: 0, max: 100, step: 1, fmt: 0,
+      hint: "The size of the edge being sharpened, 0.5 to 3 pixels. Neutral in the middle." },
+    { k: "sharpen_detail",  label: "\u00b7 detail",  min: 0, max: 100, step: 1, fmt: 0,
+      hint: "How much of the finest structure comes up with it. High also brings up noise." },
+    { k: "sharpen_masking", label: "\u00b7 masking", min: 0, max: 100, step: 1, fmt: 0,
+      hint: "Hold sharpening off flat areas \u2014 skies and skin keep their noise unamplified." },
     { k: "vignette",   label: "Vignette",    min: -100, max: 100, step: 1, fmt: 0 },
   ]},
   creative: { title: "Creative", fields: [
@@ -74,7 +87,18 @@ const EDIT_SCHEMA = {
   ]},
 };
 const EDIT_FIELDS = Object.values(EDIT_SCHEMA).flatMap((g) => g.fields);
+// Mirrors server.EDIT_SLOTS. Per-photo scratchpad: stash the working edit,
+// try something else, bring the first one back.
+const EDIT_SLOTS = 6;
 const CURVE_IDENTITY = [[0, 0], [1, 1]];
+// Mirrors editing.CURVE_KEYS. The master runs first — it says how bright a tone
+// is — and the three channel curves then say what colour it takes there.
+const CURVE_CHANNELS = [
+  { k: "curve",   label: "RGB", tint: null },      // null: use the UI accent
+  { k: "curve_r", label: "R",   tint: "#e35d5d" },
+  { k: "curve_g", label: "G",   tint: "#5fbf6a" },
+  { k: "curve_b", label: "B",   tint: "#5b8ee6" },
+];
 
 // Mirrors watermark.DEFAULT_WATERMARK on the server.
 const WM_STYLES = ["minimal", "bar", "plate", "corner", "filmstrip"];
@@ -106,9 +130,14 @@ const EDIT_NEUTRAL = (() => {
   // tilt and crop sit outside EDIT_SCHEMA on purpose: they are frame geometry,
   // not a slider a mask could ever carry, and they are applied before anything
   // tonal. Mirrors editing.DEFAULT_EDIT.
-  const e = { curve: CURVE_IDENTITY.map((p) => p.slice()), masks: [], watermark: null,
-              film: null, tilt: 0, crop: null };
-  for (const f of EDIT_FIELDS) e[f.k] = 0;
+  const e = { masks: [], watermark: null,
+              film: null, hsl: null, grading: null, tilt: 0, crop: null };
+  for (const c of CURVE_CHANNELS) e[c.k] = CURVE_IDENTITY.map((p) => p.slice());
+  // Not every slider is neutral at zero: sharpen_radius sits in the middle,
+  // mirroring editing.DEFAULT_EDIT. Anything else here would make a freshly
+  // opened photo look dirty.
+  const NEUTRAL_OVERRIDES = { sharpen_radius: 50, sharpen_detail: 25 };
+  for (const f of EDIT_FIELDS) e[f.k] = NEUTRAL_OVERRIDES[f.k] ?? 0;
   return e;
 })();
 // Sliders a local mask may carry — mirrors editing.LOCAL_KEYS (no vignette, no
@@ -119,32 +148,87 @@ const MASK_MAX = 16;
 function fieldByKey(k) { return EDIT_FIELDS.find((f) => f.k === k); }
 function mergeNeutralEdit(edit) {
   const e = { ...EDIT_NEUTRAL };
-  e.curve = (edit && Array.isArray(edit.curve) && edit.curve.length)
-    ? edit.curve.map((p) => p.slice()) : CURVE_IDENTITY.map((p) => p.slice());
+  for (const c of CURVE_CHANNELS) {
+    const src = edit && edit[c.k];
+    e[c.k] = (Array.isArray(src) && src.length)
+      ? src.map((p) => p.slice()) : CURVE_IDENTITY.map((p) => p.slice());
+  }
   e.masks = (edit && Array.isArray(edit.masks)) ? edit.masks.map(cloneMask) : [];
   e.watermark = (edit && edit.watermark) ? cloneWatermark(edit.watermark) : null;
   e.tilt = (edit && Number(edit.tilt)) || 0;
   e.crop = (edit && edit.crop) ? { ...edit.crop } : null;
   e.film = (edit && edit.film) ? { ...edit.film } : null;
+  e.hsl = cloneHsl(edit && edit.hsl);
+  e.grading = cloneGrading(edit && edit.grading);
   if (edit) for (const f of EDIT_FIELDS) if (edit[f.k] != null) e[f.k] = edit[f.k];
   return e;
 }
 function editsEqual(a, b) {
   for (const f of EDIT_FIELDS) if (Math.abs((a[f.k] || 0) - (b[f.k] || 0)) > 1e-4) return false;
-  const ca = a.curve || CURVE_IDENTITY, cb = b.curve || CURVE_IDENTITY;
-  if (ca.length !== cb.length) return false;
-  for (let i = 0; i < ca.length; i++)
-    if (Math.abs(ca[i][0] - cb[i][0]) > 1e-4 || Math.abs(ca[i][1] - cb[i][1]) > 1e-4) return false;
+  for (const c of CURVE_CHANNELS) {
+    const ca = a[c.k] || CURVE_IDENTITY, cb = b[c.k] || CURVE_IDENTITY;
+    if (ca.length !== cb.length) return false;
+    for (let i = 0; i < ca.length; i++)
+      if (Math.abs(ca[i][0] - cb[i][0]) > 1e-4 || Math.abs(ca[i][1] - cb[i][1]) > 1e-4) return false;
+  }
   if (canonWatermark(a.watermark) !== canonWatermark(b.watermark)) return false;
   if (Math.abs((a.tilt || 0) - (b.tilt || 0)) > 1e-4) return false;
   if (canonCrop(a.crop) !== canonCrop(b.crop)) return false;
   if (canonFilm(a.film) !== canonFilm(b.film)) return false;
+  if (canonHsl(a.hsl) !== canonHsl(b.hsl)) return false;
+  if (canonGrading(a.grading) !== canonGrading(b.grading)) return false;
   return canonMasks(a.masks) === canonMasks(b.masks);
 }
 function canonFilm(f) {
   if (!f || !f.enabled) return "";
   return JSON.stringify(Object.keys(FILM_DEFAULT).sort()
     .filter((k) => k !== "stock").map((k) => f[k]));
+}
+// Mirrors editing.normalize_hsl: values at neutral are dropped, an empty band
+// is dropped, and an empty mixer is null — so a band the user opened and left
+// alone never counts as an edit.
+function canonHsl(h) {
+  if (!h) return "";
+  const out = [];
+  for (const b of HSL_BANDS) {
+    const src = h[b.k];
+    if (!src) continue;
+    const vals = HSL_FIELDS.filter((f) => Math.round(src[f.k] || 0) !== 0)
+      .map((f) => [f.k, Math.round(src[f.k])]);
+    if (vals.length) out.push([b.k, vals]);
+  }
+  return out.length ? JSON.stringify(out) : "";
+}
+function cloneHsl(h) {
+  if (!h) return null;
+  const out = {};
+  for (const key of Object.keys(h)) if (h[key]) out[key] = { ...h[key] };
+  return Object.keys(out).length ? out : null;
+}
+// Mirrors grading.normalize: a zone with sat 0 and lum 0 contributes nothing
+// whatever its hue, so hue alone must not read as an edit.
+function canonGrading(g) {
+  if (!g) return "";
+  const out = [];
+  for (const z of GRADE_ZONES) {
+    const src = g[z.k];
+    if (!src) continue;
+    const sat = Math.round(src.sat || 0), lum = Math.round(src.lum || 0);
+    if (!sat && !lum) continue;
+    out.push([z.k, Math.round(src.hue || 0), sat, lum]);
+  }
+  const blending = Math.round(g.blending == null ? 50 : g.blending);
+  const balance = Math.round(g.balance || 0);
+  if (!out.length) return "";
+  return JSON.stringify([out, blending, balance]);
+}
+function cloneGrading(g) {
+  if (!g) return null;
+  const out = {};
+  for (const k of Object.keys(g)) {
+    out[k] = (g[k] && typeof g[k] === "object") ? { ...g[k] } : g[k];
+  }
+  return out;
 }
 function canonCrop(c) {
   return c ? JSON.stringify([rnd4(c.x), rnd4(c.y), rnd4(c.w), rnd4(c.h)]) : "";
@@ -159,21 +243,63 @@ const MASK_KINDS = {
   radial: { icon: "radial", label: "Radial" },
   linear: { icon: "gradient", label: "Gradient" },
   brush:  { icon: "brush", label: "Brush" },
+  auto:   { icon: "wand", label: "Auto" },
+  range:  { icon: "palette", label: "Range" },
 };
+
+// Mirrors rangemask.LUMA_DEFAULT. A refinement any mask may carry, which is what
+// makes "the subject, but only its highlights" one mask instead of two.
+const LUMA_RANGE_FIELDS = [
+  { k: "lo", label: "From", min: 0, max: 100,
+    hint: "The darkest tone selected, in perceptual lightness." },
+  { k: "hi", label: "To", min: 0, max: 100,
+    hint: "The brightest tone selected." },
+  { k: "feather_lo", label: "\u00b7 soften low", min: 0, max: 100,
+    hint: "How gradually the selection fades in below From." },
+  { k: "feather_hi", label: "\u00b7 soften high", min: 0, max: 100,
+    hint: "How gradually it fades out above To." },
+];
+// A new range mask must select something, or the server normalizes it away the
+// moment it is saved. The darker half is a starting point you can see.
+const LUMA_RANGE_NEW = { lo: 0, hi: 50, feather_lo: 10, feather_hi: 10 };
+function lumaRangeIsAll(r) {
+  return !r || (Math.round(r.lo) <= 0 && Math.round(r.hi) >= 100);
+}
+
+// Mirrors segment.CLASS_GROUPS. An automatic mask has no shape to drag: what it
+// selects is a segmentation of the photo, so the only control is which group.
+const AUTO_GROUPS = [
+  { k: "subject",    label: "Subject" },
+  { k: "background", label: "Background" },
+  { k: "skin",       label: "Skin" },
+  { k: "face",       label: "Face" },
+  { k: "hair",       label: "Hair" },
+  { k: "clothes",    label: "Clothes" },
+];
+function autoGroupLabel(k) {
+  const g = AUTO_GROUPS.find((x) => x.k === k);
+  return g ? g.label : k;
+}
 
 function neutralAdj() {
   const a = {};
-  for (const k of MASK_LOCAL_KEYS) a[k] = 0;
+  // Mirrors editing._neutral_adj: read the neutral off EDIT_NEUTRAL rather than
+  // assuming zero, so a slider whose neutral is its midpoint does not make every
+  // new mask look active.
+  for (const k of MASK_LOCAL_KEYS) a[k] = EDIT_NEUTRAL[k] ?? 0;
   return a;
 }
 
-function newMask(kind, aspect) {
+function newMask(kind, aspect, group) {
   const m = {
     type: kind, name: "", enabled: true, invert: false,
     feather: kind === "linear" ? 100 : 50, amount: 100, adj: neutralAdj(),
+    range_luma: null, range_color: null,
   };
   if (kind === "radial") Object.assign(m, { cx: 0.5, cy: 0.5, rx: 0.25, ry: 0.25 * (aspect || 1), angle: 0 });
   else if (kind === "linear") Object.assign(m, { x1: 0.5, y1: 0.15, x2: 0.5, y2: 0.55 });
+  else if (kind === "auto") { m.group = group || "subject"; m.feather = 0; }
+  else if (kind === "range") { m.range_luma = { ...LUMA_RANGE_NEW }; m.feather = 0; }
   else m.strokes = [];
   return m;
 }
@@ -181,6 +307,10 @@ function newMask(kind, aspect) {
 function cloneMask(m) {
   const c = { ...m, adj: { ...neutralAdj(), ...(m.adj || {}) } };
   if (m.strokes) c.strokes = m.strokes.map((s) => ({ ...s, points: s.points.map((p) => p.slice()) }));
+  c.range_luma = m.range_luma ? { ...m.range_luma } : null;
+  c.range_color = m.range_color
+    ? { ...m.range_color, samples: (m.range_color.samples || []).map((v) => v.slice()) }
+    : null;
   return c;
 }
 
@@ -195,8 +325,19 @@ function canonMasks(masks) {
     const o = { t: m.type, e: !!m.enabled, i: !!m.invert, f: Math.round(m.feather),
                 a: Math.round(m.amount), n: m.name || "",
                 adj: [...MASK_LOCAL_KEYS].sort().map((k) => rnd4(m.adj && m.adj[k])) };
+    // Without this, narrowing a mask's tonal range would not register as a
+    // change and Save would stay disabled.
+    o.rl = m.range_luma
+      ? LUMA_RANGE_FIELDS.map((f) => Math.round(m.range_luma[f.k] || 0)) : null;
+    o.rc = m.range_color
+      ? [(m.range_color.samples || []).map((v) => v.map(Math.round)),
+         Math.round(m.range_color.range || 0), Math.round(m.range_color.feather || 0)]
+      : null;
     if (m.type === "radial") o.g = [m.cx, m.cy, m.rx, m.ry, m.angle].map(rnd4);
     else if (m.type === "linear") o.g = [m.x1, m.y1, m.x2, m.y2].map(rnd4);
+    // The group is the whole of an automatic mask's geometry. Leave it out and
+    // switching Subject to Hair would not register as a change.
+    else if (m.type === "auto") o.g = m.group;
     else o.g = (m.strokes || []).map((s) => [rnd4(s.radius), !!s.erase,
                                              s.points.map((p) => [rnd4(p[0]), rnd4(p[1])])]);
     return o;
@@ -204,11 +345,17 @@ function canonMasks(masks) {
 }
 
 function maskAdjNeutral(m) {
-  return [...MASK_LOCAL_KEYS].every((k) => Math.abs(Number(m.adj[k]) || 0) < 1e-4);
+  // Against EDIT_NEUTRAL, not against zero — mirrors editing._adj_is_neutral,
+  // and the reason is the same: sharpen_radius is neutral at its midpoint.
+  return [...MASK_LOCAL_KEYS].every(
+    (k) => Math.abs((Number(m.adj[k]) || 0) - (EDIT_NEUTRAL[k] ?? 0)) < 1e-4);
 }
 
 function maskLabel(m, idx) {
-  return m.name || `${MASK_KINDS[m.type].label} ${idx + 1}`;
+  if (m.name) return m.name;
+  // "Subject 2" says more than "Auto 2" ever could.
+  if (m.type === "auto") return `${autoGroupLabel(m.group)} ${idx + 1}`;
+  return `${MASK_KINDS[m.type].label} ${idx + 1}`;
 }
 
 // ---------- icons ----------
@@ -236,6 +383,7 @@ const ICONS = {
   refresh: "M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6",
   close: "M18 6 6 18M6 6l12 12",
   download: "M12 3v12m0 0 4-4m-4 4-4-4M4 19h16",
+  save: "M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7M7 3v4a1 1 0 0 0 1 1h7",
   pencil: "M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z",
   plus: "M12 5v14M5 12h14",
   undo: "M3 10h11a5 5 0 0 1 0 10H8M3 10l4-4M3 10l4 4",
@@ -251,6 +399,7 @@ const ICONS = {
   hdr: "M3 17h18M6 13a6 6 0 0 1 12 0M12 3v3M5 6l2 2m12-2-2 2",
   wand: "M5 19 17 7M15 3l1 3 3 1-3 1-1 3-1-3-3-1 3-1zM4 13l.7 2 2 .7-2 .7L4 19l-.7-2-2-.7 2-.7z",
   loupe: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM16 16l5 5",
+  pipette: "M2 22l1-1h3l9-9M3 21v-3l9-9M15 6l3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3z",
   palette: "M12 21a9 9 0 1 1 9-9c0 2-1.5 3-3 3h-2a2 2 0 0 0-1 3.7A2 2 0 0 1 12 21zM7.5 11h.01M11 7.5h.01M15.5 9h.01",
   swap: "M4 8h13l-3-3M20 16H7l3 3",
   radial: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
@@ -346,6 +495,8 @@ const SHORTCUT_TIPS = {
   "#edit-apply-more": ["Apply this edit to more photos", null],
   '[data-preset-mode="add"]': ["Lay the preset on top: its masks are added to yours", null],
   '[data-preset-mode="replace"]': ["Discard the current edit and use the preset alone", null],
+  "#wb-pick": ["White balance — click something that should be grey", null],
+  "#wb-reset": ["Zero Temperature and Tint", null],
   "#crop-tool": ["Crop — drag a box on the photo", null],
   "#crop-reset": ["Back to the whole frame, level", null],
   "#crop-tilt": ["Straighten. Positive levels a horizon drooping to the right", null],
@@ -1766,6 +1917,10 @@ const editSession = {
   // it is also what is on screen) or not (when `frame` is the cropped result).
   cropFrame: { w: 0, h: 0 },
   cropAspect: "free",
+  // This photo's stashes, as the server stores them: EDIT_SLOTS entries, each
+  // either null or {edit, saved_at, name}. `slotEdits` is the same list in
+  // working form, and `slotMark` is the one the working edit matches right now.
+  slots: [], slotEdits: [], slotMark: -1, slotTouch: -1,
   // Original frame -> displayed frame, as six numbers from the server. Identity
   // until a crop or a straighten makes the two differ.
   maskXform: null,
@@ -1774,7 +1929,36 @@ const editSession = {
 // ---------- tone curve ----------
 const CURVE_MAX = 6;         // max control points (keeps it approachable)
 const CURVE_PAD = 8;
-const curveState = { cssW: 240, cssH: 240, drag: -1, accent: "#4a90e2" };
+const curveState = { cssW: 240, cssH: 240, drag: -1, accent: "#4a90e2",
+                     channel: "curve" };
+
+function curveChannel() {
+  return CURVE_CHANNELS.find((c) => c.k === curveState.channel) || CURVE_CHANNELS[0];
+}
+function curvePoints() { return editSession.edit[curveState.channel]; }
+function curveTint(c) { return c.tint || curveState.accent; }
+function curveTouched(key) {
+  const pts = editSession.edit[key];
+  return !!pts && pts.some(([x, y]) => Math.abs(y - x) > 1e-4);
+}
+function renderCurveChannels() {
+  const wrap = $("#curve-channels");
+  if (!wrap || !editSession.edit) return;
+  const touched = CURVE_CHANNELS.filter((c) => c.k !== "curve" && curveTouched(c.k)).length;
+  $("#curve-summary-state").textContent = touched ? `\u00b7 ${touched} channel${touched > 1 ? "s" : ""}` : "";
+  wrap.innerHTML = CURVE_CHANNELS.map((c) =>
+    `<button type="button" class="curve-chan${c.k === curveState.channel ? " active" : ""}` +
+    `${curveTouched(c.k) ? " touched" : ""}" data-curve-chan="${c.k}" ` +
+    `style="--chan: ${curveTint(c)}">${c.label}</button>`).join("");
+  $$("#curve-channels .curve-chan").forEach((b) => {
+    b.addEventListener("click", () => {
+      curveState.channel = b.dataset.curveChan;
+      curveState.drag = -1;
+      renderCurveChannels();
+      drawCurve();
+    });
+  });
+}
 
 function curveInit() {
   const cv = $("#edit-curve");
@@ -1829,7 +2013,7 @@ function curveEventData(e) {
   return { px, py, x, y };
 }
 function curveHit(px, py) {
-  const pts = editSession.edit.curve;
+  const pts = curvePoints();
   for (let i = 0; i < pts.length; i++) {
     const [hx, hy] = curveToPx(pts[i][0], pts[i][1]);
     if (Math.hypot(px - hx, py - hy) <= 10) return i;
@@ -1852,14 +2036,26 @@ function drawCurve() {
   ctx.strokeStyle = "rgba(255,255,255,0.16)";
   ctx.beginPath(); ctx.moveTo(...curveToPx(0, 0)); ctx.lineTo(...curveToPx(1, 1)); ctx.stroke();
 
-  const pts = editSession.edit.curve;
   const N = 64, xs = [];
   for (let i = 0; i <= N; i++) xs.push(i / N);
-  const ys = pchipEval(pts, xs);
-  ctx.strokeStyle = curveState.accent; ctx.lineWidth = 2; ctx.beginPath();
-  xs.forEach((x, i) => { const [qx, qy] = curveToPx(x, ys[i]); i ? ctx.lineTo(qx, qy) : ctx.moveTo(qx, qy); });
-  ctx.stroke();
-  ctx.fillStyle = curveState.accent;
+  const trace = (pts, colour, width, alpha) => {
+    const ys = pchipEval(pts, xs);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = colour; ctx.lineWidth = width; ctx.beginPath();
+    xs.forEach((x, i) => { const [qx, qy] = curveToPx(x, ys[i]); i ? ctx.lineTo(qx, qy) : ctx.moveTo(qx, qy); });
+    ctx.stroke();
+    ctx.restore();
+  };
+  // The inactive channels stay on screen, thin and faint. Four curves that each
+  // hide the other three would make a split tone impossible to reason about.
+  for (const c of CURVE_CHANNELS) {
+    if (c.k === curveState.channel || !curveTouched(c.k)) continue;
+    trace(editSession.edit[c.k], curveTint(c), 1, 0.4);
+  }
+  const active = curveChannel(), colour = curveTint(active), pts = curvePoints();
+  trace(pts, colour, 2, 1);
+  ctx.fillStyle = colour;
   for (const [x, y] of pts) { const [qx, qy] = curveToPx(x, y); ctx.beginPath(); ctx.arc(qx, qy, 4, 0, 7); ctx.fill(); }
 }
 
@@ -1868,7 +2064,7 @@ function curveDown(e) {
   const { px, py, x, y } = curveEventData(e);
   let i = curveHit(px, py);
   if (i < 0) {
-    const pts = editSession.edit.curve;
+    const pts = curvePoints();
     if (pts.length >= CURVE_MAX || x <= 0 || x >= 1) return;  // only interior points added
     const np = [x, y];
     pts.push(np); pts.sort((a, b) => a[0] - b[0]);
@@ -1881,7 +2077,7 @@ function curveDown(e) {
 function curveMove(e) {
   if (curveState.drag < 0) return;
   const { x, y } = curveEventData(e);
-  const pts = editSession.edit.curve, i = curveState.drag;
+  const pts = curvePoints(), i = curveState.drag;
   if (i === 0) pts[i] = [0, y];                     // endpoints: x locked, y free
   else if (i === pts.length - 1) pts[i] = [1, y];
   else {
@@ -1897,14 +2093,17 @@ function curveUp() {
 }
 function curveDoubleClick(e) {
   const { px, py } = curveEventData(e);
-  const i = curveHit(px, py), pts = editSession.edit.curve;
+  const i = curveHit(px, py), pts = curvePoints();
   if (i > 0 && i < pts.length - 1) {             // can't remove endpoints
     pts.splice(i, 1);
     drawCurve(); setEditDirty(); fetchEditPreview(false);
   }
 }
 function resetCurve() {
-  editSession.edit.curve = CURVE_IDENTITY.map((p) => p.slice());
+  // The active channel only: wiping a red curve nobody asked about because they
+  // clicked reset while looking at RGB would be a surprise.
+  editSession.edit[curveState.channel] = CURVE_IDENTITY.map((p) => p.slice());
+  renderCurveChannels();
   drawCurve(); setEditDirty(); fetchEditPreview(true);
 }
 
@@ -1931,12 +2130,18 @@ function openEditModal(absIdx) {
   editSession.cropFrame = { ...editSession.natural };
   editSession.cropAspect = "free";
   editSession.maskXform = null;
+  editSession.slotTouch = -1;
+  setSlots(photo.edit_slots);
+  renderSlots();
   $$("#edit-modal .edit-zoom").forEach((b) =>
     b.classList.toggle("active", b.dataset.zoom === "0"));
   $("#edit-zoom-hint").classList.add("hidden");
   layoutPreviewImage();
   renderWatermarkPanel();
   renderFilmPanel();
+  renderHslPanel();
+  renderGradePanel();
+  renderCurveChannels();
   loadWatermarkInfo(photo.rel_path);
   selectMask(-1, { silent: true });
   setEditTool(null);
@@ -2018,6 +2223,10 @@ function syncEditValues() {
 }
 
 function setEditDirty() {
+  // Every change funnels through here, which makes it the one place the slot
+  // marker can be kept true without a render per slider frame: markSlot only
+  // touches the DOM when the answer actually changes.
+  markSlot();
   const dirty = !editsEqual(editSession.edit, editSession.baseline);
   $("#edit-save").disabled = !dirty;
   $("#edit-dirty").textContent = dirty ? "unsaved changes" : "";
@@ -2167,12 +2376,52 @@ function resetEdit() {
     $("#edit-preset-select").value = "";
     renderWatermarkPanel();
     renderFilmPanel();
+    renderHslPanel();
+    renderGradePanel();
+    renderCurveChannels();
   }
   syncEditSliders();
   drawCurve();
   drawOverlay();
   setEditDirty();
   fetchEditPreview(true);
+}
+
+// The white-balance picker. The pair it returns is absolute — it replaces
+// temp/tint rather than nudging them — and it always lands on the *global*
+// sliders, mask or no mask: white balance is a statement about the light the
+// photo was taken in, and the light does not stop at a mask edge.
+async function pickNeutral(f) {
+  if (!editSession.relPath) return;
+  setEditTool(null);
+  $("#edit-status").textContent = "reading white balance\u2026";
+  try {
+    const res = await fetch("/api/edit/neutral", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rel_path: editSession.relPath, x: f.x, y: f.y }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      $("#edit-status").textContent = err.detail || `white balance failed: ${res.status}`;
+      return;
+    }
+    const { wb } = await res.json();
+    editSession.edit.temp = wb.temp;
+    editSession.edit.tint = wb.tint;
+    // Show the sliders it just wrote: with a mask selected the Color panel is
+    // the mask's own, and the move would have been invisible.
+    selectMask(-1, { silent: true });
+    syncEditSliders();
+    setEditDirty();
+    drawOverlay();
+    fetchEditPreview(true);
+    // Say when the answer was pinned. The gains stop at 1.25/0.75, so a deep
+    // tungsten frame gets as far as the sliders go and keeps a little cast.
+    $("#edit-status").textContent = wb.clamped
+      ? "as far as the sliders reach \u2014 finish it on the blue curve"
+      : "";
+  } catch { $("#edit-status").textContent = "white balance error"; }
 }
 
 async function autoEdit() {
@@ -2238,6 +2487,202 @@ function editNav(delta) {
   const i = Math.max(0, Math.min(state.filteredPhotos.length - 1, editSession.idx + delta));
   if (i === editSession.idx) return;
   openEditModal(i);
+}
+
+// ---------- colour grading ----------
+// Mirrors grading.ZONES. A wheel is a hue plus a strength; the panel shows them
+// as two sliders rather than a dial because a slider can be typed into, nudged
+// with an arrow key and read at a glance, and a dial cannot.
+const GRADE_ZONES = [
+  { k: "shadows",    label: "Shadows" },
+  { k: "midtones",   label: "Midtones" },
+  { k: "highlights", label: "Highlights" },
+];
+const GRADE_FIELDS = [
+  { k: "hue", label: "Hue", min: 0, max: 359,
+    hint: "Which way to push this tonal region. Does nothing on its own \u2014 raise Strength." },
+  { k: "sat", label: "Strength", min: 0, max: 100,
+    hint: "How far to push it. Brightness is untouched at any setting." },
+  { k: "lum", label: "Luminance", min: -100, max: 100,
+    hint: "Lift or drop this region, towards white or black and never past either." },
+];
+const GRADE_GLOBALS = [
+  { k: "blending", label: "Blending", min: 0, max: 100, dflt: 50,
+    hint: "How far the three regions reach into each other. Low keeps them apart." },
+  { k: "balance", label: "Balance", min: -100, max: 100, dflt: 0,
+    hint: "Slides the split between shadows and highlights." },
+];
+const gradeState = { zone: "shadows", built: false };
+
+function currentGrading() { return editSession.edit.grading || {}; }
+function gradeZoneVals(zone) { return currentGrading()[zone] || {}; }
+function gradeZoneTouched(zone) {
+  const v = gradeZoneVals(zone);
+  return !!(Math.round(v.sat || 0) || Math.round(v.lum || 0));
+}
+function gradeGlobal(k, dflt) {
+  const v = currentGrading()[k];
+  return v == null ? dflt : Math.round(v);
+}
+
+function buildGradeFields() {
+  if (gradeState.built) return;
+  const row = (f, attr) =>
+    `<label class="look-row" title="${escapeHtml(f.hint)}">` +
+    `<span class="look-label">${f.label}</span>` +
+    `<input type="range" data-${attr}="${f.k}" min="${f.min}" max="${f.max}" step="1" />` +
+    `<span class="look-val" data-${attr}-val="${f.k}"></span></label>`;
+  const zoneWrap = $("#grade-fields");
+  if (!zoneWrap) return;
+  zoneWrap.innerHTML = GRADE_FIELDS.map((f) => row(f, "grade")).join("");
+  zoneWrap.addEventListener("input", (e) => {
+    const sl = e.target.closest("input[type=range][data-grade]");
+    if (sl) updateGradeZone({ [sl.dataset.grade]: parseInt(sl.value, 10) });
+  });
+  const globalWrap = $("#grade-globals");
+  globalWrap.innerHTML = GRADE_GLOBALS.map((f) => row(f, "gradeg")).join("");
+  globalWrap.addEventListener("input", (e) => {
+    const sl = e.target.closest("input[type=range][data-gradeg]");
+    if (sl) updateGrading({ [sl.dataset.gradeg]: parseInt(sl.value, 10) });
+  });
+  gradeState.built = true;
+}
+
+function renderGradePanel() {
+  if (!$("#grade-fields")) return;
+  buildGradeFields();
+  const touched = GRADE_ZONES.filter((z) => gradeZoneTouched(z.k)).length;
+  $("#grade-summary-state").textContent =
+    touched ? `\u00b7 ${touched} zone${touched > 1 ? "s" : ""}` : "";
+  $("#grade-zones").innerHTML = GRADE_ZONES.map((z) =>
+    `<button type="button" class="grade-zone${z.k === gradeState.zone ? " active" : ""}` +
+    `${gradeZoneTouched(z.k) ? " touched" : ""}" data-grade-zone="${z.k}">${z.label}</button>`
+  ).join("");
+  $$("#grade-zones .grade-zone").forEach((b) => {
+    b.addEventListener("click", () => {
+      gradeState.zone = b.dataset.gradeZone;
+      renderGradePanel();
+    });
+  });
+  const vals = gradeZoneVals(gradeState.zone);
+  for (const f of GRADE_FIELDS) {
+    const v = Math.round(vals[f.k] || 0);
+    $(`#grade-fields input[data-grade="${f.k}"]`).value = v;
+    const cell = $(`#grade-fields [data-grade-val="${f.k}"]`);
+    // A hue with no strength behind it is a setting, not a change — say so
+    // rather than showing a number that is doing nothing.
+    cell.textContent = (f.k === "hue" && !Math.round(vals.sat || 0)) ? `${v}\u00b0 \u00b7 off` : v;
+  }
+  for (const f of GRADE_GLOBALS) {
+    const v = gradeGlobal(f.k, f.dflt);
+    $(`#grade-globals input[data-gradeg="${f.k}"]`).value = v;
+    $(`#grade-globals [data-gradeg-val="${f.k}"]`).textContent = v;
+  }
+  $("#grade-reset").disabled = !gradeZoneTouched(gradeState.zone);
+}
+
+function updateGrading(patch) {
+  const next = { ...currentGrading(), ...patch };
+  editSession.edit.grading = canonGrading(next) ? next : null;
+  renderGradePanel();
+  setEditDirty();
+  previewDuringDrag();
+}
+
+function updateGradeZone(patch) {
+  const next = cloneGrading(currentGrading()) || {};
+  next[gradeState.zone] = { ...gradeZoneVals(gradeState.zone), ...patch };
+  editSession.edit.grading = canonGrading(next) ? next : null;
+  renderGradePanel();
+  setEditDirty();
+  previewDuringDrag();
+}
+
+// ---------- colour mixer ----------
+// Mirrors editing.HSL_BANDS and its centres. The swatch is only a label: the
+// server interpolates between the centres, so a hue halfway between two bands
+// is moved by a mix of both rather than by whichever button is highlighted.
+const HSL_BANDS = [
+  { k: "red",     label: "Red",     swatch: "#e04a4a" },
+  { k: "orange",  label: "Orange",  swatch: "#e0903a" },
+  { k: "yellow",  label: "Yellow",  swatch: "#d4c33a" },
+  { k: "green",   label: "Green",   swatch: "#4aba5a" },
+  { k: "aqua",    label: "Aqua",    swatch: "#3ec0c0" },
+  { k: "blue",    label: "Blue",    swatch: "#4a7ade" },
+  { k: "purple",  label: "Purple",  swatch: "#9a5ade" },
+  { k: "magenta", label: "Magenta", swatch: "#d94aa8" },
+];
+const HSL_FIELDS = [
+  { k: "hue", label: "Hue",
+    hint: "Rotates this band around the colour circle, up to 30 degrees." },
+  { k: "sat", label: "Saturation",
+    hint: "How much of this colour there is. At -100 the band goes grey." },
+  { k: "lum", label: "Luminance",
+    hint: "Towards white or towards black, never past either \u2014 so the band keeps its hue." },
+];
+const hslState = { band: "red", built: false };
+
+function currentHsl() { return editSession.edit.hsl || {}; }
+function hslBandVals(band) { return currentHsl()[band] || {}; }
+function hslBandTouched(band) {
+  const v = hslBandVals(band);
+  return HSL_FIELDS.some((f) => Math.round(v[f.k] || 0) !== 0);
+}
+
+function buildHslFields() {
+  if (hslState.built) return;
+  const wrap = $("#hsl-fields");
+  if (!wrap) return;
+  wrap.innerHTML = HSL_FIELDS.map((f) =>
+    `<label class="look-row" title="${escapeHtml(f.hint)}">` +
+    `<span class="look-label">${f.label}</span>` +
+    `<input type="range" data-hsl="${f.k}" min="-100" max="100" step="1" />` +
+    `<span class="look-val" data-hsl-val="${f.k}"></span></label>`).join("");
+  wrap.addEventListener("input", (e) => {
+    const sl = e.target.closest("input[type=range][data-hsl]");
+    if (!sl) return;
+    updateHsl({ [sl.dataset.hsl]: parseInt(sl.value, 10) });
+  });
+  hslState.built = true;
+}
+
+function renderHslPanel() {
+  if (!$("#hsl-fields")) return;
+  buildHslFields();
+  const touched = HSL_BANDS.filter((b) => hslBandTouched(b.k)).length;
+  $("#hsl-summary-state").textContent = touched ? `\u00b7 ${touched} band${touched > 1 ? "s" : ""}` : "";
+  $("#hsl-bands").innerHTML = HSL_BANDS.map((b) =>
+    `<button type="button" class="hsl-band${b.k === hslState.band ? " active" : ""}` +
+    `${hslBandTouched(b.k) ? " touched" : ""}" data-band="${b.k}" title="${b.label}">` +
+    `<span class="hsl-swatch" style="background:${b.swatch}"></span>` +
+    `<span class="hsl-band-label">${b.label}</span></button>`).join("");
+  $$("#hsl-bands .hsl-band").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      hslState.band = btn.dataset.band;
+      renderHslPanel();
+    });
+  });
+  const vals = hslBandVals(hslState.band);
+  for (const f of HSL_FIELDS) {
+    const v = Math.round(vals[f.k] || 0);
+    $(`#hsl-fields input[data-hsl="${f.k}"]`).value = v;
+    $(`#hsl-fields [data-hsl-val="${f.k}"]`).textContent = v;
+  }
+  $("#hsl-reset").disabled = !hslBandTouched(hslState.band);
+}
+
+function updateHsl(patch) {
+  const next = cloneHsl(currentHsl()) || {};
+  const band = { ...hslBandVals(hslState.band), ...patch };
+  // Drop what is back at neutral, so the edit returns to genuinely neutral
+  // instead of carrying a band full of zeroes around.
+  for (const f of HSL_FIELDS) if (!Math.round(band[f.k] || 0)) delete band[f.k];
+  if (Object.keys(band).length) next[hslState.band] = band;
+  else delete next[hslState.band];
+  editSession.edit.hsl = Object.keys(next).length ? next : null;
+  renderHslPanel();
+  setEditDirty();
+  previewDuringDrag();
 }
 
 // ---------- film emulation ----------
@@ -2506,16 +2951,19 @@ function setEditTool(tool) {
     editSession.showMask = true;
     $("#mask-show").checked = true;
   }
-  $$("#edit-modal .mask-add-btn").forEach((b) =>
+  $$("#edit-modal .mask-add-btn[data-add-mask]").forEach((b) =>
     b.classList.toggle("armed", b.dataset.addMask === tool));
+  $("#wb-pick").classList.toggle("armed", tool === "wb");
   const wrap = $(".edit-canvas-wrap");
   wrap.classList.toggle("tool-place", tool === "radial" || tool === "linear");
   wrap.classList.toggle("tool-brush", tool === "brush");
   wrap.classList.toggle("tool-crop", tool === "crop");
+  wrap.classList.toggle("tool-wb", tool === "wb");
   const text = tool === "radial" ? "Drag on the photo to place the ellipse"
     : tool === "linear" ? "Drag on the photo to set the gradient direction"
     : tool === "brush" ? "Paint over the area · Alt = erase · [ ] = brush size"
     : tool === "crop" ? "Drag the box or its corners · press Crop again when done"
+    : tool === "wb" ? "Click something that should be grey — a white wall, a grey card, a white shirt"
     : "";
   const hint = $("#edit-tool-hint");
   hint.textContent = text;
@@ -2529,21 +2977,133 @@ function setEditTool(tool) {
   drawOverlay();
 }
 
-function addMask(kind) {
+function addMask(kind, group) {
   if (!editSession.relPath) return;
   if (editSession.edit.masks.length >= MASK_MAX) {
     $("#edit-status").textContent = `mask limit reached (${MASK_MAX})`;
     return;
   }
   const r = overlayRect();
-  editSession.edit.masks.push(newMask(kind, r.h ? r.w / r.h : 1));
+  editSession.edit.masks.push(newMask(kind, r.h ? r.w / r.h : 1, group));
   selectMask(editSession.edit.masks.length - 1);
   // Radial/gradient masks land centred so they are visible right away; arming
-  // the tool lets the very next drag re-place them where the user wants.
-  setEditTool(kind);
+  // the tool lets the very next drag re-place them where the user wants. An
+  // automatic mask has nothing to drag, so no tool is armed for it.
+  setEditTool((kind === "auto" || kind === "range") ? null : kind);
   setEditDirty();
   drawOverlay();
   if (kind !== "brush") fetchEditPreview(false);
+}
+
+// ---------- range refinement ----------
+
+function buildMaskRangeFields() {
+  const wrap = $("#mask-range-fields");
+  if (!wrap || wrap.dataset.built) return;
+  wrap.innerHTML = LUMA_RANGE_FIELDS.map((f) =>
+    `<label class="look-row" title="${escapeHtml(f.hint)}">` +
+    `<span class="look-name">${f.label}</span>` +
+    `<input type="range" data-luma="${f.k}" min="${f.min}" max="${f.max}" step="1" />` +
+    `<span class="look-val" data-luma-val="${f.k}"></span></label>`).join("");
+  wrap.addEventListener("input", (e) => {
+    const sl = e.target.closest("input[type=range][data-luma]");
+    if (!sl) return;
+    const m = activeMask();
+    if (!m || !m.range_luma) return;
+    m.range_luma[sl.dataset.luma] = parseInt(sl.value, 10);
+    // Keep the window the right way round rather than letting it invert
+    // silently, which would select nothing and look like a broken slider.
+    if (m.range_luma.lo > m.range_luma.hi) {
+      if (sl.dataset.luma === "lo") m.range_luma.hi = m.range_luma.lo;
+      else m.range_luma.lo = m.range_luma.hi;
+    }
+    maskChanged(false);
+  });
+  wrap.dataset.built = "1";
+}
+
+function renderMaskRange(m) {
+  const tools = $("#mask-range-tools");
+  if (!tools) return;
+  buildMaskRangeFields();
+  // A range mask IS its range, so the toggle would be a way to delete the mask.
+  const togglable = m.type !== "range";
+  tools.classList.remove("hidden");
+  $("#mask-range-on").checked = !!m.range_luma;
+  $("#mask-range-on").disabled = !togglable;
+  $("#mask-range-fields").classList.toggle("hidden", !m.range_luma);
+  if (!m.range_luma) return;
+  for (const f of LUMA_RANGE_FIELDS) {
+    const v = Math.round(m.range_luma[f.k] ?? 0);
+    $(`#mask-range-fields input[data-luma="${f.k}"]`).value = v;
+    $(`#mask-range-fields [data-luma-val="${f.k}"]`).textContent = v;
+  }
+  // Say when the range is doing nothing rather than leaving it a mystery.
+  $("#mask-range-note").classList.toggle("warn", lumaRangeIsAll(m.range_luma));
+}
+
+// ---------- automatic mask previews ----------
+// The editor rasterizes a radial or a brush itself, from the same numbers the
+// server has. It cannot do that for a segmentation, so the alpha is fetched as
+// an image — white with the coverage in its alpha channel, which is exactly what
+// the tint pipeline wants — and cached per photo and group.
+const autoTints = new Map();
+
+function autoTintImage(relPath, group) {
+  const key = `${relPath}|${group}`;
+  const hit = autoTints.get(key);
+  if (hit !== undefined) return hit.complete && hit.naturalWidth ? hit : null;
+  const img = new Image();
+  autoTints.set(key, img);
+  // Redraw once it lands: the first paint after adding a mask has nothing to
+  // show, and without this it would stay blank until the next pointer move.
+  img.addEventListener("load", () => drawOverlay());
+  img.addEventListener("error", () => autoTints.delete(key));
+  img.src = `/api/segment/preview?rel_path=${encodeURIComponent(relPath)}`
+    + `&group=${encodeURIComponent(group)}`;
+  return null;
+}
+
+// A range selection is measured on a fixed grid over the whole ungraded frame,
+// so reproducing it here from a displayed preview would give a different answer
+// than the one being graded. Fetch it instead, keyed on the parameters that
+// decide it — the mask's identity does not, since two masks with the same range
+// select the same pixels.
+const rangeTints = new Map();
+
+function rangeTintImage(relPath, mask) {
+  const key = `${relPath}|${JSON.stringify([mask.range_luma, mask.range_color])}`;
+  const hit = rangeTints.get(key);
+  if (hit !== undefined) return hit.img.complete && hit.img.naturalWidth ? hit.img : null;
+  const img = new Image();
+  rangeTints.set(key, { img });
+  img.addEventListener("load", () => drawOverlay());
+  img.addEventListener("error", () => rangeTints.delete(key));
+  // A bare range over the whole frame: the shape, if any, is painted separately
+  // and the two are multiplied by the canvas, exactly as the server multiplies
+  // them when it grades.
+  const probe = { type: "range", enabled: true, invert: false, feather: 0,
+                  amount: 100, adj: { exposure: 1 },
+                  range_luma: mask.range_luma, range_color: mask.range_color };
+  fetch("/api/mask/preview", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rel_path: relPath, mask: probe }),
+  }).then((r) => (r.ok ? r.blob() : Promise.reject(r.status)))
+    .then((b) => { img.src = URL.createObjectURL(b); })
+    .catch(() => rangeTints.delete(key));
+  return null;
+}
+
+async function ensureSegmentModel() {
+  const res = await fetch("/api/segment/status", { cache: "no-store" });
+  const info = await res.json();
+  if (info.model_ready) return true;
+  const mb = Math.round((info.size || 0) / 1e6);
+  $("#edit-status").textContent = `fetching the segmentation model (${mb} MB)…`;
+  const got = await fetch("/api/segment/download", { method: "POST" });
+  const done = await got.json();
+  $("#edit-status").textContent = done.model_ready ? "" : "model download failed";
+  return !!done.model_ready;
 }
 
 function deleteMask(idx) {
@@ -2602,6 +3162,7 @@ function renderMaskDetail() {
   $("#mask-context").classList.toggle("local", !!m);
   // Auto-tone and the master curve stay global-only.
   $("#edit-auto").disabled = !!m;
+  $("#wb-pick").disabled = !!m;   // it writes the global pair
   $("#edit-curve-group").classList.toggle("hidden", !!m);
   // "Reset mask" read as if it might delete the mask or undo its shape. Say
   // exactly what it zeroes.
@@ -2624,6 +3185,21 @@ function renderMaskDetail() {
   $("#mask-feather-val").textContent = m.feather;
   $("#mask-amount").value = m.amount;
   $("#mask-amount-val").textContent = m.amount;
+  renderMaskRange(m);
+  const auto = m.type === "auto";
+  $("#mask-auto-tools").classList.toggle("hidden", !auto);
+  if (auto) {
+    $("#mask-auto-groups").innerHTML = AUTO_GROUPS.map((g) =>
+      `<button type="button" class="mask-auto-group${g.k === m.group ? " active" : ""}" ` +
+      `data-auto-group="${g.k}">${g.label}</button>`).join("");
+    $$("#mask-auto-groups .mask-auto-group").forEach((b) => {
+      b.addEventListener("click", () => {
+        if (b.dataset.autoGroup === m.group) return;
+        m.group = b.dataset.autoGroup;
+        maskChanged(true);
+      });
+    });
+  }
   const brush = m.type === "brush";
   $("#mask-brush-tools").classList.toggle("hidden", !brush);
   if (brush) {
@@ -3163,6 +3739,8 @@ function drawBrushCursor(ctx, r) {
 // A hard edge around the affected area, so the mask is readable whatever the
 // photo underneath is doing. For a brush this traces the painted strokes.
 function drawMaskOutline(ctx, m, r) {
+  // Neither a segmentation nor a tonal selection has an outline to trace.
+  if (m.type === "auto" || m.type === "range") return;
   ctx.save();
   ctx.lineWidth = 1.2;
   ctx.setLineDash([6, 4]);
@@ -3267,6 +3845,27 @@ function paintMaskShape(o, m, r, inverted, cheap = false) {
     }
     o.fillStyle = g;
     o.fillRect(r.x, r.y, r.w, r.h);
+  } else if (m.type === "range") {
+    const img = rangeTintImage(editSession.relPath, m);
+    if (img) {
+      o.save();
+      if (inverted) o.globalCompositeOperation = "destination-out";
+      o.drawImage(img, r.x, r.y, r.w, r.h);
+      o.restore();
+    }
+  } else if (m.type === "auto") {
+    // The alpha arrives as an image because a segmentation cannot be redrawn
+    // from a handful of numbers. Until it lands there is nothing to paint; the
+    // load handler calls drawOverlay again.
+    const img = autoTintImage(editSession.relPath, m.group);
+    if (img) {
+      o.save();
+      if (inverted) o.globalCompositeOperation = "destination-out";
+      o.filter = f > 0 ? `blur(${Math.max(0.5, f * r.w * 0.02).toFixed(2)}px)` : "none";
+      o.drawImage(img, r.x, r.y, r.w, r.h);
+      o.filter = "none";
+      o.restore();
+    }
   } else {
     o.save();
     o.lineCap = "round";
@@ -3296,6 +3895,18 @@ function paintMaskShape(o, m, r, inverted, cheap = false) {
     o.filter = "none";
     o.restore();
   }
+  // A drawn shape carrying a range refinement: the tint is the shape narrowed to
+  // the selection, which is what the server grades. destination-in multiplies
+  // the alphas, so this is the same product, not an approximation of it.
+  if (m.type !== "range" && (m.range_luma || m.range_color)) {
+    const img = rangeTintImage(editSession.relPath, m);
+    if (img) {
+      o.save();
+      o.globalCompositeOperation = "destination-in";
+      o.drawImage(img, r.x, r.y, r.w, r.h);
+      o.restore();
+    }
+  }
 }
 
 function strokeHandle(ctx, p, kind) {
@@ -3309,7 +3920,7 @@ function strokeHandle(ctx, p, kind) {
 }
 
 function drawMaskHandles(ctx, m, r) {
-  if (m.type === "brush") return;
+  if (m.type === "brush" || m.type === "auto" || m.type === "range") return;
   ctx.save();
   ctx.shadowColor = "rgba(0,0,0,0.75)";
   ctx.shadowBlur = 3;
@@ -3400,6 +4011,13 @@ function overlayDown(e) {
   if (e.button !== 0 && !panButton) return;
   const m = activeMask();
   const r0 = overlayRect(), f0 = evFrac(e);
+  if (editSession.tool === "wb" && !panButton) {
+    // One click, no drag: sample and disarm. The coordinates are already
+    // fractions of the original frame, which is what the server samples.
+    pickNeutral(f0);
+    e.preventDefault();
+    return;
+  }
   if (editSession.tool === "crop" && !panButton) {
     // A crop box is measured against what is on screen, not against the original
     // frame the masks use, so this branch has its own coordinates.
@@ -3638,8 +4256,20 @@ function undoLastStroke() {
 }
 
 function bindMaskUi() {
-  $$("#edit-modal .mask-add-btn").forEach((b) =>
+  // Scoped to the buttons that name a kind. An automatic-mask button carries
+  // .mask-add-btn too, so a bare class selector matched it here as well and
+  // every click on Subject ran both handlers: this one first, with
+  // dataset.addMask undefined, pushing a typeless mask that MASK_KINDS has no
+  // entry for — which then threw out of renderMaskList and left the real mask
+  // missing from the list.
+  $$("#edit-modal .mask-add-btn[data-add-mask]").forEach((b) =>
     b.addEventListener("click", () => addMask(b.dataset.addMask)));
+  $$("[data-add-auto]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      // The model is fetched on the first automatic mask, not at startup: a
+      // shoot with no people in it should never pay for it.
+      if (await ensureSegmentModel()) addMask("auto", b.dataset.addAuto);
+    }));
 
   $("#mask-list").addEventListener("click", (e) => {
     const del = e.target.closest("[data-mask-del]");
@@ -3703,6 +4333,28 @@ function bindMaskUi() {
   // Crop & straighten
   $("#film-enabled").addEventListener("change", (e) =>
     updateFilm({ enabled: e.target.checked }));
+  $("#hsl-reset").addEventListener("click", () =>
+    updateHsl(Object.fromEntries(HSL_FIELDS.map((f) => [f.k, 0]))));
+  $("#grade-reset").addEventListener("click", () =>
+    updateGradeZone(Object.fromEntries(GRADE_FIELDS.map((f) => [f.k, 0]))));
+  $("#mask-range-on").addEventListener("change", (e) => {
+    const m = activeMask();
+    if (!m) return;
+    m.range_luma = e.target.checked ? { ...LUMA_RANGE_NEW } : null;
+    maskChanged(true);
+  });
+  $("#wb-pick").addEventListener("click", () =>
+    setEditTool(editSession.tool === "wb" ? null : "wb"));
+  $("#wb-reset").addEventListener("click", () => {
+    // Zeroes whatever the Color panel is showing, which is the mask's own pair
+    // while one is selected and the global one otherwise.
+    const target = adjTarget();
+    target.temp = 0;
+    target.tint = 0;
+    syncEditSliders();
+    setEditDirty();
+    fetchEditPreview(true);
+  });
   $("#crop-tool").addEventListener("click", () =>
     setEditTool(editSession.tool === "crop" ? null : "crop"));
   $("#crop-reset").addEventListener("click", () => {
@@ -3787,6 +4439,183 @@ function nudgeBrushSize(delta) {
   drawOverlay();
 }
 
+// ---------- edit slots (per photo) ----------
+//
+// Deliberately not presets: a preset is a look you carry between photos, a slot
+// is a variant of *this* photo you are not ready to throw away. They are stored
+// on the photo and written the moment you fill one, so closing the editor with
+// Cancel keeps them and loses only the working edit.
+//
+// Shaped as a list rather than a row of numbered chips, and that was a
+// correction: with chips, one click meant "save" on an empty slot and "load" on
+// a full one, and overwriting was a modifier nobody can see. Which of the three
+// you were about to get depended on state the chip did not show. A row per slot
+// says what it holds, when it was put there, and carries its own save and clear
+// buttons — so every action is visible and none of them is a mode.
+
+// What is in a stash, for the row's label. Names the groups that are off
+// neutral rather than listing sliders: "light · colour · 2 masks" is what tells
+// two stashes apart at a glance.
+function slotSummary(e) {
+  const parts = [];
+  const any = (keys) => keys.some((k) => Math.abs(Number(e[k]) || 0) > 1e-6);
+  if (any(["exposure", "contrast", "highlights", "shadows", "whites", "blacks"])) parts.push("light");
+  if (any(["temp", "tint", "vibrance", "saturation"])) parts.push("colour");
+  if (e.hsl) parts.push("mixer");
+  if (e.grading) parts.push("grading");
+  if (CURVE_CHANNELS.some((c) => !curveIsIdentity(e[c.k]))) parts.push("curves");
+  if (any(["clarity", "texture", "dehaze", "denoise", "sharpen", "vignette",
+           "blur", "motion", "glow", "pixelate"])) parts.push("detail");
+  if (e.film && e.film.enabled) parts.push("film");
+  if (e.watermark) parts.push("watermark");
+  if (e.crop || Math.abs(Number(e.tilt) || 0) > 1e-4) parts.push("crop");
+  const n = (e.masks || []).length;
+  if (n) parts.push(`${n} mask${n === 1 ? "" : "s"}`);
+  return parts.length ? parts.join(" · ") : "no adjustments";
+}
+
+// "3m ago" beats a timestamp here: what you want to know about a stash is
+// whether it is the one you made just now or the one from this morning.
+function slotAge(iso) {
+  const t = Date.parse(iso || "");
+  if (!t) return "";
+  const mins = Math.floor((Date.now() - t) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return new Date(t).toLocaleDateString();
+}
+
+// The rack as the server sends it, plus the two derived things the panel needs:
+// each slot's edit in working form (so the comparison below allocates nothing)
+// and which slot the working edit currently matches.
+function setSlots(list) {
+  editSession.slots = Array.isArray(list) ? list : [];
+  editSession.slotEdits = editSession.slots.map(
+    (sl) => (sl ? mergeNeutralEdit(sl.edit) : null));
+  editSession.slotMark = -1;
+  markSlot();
+}
+
+// Which slot the working edit is currently equal to, if any. Derived from the
+// values every time rather than remembered from the last load: nudge one slider
+// and the marker goes away by itself, which is the honest answer and costs a
+// comparison the editor is already doing for the dirty flag.
+//
+// `slotTouch` breaks the tie when two slots hold the same thing — stash a
+// variant twice and both match, and the one you last acted on is the one you
+// mean. It is only a preference: the moment it stops matching, the scan decides.
+function markSlot() {
+  const eq = (i) => {
+    const se = editSession.slotEdits[i];
+    return !!se && editsEqual(se, editSession.edit);
+  };
+  let now = -1;
+  if (editSession.slotTouch >= 0 && eq(editSession.slotTouch)) {
+    now = editSession.slotTouch;
+  } else for (let i = 0; i < editSession.slotEdits.length; i++) {
+    if (eq(i)) { now = i; break; }
+  }
+  const changed = now !== editSession.slotMark;
+  editSession.slotMark = now;
+  if (changed) renderSlots();
+}
+
+function renderSlots() {
+  const list = $("#edit-slots");
+  if (!list) return;
+  const used = editSession.slots.filter(Boolean).length;
+  $("#slot-summary-state").textContent = used ? `· ${used} of ${EDIT_SLOTS}` : "";
+  list.innerHTML = Array.from({ length: EDIT_SLOTS }, (_, i) => {
+    const sl = editSession.slots[i];
+    const here = i === editSession.slotMark;
+    // A slot you loaded or saved and have since edited away from. Nothing is
+    // written behind your back — this is the row saying so, and its save button
+    // is how you fold the change back in.
+    const stale = !here && sl && i === editSession.slotTouch;
+    const cls = sl ? `filled${here ? " current" : stale ? " stale" : ""}` : "empty";
+    const what = sl ? slotSummary(editSession.slotEdits[i]) : "empty";
+    const when = here ? "on screen"
+      : stale ? "edited \u2014 not saved" : (sl ? slotAge(sl.saved_at) : "");
+    const save = `<button class="slot-btn" data-slot-save="${i}" title="${
+      sl ? `Overwrite slot ${i + 1} with what is on screen`
+         : `Save what is on screen into slot ${i + 1}`}">${icon("save")}</button>`;
+    const del = sl
+      ? `<button class="slot-btn" data-slot-del="${i}" title="Clear slot ${i + 1}">×</button>`
+      : `<span class="slot-btn">&nbsp;</span>`;
+    return `<div class="slot-row ${cls}" data-slot="${i}"${
+      sl ? ` title="Click to load slot ${i + 1}"` : ""}>`
+      + `<span class="slot-num">${i + 1}</span>`
+      + `<span class="slot-what">${escapeHtml(what)}</span>`
+      + `<span class="slot-when">${escapeHtml(when)}</span>${save}${del}</div>`;
+  }).join("");
+}
+
+// Write one slot through to the db. `edit` of null clears it. The server owns
+// the rack, so its answer replaces ours rather than being merged into it.
+async function slotWrite(i, edit) {
+  if (!editSession.relPath) return;
+  const rel = editSession.relPath;
+  const res = await fetch("/api/edit/slot", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rel_path: rel, slot: i, edit }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    $("#edit-status").textContent = "slot failed: " + (err.detail || res.status);
+    return;
+  }
+  const { slots } = await res.json();
+  editSession.slotTouch = edit ? i : -1;
+  setSlots(slots);
+  renderSlots();
+  // The grid's copy has to agree, or reopening the editor shows the old rack.
+  const photo = state.photos.find((p) => p.rel_path === rel);
+  if (photo) {
+    if (editSession.slots.some(Boolean)) photo.edit_slots = editSession.slots;
+    else delete photo.edit_slots;
+  }
+  $("#edit-status").textContent = edit
+    ? `saved into slot ${i + 1}` : `slot ${i + 1} cleared`;
+}
+
+// Bring a stash back. Replaces the working edit outright — that is what a slot
+// is for — and leaves it unsaved, so Cancel still backs out to the photo as it
+// is on disk.
+function slotLoad(i) {
+  if (!editSession.slotEdits[i]) return;
+  editSession.slotTouch = i;
+  editSession.edit = mergeNeutralEdit(editSession.slots[i].edit);
+  selectMask(-1, { silent: true });
+  setEditTool(null);
+  renderWatermarkPanel();
+  renderFilmPanel();
+  renderHslPanel();
+  renderGradePanel();
+  syncEditSliders();
+  drawCurve();
+  drawOverlay();
+  setEditDirty();
+  renderSlots();
+  fetchEditPreview(true);
+  $("#edit-status").textContent = `slot ${i + 1} loaded — press Save to keep it`;
+}
+
+function bindSlots() {
+  $("#edit-slots").addEventListener("click", (e) => {
+    const save = e.target.closest("[data-slot-save]");
+    if (save) { slotWrite(Number(save.dataset.slotSave), editPayload()); return; }
+    const del = e.target.closest("[data-slot-del]");
+    if (del) { slotWrite(Number(del.dataset.slotDel), null); return; }
+    // The row itself only ever loads. Saving is the button, always, full slot
+    // or empty — one action per control.
+    const row = e.target.closest("[data-slot]");
+    if (row) slotLoad(Number(row.dataset.slot));
+  });
+}
+
 // ---------- presets (app-global) ----------
 async function loadPresets() {
   try {
@@ -3809,12 +4638,23 @@ function renderPresetOptions(selectId) {
     return `<option value="${p.id}"${p.hint ? ` title="${escapeHtml(p.hint)}"` : ""}>` +
       `${escapeHtml(p.name)}${suffix}</option>`;
   }).join("");
+  // Built-ins carry a group — Portrait, Look, Mono and the rest — and the
+  // library is long enough that one flat list buried whichever set you were
+  // after. Built in the order the server sends so the file stays the running
+  // order. The user's own presets stay in one group: those are theirs to name.
+  const groups = [];
+  for (const p of builtin) {
+    const label = p.group || "Built-in";
+    const g = groups.find((x) => x.label === label);
+    if (g) g.items.push(p); else groups.push({ label, items: [p] });
+  }
   for (const sel of [$("#edit-preset-select"), $("#bulk-preset-select")]) {
     if (!sel) continue;
     const keep = selectId != null ? selectId : sel.value;
     const placeholder = sel.id === "bulk-preset-select" ? "Choose a preset…" : "Presets…";
     sel.innerHTML = `<option value="">${placeholder}</option>`
-      + (builtin.length ? `<optgroup label="Built-in">${opts(builtin)}</optgroup>` : "")
+      + groups.map((g) =>
+          `<optgroup label="${escapeHtml(g.label)}">${opts(g.items)}</optgroup>`).join("")
       + (mine.length ? `<optgroup label="My presets">${opts(mine)}</optgroup>` : "");
     if (keep && state.presets.some((p) => p.id === keep)) sel.value = keep;
   }
@@ -3837,9 +4677,15 @@ function mergeAdditive(base, overlay) {
   return out;
 }
 
-function applyPreset(id) {
+async function applyPreset(id) {
   const preset = state.presets.find((p) => p.id === id);
   if (!preset) return;
+  // A preset can carry an automatic mask, and the render would otherwise pull
+  // the segmentation model down inside the request — a preview that hangs for
+  // however long the download takes, with nothing on screen saying why.
+  const needsModel = ((preset.edit && preset.edit.masks) || [])
+    .some((m) => m.type === "auto");
+  if (needsModel && !(await ensureSegmentModel())) return;
   const additive = state.presetMode === "add";
   const before = editSession.edit.masks.length;
   editSession.edit = additive
@@ -4467,6 +5313,7 @@ function bindUi() {
   renderEditControls();
   bindEditControls();
   bindMaskUi();
+  bindSlots();
   bindWatermarkUi();
   curveInit();
   $("#edit-modal-close").addEventListener("click", closeEditModal);

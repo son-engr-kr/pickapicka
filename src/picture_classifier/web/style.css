@@ -208,9 +208,12 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
 /* ---------- Option cards (reusable) ---------- */
 .option-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .option-cards-wide { grid-template-columns: 1fr; }
+/* A card is a <button>, so it inherits `white-space: nowrap` — its description
+   would sit on one unbreakable line, and grid items default to min-width:auto,
+   so the tracks grow to fit it and the whole grid runs past its container. */
 .option-card { display: flex; flex-direction: column; align-items: flex-start;
-  gap: 3px; padding: 8px 10px; background: var(--bg-3);
-  border: 1px solid var(--border); border-radius: 5px; cursor: pointer;
+  gap: 3px; padding: 8px 10px; background: var(--bg-3); white-space: normal;
+  min-width: 0; border: 1px solid var(--border); border-radius: 5px; cursor: pointer;
   text-align: left; color: var(--fg); transition: border-color 0.08s, background 0.08s; }
 .option-card:hover { background: #2a2a30; border-color: #4a4a55; }
 .option-card.active { border-color: var(--accent); background: #1f3252;
@@ -750,13 +753,43 @@ body.landing-mode #welcome-banner { display: none !important; }
 /* Mask guides live on a canvas laid exactly over the preview image. */
 #edit-overlay { position: absolute; left: 0; top: 0; touch-action: none; }
 .edit-canvas-wrap.tool-place #edit-overlay { cursor: crosshair; }
+.edit-canvas-wrap.tool-wb #edit-overlay { cursor: crosshair; }
 .edit-canvas-wrap.tool-brush #edit-overlay { cursor: none; }
 /* Crop sets its own cursor per grip in JS, so nothing is forced here. */
 
 /* ----- crop & straighten ----- */
-.crop-row { display: flex; gap: 6px; margin-bottom: 6px; }
-.crop-row button { flex: 1; font-size: 12px; padding: 4px 8px; }
+/* ----- edit slots ----- */
+/* Shaped like the mask list, because it is the same kind of thing: a short list
+   of named items, each with its own actions. The row says what it holds, so
+   nothing about the panel has to be remembered. */
+.slot-list { display: flex; flex-direction: column; gap: 2px; }
+.slot-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px;
+  border: 1px solid transparent; border-radius: var(--r1); font-size: var(--fs-sm); }
+.slot-row.filled { cursor: pointer; }
+.slot-row.filled:hover { background: var(--bg-3); }
+/* The slot the working edit came from, and still matches. Recomputed from the
+   values rather than remembered, so moving one slider clears it. */
+.slot-row.current { border-color: var(--accent); }
+.slot-num { width: 16px; text-align: center; color: var(--fg-dim);
+  font-variant-numeric: tabular-nums; }
+.slot-row.filled .slot-num { color: var(--accent); font-weight: 600; }
+.slot-what { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot-row.empty .slot-what { color: var(--fg-dim); font-style: italic; }
+.slot-when { font-size: 10px; color: var(--fg-dim); white-space: nowrap; }
+.slot-row.current .slot-when { color: var(--accent); }
+/* Same amber as the editor's own "unsaved changes", because it is the same
+   statement about the same thing. */
+.slot-row.stale .slot-when { color: var(--review); }
+.slot-btn { background: transparent; border: none; color: var(--fg-dim);
+  padding: 0 2px; line-height: 1; }
+.slot-btn:hover { background: transparent; color: var(--fg); }
+#slot-summary-state { color: var(--accent); font-weight: 500;
+  text-transform: none; letter-spacing: 0; }
+
+.crop-row, .wb-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.crop-row button, .wb-row button { flex: 1; font-size: 12px; padding: 4px 8px; }
 #crop-tool.armed { background: var(--accent); border-color: var(--accent); color: #fff; }
+#wb-pick.armed { background: var(--accent); border-color: var(--accent); color: #fff; }
 .crop-aspects { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
 .crop-aspects button { font-size: 11px; padding: 3px 8px; }
 .crop-aspects button.active {
@@ -824,9 +857,21 @@ body.landing-mode #welcome-banner { display: none !important; }
   padding: 0 2px; font-size: 12px; line-height: 1; }
 .mask-eye:hover, .mask-del:hover { background: transparent; color: var(--fg); }
 .mask-eye-spacer { width: 16px; }
-.mask-add { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.mask-add-label { font-size: 11px; color: var(--fg-dim); }
-.mask-add-btn { font-size: 11px; padding: 3px 8px; }
+/* A caption above its choices, rather than sitting in the same row as them.
+   The label used to be a span carrying a leading "+" icon in a flex row of
+   buttons, which is indistinguishable from one more button — and it was clicked
+   as one. It says what the buttons below do instead of pretending to do it. */
+.mask-add { display: flex; flex-direction: column; gap: var(--s1); }
+.mask-add-label { font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.5px;
+  text-transform: uppercase; color: var(--ink-faint); }
+/* Equal cells, matching .mask-auto-groups below. Wrapping a flex row left the
+   fourth kind stranded at its natural width under a label, reading as a stray
+   control; a group that does not fill its last row still reads as a grid.
+   min-width lets a cell be narrower than its label rather than widening the
+   track — these buttons keep `white-space: nowrap` from the global rule, so
+   without it a long label pushes the whole panel. */
+.mask-add-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s1); }
+.mask-add-btn { font-size: 11px; padding: 3px 8px; min-width: 0; }
 .mask-add-btn.armed { background: var(--accent); border-color: var(--accent); color: #fff; }
 .mask-help { margin: 0; font-size: 10px; color: var(--fg-dim); line-height: 1.5; }
 .mask-help kbd { background: var(--bg-3); border: 1px solid var(--border);
@@ -1434,6 +1479,68 @@ input[type="range"] { accent-color: var(--accent); }
   color: var(--ink-dim); font-variant-numeric: tabular-nums; }
 .mask-context { font-size: var(--fs-xs); color: var(--ink-faint);
   letter-spacing: 0.6px; text-transform: uppercase; }
+
+/* ----- range refinement ----- */
+.mask-range-enable { display: flex; align-items: center; gap: var(--s2);
+  font-size: var(--fs-sm); margin: var(--s1) 0; }
+.mask-range-fields.hidden { display: none; }
+#mask-range-note.warn { color: var(--accent); }
+
+/* ----- colour grading panel ----- */
+.grade-zones { display: flex; gap: var(--s1); margin-bottom: var(--s2); }
+.grade-zone { flex: 1; font-size: var(--fs-xs); padding: 3px 6px;
+  border-radius: 6px; color: var(--ink-dim); position: relative; }
+.grade-zone.active { border-color: var(--accent); color: var(--ink); }
+.grade-zone.touched::after { content: ""; position: absolute; top: 3px; right: 3px;
+  width: 5px; height: 5px; border-radius: 999px; background: var(--accent); }
+.grade-globals { margin-top: var(--s2); padding-top: var(--s1);
+  border-top: 1px solid var(--line); }
+#grade-summary-state { color: var(--accent); font-weight: 500;
+  text-transform: none; letter-spacing: 0; }
+
+/* ----- automatic masks ----- */
+/* Its own captioned group now, so it wants separating from the local one rather
+   than the negative margin that used to pull two label-and-buttons rows together. */
+.mask-add-auto { margin-top: var(--s2); }
+.mask-auto-groups { display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: var(--s1); margin-bottom: var(--s1); }
+.mask-auto-group { font-size: var(--fs-xs); padding: 3px 6px; border-radius: 6px;
+  color: var(--ink-dim); }
+.mask-auto-group.active { border-color: var(--accent); color: var(--ink); }
+
+/* ----- tone curve channels ----- */
+.curve-channels { display: flex; gap: var(--s1); margin-bottom: var(--s1); }
+.curve-chan { font-size: var(--fs-xs); padding: 2px 10px; border-radius: 999px;
+  color: var(--ink-dim); position: relative; }
+.curve-chan.active { border-color: var(--chan); color: var(--ink); }
+.curve-chan.touched { color: var(--chan); }
+.curve-chan.touched::after { content: ""; position: absolute; left: 50%;
+  bottom: -3px; transform: translateX(-50%); width: 12px; height: 2px;
+  border-radius: 2px; background: var(--chan); }
+#curve-summary-state { color: var(--accent); font-weight: 500;
+  text-transform: none; letter-spacing: 0; }
+
+/* ----- colour mixer panel ----- */
+.hsl-note { font-size: var(--fs-xs); color: var(--ink-faint); line-height: 1.5;
+  margin: 0 0 var(--s2); }
+.hsl-bands { display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: var(--s1); margin-bottom: var(--s2); }
+.hsl-band { display: flex; flex-direction: column; align-items: center;
+  gap: 3px; padding: 5px 2px; font-size: var(--fs-xs); border-radius: 6px;
+  position: relative; }
+.hsl-swatch { width: 16px; height: 16px; border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25); }
+.hsl-band-label { color: var(--ink-dim); }
+.hsl-band.active { border-color: var(--accent); }
+.hsl-band.active .hsl-band-label { color: var(--ink); }
+/* A dot marks a band carrying a change, so an edit hidden four buttons away
+   is still visible without clicking through all eight. */
+.hsl-band.touched::after { content: ""; position: absolute; top: 3px; right: 3px;
+  width: 5px; height: 5px; border-radius: 999px; background: var(--accent); }
+.hsl-reset { font-size: var(--fs-xs); padding: 3px 8px; margin-top: var(--s1); }
+.hsl-reset:disabled { opacity: 0.4; }
+#hsl-summary-state { color: var(--accent); font-weight: 500;
+  text-transform: none; letter-spacing: 0; }
 
 /* ----- film panel ----- */
 .film-enable { display: flex; align-items: center; gap: var(--s2);

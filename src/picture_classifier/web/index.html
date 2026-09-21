@@ -608,6 +608,19 @@
             <button id="edit-preset-delete" data-icon="trash" title="Delete the selected preset" aria-label="Delete the selected preset"></button>
           </div>
 
+          <details class="edit-group" id="edit-slots-group" open>
+            <summary>Slots <span id="slot-summary-state"></span></summary>
+            <div class="edit-group-body">
+              <p class="hsl-note">
+                Versions of this photo, kept on disk. Saving into a slot changes
+                nothing about the photo itself, and loading one only changes
+                what is on screen until you press Save — so Cancel loses the
+                working edit and keeps every slot.
+              </p>
+              <div class="slot-list" id="edit-slots"></div>
+            </div>
+          </details>
+
           <div class="mask-panel">
             <div class="mask-head">
               <span class="mask-head-title">Adjust</span>
@@ -617,13 +630,32 @@
             </div>
             <div class="mask-list" id="mask-list"></div>
             <div class="mask-add">
-              <span class="mask-add-label" data-icon="plus">local</span>
-              <button class="mask-add-btn" data-add-mask="radial"
-                      title="Radial: drag an ellipse on the photo (R)" data-icon="radial">Radial</button>
-              <button class="mask-add-btn" data-add-mask="linear"
-                      title="Gradient: drag a direction on the photo (G)" data-icon="gradient">Gradient</button>
-              <button class="mask-add-btn" data-add-mask="brush"
-                      title="Brush: paint on the photo (B)" data-icon="brush">Brush</button>
+              <span class="mask-add-label">Add local</span>
+              <div class="mask-add-row">
+                <button class="mask-add-btn" data-add-mask="radial"
+                        title="Radial: drag an ellipse on the photo (R)" data-icon="radial">Radial</button>
+                <button class="mask-add-btn" data-add-mask="linear"
+                        title="Gradient: drag a direction on the photo (G)" data-icon="gradient">Gradient</button>
+                <button class="mask-add-btn" data-add-mask="brush"
+                        title="Brush: paint on the photo (B)" data-icon="brush">Brush</button>
+                <button class="mask-add-btn" data-add-mask="range"
+                        title="Range: select by tone rather than by shape" data-icon="palette">Range</button>
+              </div>
+            </div>
+            <div class="mask-add mask-add-auto">
+              <span class="mask-add-label">Add automatic</span>
+              <div class="mask-add-row">
+                <button class="mask-add-btn" data-add-auto="subject"
+                        title="Everything that is not background">Subject</button>
+                <button class="mask-add-btn" data-add-auto="background"
+                        title="Everything behind the subject">Background</button>
+                <button class="mask-add-btn" data-add-auto="skin"
+                        title="Face and body skin">Skin</button>
+                <button class="mask-add-btn" data-add-auto="face"
+                        title="Face skin only">Face</button>
+                <button class="mask-add-btn" data-add-auto="hair">Hair</button>
+                <button class="mask-add-btn" data-add-auto="clothes">Clothes</button>
+              </div>
             </div>
             <p class="mask-help">Drag the handles on the photo to reshape · Shift constrains ·
               <kbd>\</kbd> show mask · <kbd>Del</kbd> remove</p>
@@ -643,6 +675,21 @@
               <label class="look-row"><span class="look-name">Amount</span>
                 <input type="range" id="mask-amount" min="0" max="100" step="1" />
                 <span class="look-val" id="mask-amount-val"></span></label>
+              <div id="mask-range-tools" class="hidden">
+                <label class="mask-range-enable">
+                  <input type="checkbox" id="mask-range-on" />
+                  <span>Narrow to a tonal range</span>
+                </label>
+                <div class="mask-range-fields" id="mask-range-fields"></div>
+                <p class="mask-help" id="mask-range-note">Measured on the whole,
+                  ungraded frame, so the selection is the same at every zoom and
+                  does not chase the exposure you set through it.</p>
+              </div>
+              <div id="mask-auto-tools" class="hidden">
+                <div class="mask-auto-groups" id="mask-auto-groups"></div>
+                <p class="mask-help">Nothing to drag: what this selects is a
+                  segmentation of the photo. Feather softens its edge.</p>
+              </div>
               <div id="mask-brush-tools" class="hidden">
                 <label class="look-row"><span class="look-name">Brush size</span>
                   <input type="range" id="mask-brush-size" min="5" max="300" step="1" />
@@ -689,7 +736,39 @@
           </details>
           <details class="edit-group" open>
             <summary>Color</summary>
+            <div class="wb-row">
+              <button id="wb-pick" data-icon="pipette">White balance</button>
+              <button id="wb-reset">Neutral</button>
+            </div>
             <div class="edit-group-body" data-group="color"></div>
+          </details>
+          <details class="edit-group" id="edit-hsl-group">
+            <summary>Color Mixer <span id="hsl-summary-state"></span></summary>
+            <div class="edit-group-body">
+              <p class="hsl-note">
+                Eight hue bands, blended into each other rather than windowed, so
+                there is no seam between orange and yellow. Near-greys are left
+                alone: their hue is numerical noise, and pushing it would speckle
+                a flat wall.
+              </p>
+              <div class="hsl-bands" id="hsl-bands"></div>
+              <div class="hsl-fields" id="hsl-fields"></div>
+              <button class="hsl-reset" id="hsl-reset" type="button">Reset band</button>
+            </div>
+          </details>
+          <details class="edit-group" id="edit-grade-group">
+            <summary>Color Grading <span id="grade-summary-state"></span></summary>
+            <div class="edit-group-body">
+              <p class="hsl-note">
+                A hue and a strength per tonal region. Adding colour never moves
+                brightness: every tint is a vector with zero luma, so the
+                exposure you set stays the exposure you get.
+              </p>
+              <div class="grade-zones" id="grade-zones"></div>
+              <div class="grade-fields" id="grade-fields"></div>
+              <div class="grade-globals" id="grade-globals"></div>
+              <button class="hsl-reset" id="grade-reset" type="button">Reset zone</button>
+            </div>
           </details>
           <details class="edit-group" open>
             <summary>Detail &amp; Effects</summary>
@@ -772,7 +851,8 @@
             </div>
           </details>
           <details class="edit-group" open id="edit-curve-group">
-            <summary>Tone curve</summary>
+            <summary>Tone curve <span id="curve-summary-state"></span></summary>
+            <div class="curve-channels" id="curve-channels"></div>
             <div class="edit-curve-wrap">
               <canvas id="edit-curve" width="256" height="256"></canvas>
             </div>
