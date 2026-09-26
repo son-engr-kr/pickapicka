@@ -170,7 +170,8 @@ function mergeNeutralEdit(edit) {
   e.redeye = (edit && edit.redeye && (edit.redeye.corrections || []).length)
     ? { enabled: true, corrections: edit.redeye.corrections.map((c) => ({ ...c })) } : null;
   e.lens = (edit && edit.lens) ? { ...edit.lens } : null;
-  e.portrait = (edit && edit.portrait && edit.portrait.smooth) ? { ...edit.portrait } : null;
+  e.portrait = (edit && edit.portrait && PORTRAIT_KEYS.some((k) => edit.portrait[k]))
+    ? { ...edit.portrait } : null;
   e.transform = (edit && edit.transform) ? { ...edit.transform } : null;
   if (edit) for (const f of EDIT_FIELDS) if (edit[f.k] != null) e[f.k] = edit[f.k];
   return e;
@@ -193,7 +194,9 @@ function editsEqual(a, b) {
   if (JSON.stringify(a.healing || null) !== JSON.stringify(b.healing || null)) return false;
   if (JSON.stringify(a.redeye || null) !== JSON.stringify(b.redeye || null)) return false;
   if (canonOptic(a.lens, LENS_DEFAULT) !== canonOptic(b.lens, LENS_DEFAULT)) return false;
-  if (((a.portrait && a.portrait.smooth) || 0) !== ((b.portrait && b.portrait.smooth) || 0)) return false;
+  for (const k of PORTRAIT_KEYS) {
+    if (((a.portrait && a.portrait[k]) || 0) !== ((b.portrait && b.portrait[k]) || 0)) return false;
+  }
   if (canonOptic(a.transform, TRANSFORM_DEFAULT) !== canonOptic(b.transform, TRANSFORM_DEFAULT)) return false;
   return canonMasks(a.masks) === canonMasks(b.masks);
 }
@@ -3040,6 +3043,8 @@ function buildFilmFields() {
 // are only fetched once the panel is opened, so a photo nobody retouches never
 // runs the face model.
 const portraitState = { faces: null, rel: null, key: "" };
+// Mirrors portrait.DEFAULT_PORTRAIT; all three are 0..100 and neutral at 0.
+const PORTRAIT_KEYS = ["smooth", "teeth", "eyes"];
 
 async function loadPortraitFaces() {
   const key = `${editSession.relPath}#${JSON.stringify(opticsPayload())}`;
@@ -3058,18 +3063,26 @@ async function loadPortraitFaces() {
   drawOverlay();
 }
 
+function portraitSummary() {
+  const p = editSession.edit.portrait;
+  const on = PORTRAIT_KEYS.filter((k) => p && p[k]);
+  return on.length ? `· ${on.join(", ")}` : "";
+}
+
 function renderPortraitPanel() {
   if (!$("#portrait-smooth") || !editSession.edit) return;
-  const v = (editSession.edit.portrait && editSession.edit.portrait.smooth) || 0;
-  $("#portrait-smooth").value = v;
-  $("#portrait-smooth-val").textContent = v;
-  $("#portrait-summary-state").textContent = v ? `· smooth ${v}` : "";
+  for (const k of PORTRAIT_KEYS) {
+    const v = (editSession.edit.portrait && editSession.edit.portrait[k]) || 0;
+    $(`#portrait-${k}`).value = v;
+    $(`#portrait-${k}-val`).textContent = v;
+  }
+  $("#portrait-summary-state").textContent = portraitSummary();
   const faces = portraitState.faces;
   if (faces) {
     $("#portrait-faces").textContent = faces.length
       ? `${faces.length} face${faces.length === 1 ? "" : "s"} found`
       : "No faces found. Faces have to be at least a few percent of the frame.";
-    $("#portrait-smooth").disabled = !faces.length;
+    for (const k of PORTRAIT_KEYS) $(`#portrait-${k}`).disabled = !faces.length;
   }
 }
 
@@ -3091,14 +3104,17 @@ function bindPortraitPanel() {
     if ($("#edit-portrait-group").open && editSession.relPath) loadPortraitFaces();
     drawOverlay();
   });
-  $("#portrait-smooth").addEventListener("input", (e) => {
-    const v = parseInt(e.target.value, 10);
-    editSession.edit.portrait = v ? { smooth: v } : null;
-    $("#portrait-smooth-val").textContent = v;
-    $("#portrait-summary-state").textContent = v ? `· smooth ${v}` : "";
-    setEditDirty();
-    previewDuringDrag();
-  });
+  for (const k of PORTRAIT_KEYS) {
+    $(`#portrait-${k}`).addEventListener("input", (e) => {
+      const v = parseInt(e.target.value, 10);
+      const next = { smooth: 0, teeth: 0, eyes: 0, ...(editSession.edit.portrait || {}), [k]: v };
+      editSession.edit.portrait = PORTRAIT_KEYS.some((x) => next[x]) ? next : null;
+      $(`#portrait-${k}-val`).textContent = v;
+      $("#portrait-summary-state").textContent = portraitSummary();
+      setEditDirty();
+      previewDuringDrag();
+    });
+  }
 }
 
 // ---------- lens & perspective ----------

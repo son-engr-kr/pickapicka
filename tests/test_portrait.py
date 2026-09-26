@@ -30,7 +30,8 @@ def _face() -> dict:
         lm[list(idx)] = [cx, cy] + rng.uniform(-0.03, 0.03, (len(idx), 2))
     return {"box": [0.25, 0.22, 0.50, 0.56], "crop": [0.05, 0.05, 0.9, 0.9],
             "landmarks": lm.tolist(), "skin": np.ones((96, 96), np.float32),
-            "skin_luma": 0.58}
+            "skin_luma": 0.58,
+            "ramps": {"teeth": [55.0, 80.0], "eyes": [60.0, 88.0]}}
 
 
 def _skin() -> np.ndarray:
@@ -55,7 +56,8 @@ def _band(img: np.ndarray, lo: float, hi: float) -> np.ndarray:
 
 def test_normalize() -> None:
     assert portrait.normalize({"smooth": 0}) is None
-    assert portrait.normalize({"smooth": 250}) == {"smooth": 100}
+    assert portrait.normalize({"smooth": 250}) == {"smooth": 100, "teeth": 0, "eyes": 0}
+    assert portrait.normalize({"teeth": 40}) == {"smooth": 0, "teeth": 40, "eyes": 0}
     assert portrait.normalize("nonsense") is None
 
 
@@ -100,6 +102,56 @@ def test_a_window_matches_the_whole_render() -> None:
                                   roi=(px0 / N, py0 / N, (px1 - px0) / N, (py1 - py0) / N))
     inner = win[pad:pad + (y1 - y0), pad:pad + (x1 - x0)]
     assert np.abs(inner - whole[y0:y1, x0:x1]).max() < 1e-4
+
+
+def _smile() -> tuple[np.ndarray, dict]:
+    """Yellowish teeth in the inner-mouth polygon, a dark gap under them, and
+    red lips round it."""
+    import cv2
+    img = _skin()
+    face = _face()
+    lm = np.asarray(face["landmarks"], np.float32)
+    inner = np.array([[0.42, 0.64], [0.46, 0.63], [0.50, 0.63], [0.54, 0.63], [0.58, 0.64],
+                      [0.54, 0.69], [0.50, 0.70], [0.46, 0.69]], np.float32)
+    lm[list(portrait.MOUTH_INNER)] = inner
+    face["landmarks"] = lm.tolist()
+    cv2.ellipse(img, (300, 400), (60, 28), 0, 0, 360, (0.62, 0.22, 0.24), -1)   # lips
+    cv2.fillPoly(img, [(inner * N).astype(np.int32)], (0.20, 0.08, 0.08))       # the dark of the mouth
+    # Upper teeth at L 78, a 4, b 22: a real smile measured a 6, b 21.
+    teeth = cv2.cvtColor(np.float32([[[78.0, 4.0, 22.0]]]), cv2.COLOR_LAB2RGB)[0, 0]
+    cv2.rectangle(img, (256, 378), (344, 396), tuple(float(v) for v in teeth), -1)
+    return img, face
+
+
+def _b_star(px: np.ndarray) -> float:
+    import cv2
+    return float(cv2.cvtColor(px.reshape(1, -1, 3), cv2.COLOR_RGB2LAB)[..., 2].mean())
+
+
+def test_teeth_lose_their_yellow_and_the_rest_of_the_mouth_does_not_move() -> None:
+    img, face = _smile()
+    out = portrait.apply_portrait(img, {"teeth": 100}, [face])
+    teeth = (slice(382, 392), slice(280, 320))
+    gap = (slice(405, 410), slice(290, 310))
+    lip = (slice(420, 424), slice(290, 310))
+    assert _b_star(out[teeth]) < 0.6 * _b_star(img[teeth])
+    assert out[teeth].mean() > img[teeth].mean()
+    assert np.abs(out[gap] - img[gap]).max() < 0.01
+    assert np.abs(out[lip] - img[lip]).max() < 0.01
+
+
+def test_whitening_in_a_window_matches_the_whole_render() -> None:
+    """The brightness ramp is stored per face, so half a mouth in a 1:1 window
+    whitens exactly as the whole mouth does."""
+    img, face = _smile()
+    params = {"teeth": 80}
+    whole = portrait.apply_portrait(img, params, [face])
+    x0, y0, x1, y1 = 300, 360, 380, 420          # the right half of the mouth
+    pad = int(np.ceil(portrait.padding(params, [face], N)))
+    px0, py0 = x0 - pad, y0 - pad
+    win = portrait.apply_portrait(img[py0:y1 + pad, px0:x1 + pad], params, [face],
+                                  roi=(px0 / N, py0 / N, (x1 - x0 + 2 * pad) / N, (y1 - y0 + 2 * pad) / N))
+    assert np.abs(win[pad:pad + y1 - y0, pad:pad + x1 - x0] - whole[y0:y1, x0:x1]).max() < 1e-4
 
 
 def test_render_needs_the_faces_and_smooths_with_them() -> None:

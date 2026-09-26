@@ -104,6 +104,14 @@ Two stages that fix the captured image rather than interpret it, and they run
 - Measured on a real face at full strength: the band finer than the texture
   split keeps 95-97% of its amplitude, and the blotch band drops to 70-76%.
   Deliberately short of plastic; stack negative texture on top for more.
+- **Whiten teeth** takes the yellow out of the teeth and brightens them, inside
+  the inner-lip line. What counts as teeth is what is bright for that opening
+  and not red, so lips, gums and tongue are left alone; on a real smile it
+  picked the upper teeth and left the shadowed lower ones. A third of the
+  colour is kept, since fully neutral teeth read as grey.
+- **Whiten eyes** clears redness from the whites of the eyes and lifts them,
+  inside the eye outlines. Coloured reflections in glasses and the eyelid skin
+  are not near-neutral, so they are left out.
 - Faces are found once per photo when the panel is opened, and marked on the
   photo while it is open. A face under about 4% of the frame is left alone.
 

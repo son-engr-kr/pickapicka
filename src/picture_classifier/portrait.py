@@ -1,4 +1,4 @@
-"""Portrait retouching: skin smoothing, and the face geometry it stands on.
+"""Portrait retouching: skin, teeth and eyes, and the face geometry they stand on.
 
 What a face needs that a frame-wide slider cannot give it
 ---------------------------------------------------------
@@ -51,6 +51,27 @@ measures it over the whole face-skin alpha: 0.223 on that face, so the 0.03
 chosen by eye is 13.5%. Measured on the same cheek at full strength, the band
 finer than s_t keeps 97% of its amplitude.
 
+Teeth and eyes
+--------------
+Both are whitening, of different things, in CIELAB: the pixels that are the
+thing (bright for the region, and not saturated) are pulled towards neutral in
+a and b and lifted in L. The region is the inner-mouth polygon for teeth and
+the eye hulls for eyes. "Bright for the region" is a ramp between two
+percentiles of L inside it, measured once by `analyze` on the whole frame and
+stored, because measured at render time on a 1:1 window showing half a mouth
+it would be a different number. On a real smile the teeth ramp picked the
+upper teeth and left the shadowed lower ones and the gums alone. Some warmth is
+kept (a third of the chroma for teeth), because fully neutral teeth read as
+grey.
+
+What "not the target" means differs. Teeth are told apart from lips, gums and
+tongue by redness (a*), not by chroma: those three are red, and teeth are
+yellow. A chroma limit would have spared exactly the teeth that most need
+whitening. Measured on a real smile, the teeth sat at a* 6, b* 21, chroma 22,
+in line with the dental shade guides (VITA A2 is about L 77, a 1.5, b 20). For
+eyes a chroma limit is the right test: the whites are near-neutral, while
+eyelid skin and the coloured reflections in glasses are not.
+
 Everything is local to a box around each face, so the cost follows the faces
 and not the megapixels, and a window render gets identical pixels given
 `padding` around it.
@@ -68,8 +89,10 @@ import numpy as np
 
 DEFAULT_PORTRAIT: dict[str, Any] = {
     "smooth": 0,       # 0..100, skin smoothing
+    "teeth": 0,        # 0..100, teeth whitening
+    "eyes": 0,         # 0..100, whitening the whites of the eyes
 }
-_RANGES = {"smooth": (0, 100)}
+_RANGES = {"smooth": (0, 100), "teeth": (0, 100), "eyes": (0, 100)}
 
 FULL_ROI = (0.0, 0.0, 1.0, 1.0)
 
@@ -77,6 +100,9 @@ FULL_ROI = (0.0, 0.0, 1.0, 1.0)
 EYE_L, EYE_R = tuple(range(33, 43)), tuple(range(87, 97))
 BROW_L, BROW_R = tuple(range(43, 52)), tuple(range(97, 106))
 MOUTH = tuple(range(52, 72))
+# The inner lip line, in order round the opening: what is inside is teeth, gums,
+# tongue and the dark of the mouth.
+MOUTH_INNER = (65, 66, 62, 70, 69, 57, 60, 54)
 # How far each feature's hull is grown before it is cut out of the skin, as a
 # fraction of its own size: eyes get the most, for lashes and the lid crease.
 _FEATURES = ((EYE_L, 0.30), (EYE_R, 0.30), (BROW_L, 0.15), (BROW_R, 0.15), (MOUTH, 0.10))
@@ -85,6 +111,15 @@ _FEATURE_FEATHER = 0.012   # the cut's soft edge, as a fraction of the face widt
 _TEX_SIGMA = 0.006         # texture split, fraction of the face width
 _EVEN_RADIUS = 0.028       # guided-filter radius, fraction of the face width
 _EVEN_CONTRAST = 0.135    # evened below this contrast, relative to the skin's mean
+
+# Whitening, per target: the L percentiles the "bright for the region" ramp
+# runs between, the chroma past which a pixel is not the target, how much
+# chroma is kept at full strength, and the L lift. Tuned by eye on real faces.
+_WHITEN = {
+    "teeth": {"pct": (35, 70), "red_max": 20.0, "keep": 0.35, "lift": 8.0},
+    "eyes": {"pct": (50, 85), "chroma_max": 28.0, "keep": 0.30, "lift": 6.0},
+}
+_WHITEN_FEATHER = 0.004    # the region's soft edge, fraction of the face width
 
 # Analysis. A face smaller than this is not worth retouching and its landmarks
 # are not reliable enough to cut features out by.
@@ -164,17 +199,71 @@ def analyze(rgb: np.ndarray) -> list[dict[str, Any]]:
         if s < 1.0:
             skin = cv2.resize(skin, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
         lm = f.landmark_2d_106 / k
+        ramps = {what: _region_ramp(rgb, _whiten_polys(what, lm), _WHITEN[what]["pct"])
+                 for what in _WHITEN}
         faces.append({
             "box": [x1 / w, y1 / h, fw / w, fh / h],
             "crop": [cx0 / w, cy0 / h, (cx1 - cx0) / w, (cy1 - cy0) / h],
             "landmarks": (lm / [w, h]).tolist(),
             "skin": skin.astype(np.float32),
             "skin_luma": skin_luma,
+            "ramps": ramps,
         })
     return faces
 
 
 # ----- applying -----------------------------------------------------------
+
+def _whiten_polys(what: str, lm: np.ndarray) -> list[np.ndarray]:
+    """The region's polygons, in whatever units `lm` is in."""
+    if what == "teeth":
+        return [lm[list(MOUTH_INNER)]]
+    polys = []
+    for idx in (EYE_L, EYE_R):
+        pts = lm[list(idx)]
+        c = pts.mean(axis=0)
+        polys.append(cv2.convexHull(((pts - c) * 1.05 + c).astype(np.float32)).reshape(-1, 2))
+    return polys
+
+
+def _region_ramp(rgb: np.ndarray, polys: list[np.ndarray],
+                 pct: tuple[float, float]) -> list[float] | None:
+    """Two L percentiles inside `polys` on the whole frame, or None when the
+    region is too small to measure (a closed mouth has no inner opening)."""
+    mask = np.zeros(rgb.shape[:2], np.uint8)
+    for poly in polys:
+        cv2.fillPoly(mask, [poly.round().astype(np.int32)], 1)
+    if int(mask.sum()) < 12:
+        return None
+    ys, xs = np.nonzero(mask)
+    pix = rgb[ys, xs].astype(np.float32)[None] / 255.0
+    L = cv2.cvtColor(pix, cv2.COLOR_RGB2LAB)[0, :, 0]
+    lo, hi = (float(v) for v in np.percentile(L, pct))
+    return [lo, max(hi, lo + 1.0)]
+
+
+def _smoothstep(e0: float, e1: float, x: np.ndarray) -> np.ndarray:
+    t = np.clip((x - e0) / (e1 - e0), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _whiten(reg: np.ndarray, alpha: np.ndarray, amount: float, ramp: list[float],
+            cfg: dict[str, float]) -> np.ndarray:
+    """Pull the bright, unsaturated pixels under `alpha` towards neutral and up."""
+    lab = cv2.cvtColor(np.clip(reg, 0.0, 1.0), cv2.COLOR_RGB2LAB)
+    L, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
+    if "red_max" in cfg:
+        off = _smoothstep(cfg["red_max"] * 0.6, cfg["red_max"], a)
+    else:
+        off = _smoothstep(cfg["chroma_max"] * 0.6, cfg["chroma_max"], np.hypot(a, b))
+    w = alpha * _smoothstep(ramp[0], ramp[1], L) * (1.0 - off)
+    k = amount * w
+    cut = 1.0 - k * (1.0 - cfg["keep"])
+    lab[..., 1] = a * cut
+    lab[..., 2] = np.where(b > 0, b * cut, b)      # yellow goes; blue is not "yellowed"
+    lab[..., 0] = np.minimum(100.0, L + k * cfg["lift"])
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+
 
 def _guided(p: np.ndarray, guide: np.ndarray, r: int, eps: float) -> np.ndarray:
     """He et al.'s guided filter with a gray guide, from box filters. `p` is
@@ -268,18 +357,42 @@ def apply_portrait(img: np.ndarray, params: dict[str, Any] | None,
         y1 = min(h, int(math.ceil((cy + ch) * frame_h - oy)))
         if x1 - x0 < 4 or y1 - y0 < 4:
             continue            # this face is outside the window
-        alpha = _skin_alpha(face, (x0, y0, x1, y1), frame_w, frame_h, ox, oy, face_px)
-        if float(alpha.max()) <= 0.0:
-            continue
-        reg = out[y0:y1, x0:x1]
-        low = cv2.GaussianBlur(reg, (0, 0), max(0.5, _TEX_SIGMA * face_px))
-        guide = _luma(low)
-        # Measured on the face's own skin, from its stored alpha, so a window
-        # showing part of the face uses the same number the whole render does.
-        eps = (_EVEN_CONTRAST * _skin_mean(face)) ** 2
-        even = _guided(low, guide, max(1, int(round(_EVEN_RADIUS * face_px))), eps)
-        smoothed = reg + (amount * (even - low))
         if out is img:
             out = img.copy()
-        out[y0:y1, x0:x1] = reg + (smoothed - reg) * alpha[..., None]
+        region = (x0, y0, x1, y1)
+        if amount > 0:
+            _smooth_face(out, face, region, frame_w, frame_h, ox, oy, face_px, amount)
+        lm = (np.asarray(face["landmarks"], np.float32) * [frame_w, frame_h]
+              - [ox + x0, oy + y0])
+        for what in _WHITEN:
+            ramp = face["ramps"].get(what)
+            if not p[what] or ramp is None:
+                continue
+            alpha = np.zeros((y1 - y0, x1 - x0), np.float32)
+            for poly in _whiten_polys(what, lm):
+                cv2.fillPoly(alpha, [poly.round().astype(np.int32)], 1.0, cv2.LINE_AA)
+            alpha = cv2.GaussianBlur(alpha, (0, 0), max(0.5, _WHITEN_FEATHER * face_px))
+            if float(alpha.max()) <= 0.0:
+                continue
+            reg = out[y0:y1, x0:x1]
+            out[y0:y1, x0:x1] = _whiten(reg, alpha, p[what] / 100.0, ramp, _WHITEN[what])
     return out
+
+
+def _smooth_face(out: np.ndarray, face: dict[str, Any], region: tuple[int, int, int, int],
+                 frame_w: float, frame_h: float, ox: float, oy: float,
+                 face_px: float, amount: float) -> None:
+    """Smooth one face's skin in place, over `region` of `out`."""
+    x0, y0, x1, y1 = region
+    alpha = _skin_alpha(face, region, frame_w, frame_h, ox, oy, face_px)
+    if float(alpha.max()) <= 0.0:
+        return
+    reg = out[y0:y1, x0:x1]
+    low = cv2.GaussianBlur(reg, (0, 0), max(0.5, _TEX_SIGMA * face_px))
+    guide = _luma(low)
+    # Measured on the face's own skin, from its stored alpha, so a window
+    # showing part of the face uses the same number the whole render does.
+    eps = (_EVEN_CONTRAST * _skin_mean(face)) ** 2
+    even = _guided(low, guide, max(1, int(round(_EVEN_RADIUS * face_px))), eps)
+    smoothed = reg + (amount * (even - low))
+    out[y0:y1, x0:x1] = reg + (smoothed - reg) * alpha[..., None]

@@ -956,14 +956,22 @@
             <summary>Portrait <span id="portrait-summary-state"></span></summary>
             <div class="edit-group-body">
               <p class="hsl-note">
-                Evens out skin on every face found, leaving the eyes, brows and
-                mouth alone and keeping the pores. Sized to each face, so a
-                headshot and a group photo get the same look.
+                Applied to every face found, and sized to each, so a headshot and
+                a group photo get the same look. Smoothing keeps the pores and
+                leaves the eyes, brows and mouth alone.
               </p>
               <label class="look-row" title="Even out blotches and fine lines; the texture stays">
                 <span class="look-name">Smooth skin</span>
                 <input type="range" id="portrait-smooth" min="0" max="100" step="1" />
                 <span class="look-val" id="portrait-smooth-val"></span></label>
+              <label class="look-row" title="Takes the yellow out of the teeth and brightens them; lips and gums are left alone">
+                <span class="look-name">Whiten teeth</span>
+                <input type="range" id="portrait-teeth" min="0" max="100" step="1" />
+                <span class="look-val" id="portrait-teeth-val"></span></label>
+              <label class="look-row" title="Clears redness from the whites of the eyes and brightens them">
+                <span class="look-name">Whiten eyes</span>
+                <input type="range" id="portrait-eyes" min="0" max="100" step="1" />
+                <span class="look-val" id="portrait-eyes-val"></span></label>
               <p class="hsl-note" id="portrait-faces"></p>
             </div>
           </details>

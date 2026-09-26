@@ -233,7 +233,8 @@ Skin — the frequency-separation family, all as sliders on a skin mask:
 
 Eyes, mouth, brows:
 - Eye Color Changer, AI Catchlights, AI Eye Editor, AI Eyebrow Filter
-- Teeth whitening (the colour half of `AI Teeth Fixer`)
+- ~~Teeth whitening (the colour half of `AI Teeth Fixer`)~~ `done`, and whitening
+  the whites of the eyes, in the Portrait panel
 - AI Makeup Editor — recolour of lips, blush and lids only
 
 Hair (mask-based recolour; dark-to-light does not work and will not pretend to):
