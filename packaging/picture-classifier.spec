@@ -11,7 +11,7 @@ import os
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 ROOT = Path(SPECPATH).parent
 WEB_DIR = ROOT / "src" / "picture_classifier" / "web"
@@ -25,7 +25,12 @@ a = Analysis(
     pathex=[str(ROOT / "src")],
     # rawpy bundles libraw as a shared lib inside its wheel; pull it in.
     binaries=collect_dynamic_libs("rawpy"),
-    datas=[(str(WEB_DIR), "picture_classifier/web")],
+    # The two Haar cascades redeye.py finds faces and eyes with. PyInstaller's
+    # cv2 hook collects cv2's config files but not cv2/data/, so without these
+    # "Find red eyes" fails in the bundle with the cascade missing.
+    datas=[(str(WEB_DIR), "picture_classifier/web")] + collect_data_files(
+        "cv2", includes=["data/haarcascade_frontalface_default.xml",
+                         "data/haarcascade_eye.xml"]),
     hiddenimports=[
         "rawpy",
         "rawpy._rawpy",
