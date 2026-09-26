@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 from . import (
     cameras, db, editing, exifinfo, exporting, film as film_mod, folderinfo, hdr,
-    metadata as metadata_mod, presets as presets_mod, raw, relink, scenes, segment as segment_mod,
+    lut as lut_mod, metadata as metadata_mod, presets as presets_mod, raw, relink, scenes, segment as segment_mod,
     userstate, watermark as watermark_mod,
 )
 from .scoring import objects as objects_mod
@@ -216,6 +216,20 @@ class ExportPayload(BaseModel):
 
 class NamePreviewPayload(BaseModel):
     template: str
+
+
+class LutImportPayload(BaseModel):
+    name: str = ""     # the file name; the .cube's TITLE wins when it has one
+    text: str
+
+
+class LutMatchPayload(BaseModel):
+    rel_path: str      # the photo whose colours move
+    reference: str     # the photo they move towards
+
+
+class LutKeyPayload(BaseModel):
+    key: str
 
 
 class QuitPayload(BaseModel):
@@ -804,7 +818,8 @@ def _bake_rendered(ctx: "AppContext", photo: dict[str, Any], rel: str,
     out = editing.render(ctx.decode_full(rel), edit,
                          meta=ctx.photo_meta(rel),
                          auto=ctx.auto_fields(rel, edit),
-                         src=ctx.range_src(rel, edit))
+                         src=ctx.range_src(rel, edit),
+                         luts=_lut_tables(ctx, edit))
     out = exporting.resize(out, settings.long_edge)
     src_path, is_raw = _metadata_source(ctx, photo, rel)
     src_exif, icc = metadata_mod.read_source(src_path, is_raw)
@@ -931,6 +946,7 @@ def _render_roi(ctx: "AppContext", payload: EditPreviewPayload) -> np.ndarray:
         geometry=False,           # this is a patch of the original, not a frame
         auto=ctx.auto_fields(payload.rel_path, edit),
         src=ctx.range_src(payload.rel_path, edit),
+        luts=_lut_tables(ctx, edit),
     )
     out = editing.geometry_window(graded, box, fw, fh, edit, window)
 
@@ -970,6 +986,28 @@ def _photo_wire(photo: dict[str, Any]) -> dict[str, Any]:
     ow, oh = editing.geometry_size(w, h, edit)
     return {**photo, "geom": {"w": ow, "h": oh,
                               "xform": editing.geometry_norm_matrix(w, h, edit)}}
+
+
+def _lut_tables(ctx: "AppContext", edit: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The table an edit's look names, for `editing.render`: the project's own
+    copy first, then the look library. None when the edit has no look."""
+    ref = editing.normalize_lut_ref((edit or {}).get("lut"))
+    if ref is None:
+        return None
+    table = (ctx.data.get("luts") or {}).get(ref["key"]) or userstate.load_lut(ref["key"])
+    if table is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"the look '{ref['name'] or ref['key']}' is in neither this project nor the look library")
+    return {ref["key"]: table}
+
+
+def _keep_lut(ctx: "AppContext", edit: dict[str, Any] | None) -> None:
+    """Copy the look an edit names into the project, so the project renders
+    without the library: after it is cleared, or on another machine."""
+    tables = _lut_tables(ctx, edit)
+    if tables:
+        ctx.data.setdefault("luts", {}).update(tables)
 
 
 def _apply_edit_to_photo(photo: dict[str, Any], edit: dict[str, Any] | None) -> None:
@@ -1063,7 +1101,8 @@ def _ensure_thumb(src: Path, thumbs_root: Path, rel_path: str,
                   meta: dict[str, Any] | None = None,
                   watermark: bool = True,
                   auto_fields: Callable[[], dict[str, np.ndarray] | None] | None = None,
-                  range_src: Callable[[], "np.ndarray | None"] | None = None
+                  range_src: Callable[[], "np.ndarray | None"] | None = None,
+                  luts: Callable[[], dict[str, Any] | None] | None = None
                   ) -> Path:
     # A non-neutral edit gets its own cache file (…​.<hash>.<ver>.jpg) so changing
     # an edit invalidates automatically; unedited photos keep the plain name and
@@ -1112,7 +1151,8 @@ def _ensure_thumb(src: Path, thumbs_root: Path, rel_path: str,
                     editing.render(np.asarray(img), edit, meta=meta,
                                    with_watermark=watermark,
                                    auto=auto_fields() if auto_fields else None,
-                                   src=range_src() if range_src else None))
+                                   src=range_src() if range_src else None,
+                                   luts=luts() if luts else None))
             with _atomic_write(dst) as tmp:
                 img.save(tmp, "JPEG", quality=THUMB_QUALITY, optimize=True)
     return dst
@@ -1138,7 +1178,8 @@ def _prebuild_thumbs(ctx: "AppContext", rel_paths: "list[str]") -> None:
                           auto_fields=lambda r=rel_path, p=photo:
                               ctx.auto_fields(r, p.get("edit")),
                           range_src=lambda r=rel_path, p=photo:
-                              ctx.range_src(r, p.get("edit")))
+                              ctx.range_src(r, p.get("edit")),
+                          luts=lambda p=photo: _lut_tables(ctx, p.get("edit")))
 
     def report(fut: "Future[None]") -> None:
         # An executor keeps a worker's exception inside the Future, where it
@@ -1993,7 +2034,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             out = editing.render(base, fit_edit,
                                  meta=ctx.photo_meta(payload.rel_path),
                                  auto=ctx.auto_fields(payload.rel_path, fit_edit),
-                                 src=ctx.range_src(payload.rel_path, fit_edit))
+                                 src=ctx.range_src(payload.rel_path, fit_edit),
+                                 luts=_lut_tables(ctx, fit_edit))
         else:
             out = _render_roi(ctx, payload)
         buf = io.BytesIO()
@@ -2024,6 +2066,68 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                                  "X-Mask-Xform": ",".join(f"{v:.8f}" for v in xform),
                                  "X-Render-Ms": f"{(time.perf_counter() - started) * 1000:.0f}"})
 
+    # ----- looks (colour LUTs) --------------------------------------
+
+    def _store_look(params: dict[str, Any]) -> dict[str, Any]:
+        norm = lut_mod.normalize(params)
+        if norm is None:
+            raise HTTPException(status_code=400,
+                                detail="this look changes nothing (an identity table)")
+        key = lut_mod.table_key(norm)
+        userstate.save_lut(key, norm)
+        return {"key": key, "name": norm["name"], "dim": norm["dim"], "size": norm["size"]}
+
+    @app.get("/api/luts")
+    def list_looks() -> dict[str, Any]:
+        return {"luts": userstate.list_luts()}
+
+    @app.post("/api/luts/import")
+    def import_look(payload: LutImportPayload) -> dict[str, Any]:
+        """Add a .cube to the look library. The file is parsed strictly: one
+        that is not a LUT is refused with the line that is wrong."""
+        # The parser validates with asserts, which name the offending line. A
+        # file someone picked is input, not a bug, so those reach them as a 400.
+        try:
+            cube = lut_mod.parse_cube(payload.text)
+        except (AssertionError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"not a usable .cube: {exc}") from exc
+        name = cube["title"] or Path(payload.name).stem or "Imported look"
+        return _store_look(lut_mod.params_from_cube(cube, name=name))
+
+    @app.post("/api/luts/match")
+    def match_look(payload: LutMatchPayload) -> dict[str, Any]:
+        """Fit a look that moves one photo's colours towards another's.
+
+        The source is taken ungraded, because the look is applied under the
+        sliders, before any grading. The reference is taken as it is edited,
+        cropped and all, since matching to how it looks is the point.
+        """
+        _require_loaded()
+        for rel in (payload.rel_path, payload.reference):
+            if ctx.photo_index.get(rel) is None:
+                raise HTTPException(status_code=404, detail=f"photo not found: {rel}")
+        if payload.rel_path == payload.reference:
+            raise HTTPException(status_code=400, detail="pick a different photo to match to")
+        ref_edit = ctx.photo_index[payload.reference].get("edit")
+        reference = editing.render(
+            ctx.get_decoded_base(payload.reference), ref_edit,
+            meta=ctx.photo_meta(payload.reference), with_watermark=False,
+            auto=ctx.auto_fields(payload.reference, ref_edit),
+            src=ctx.range_src(payload.reference, ref_edit),
+            luts=_lut_tables(ctx, ref_edit))
+        source = ctx.get_decoded_base(payload.rel_path)
+        params = lut_mod.fit_from_reference(
+            source.astype(np.float32) / 255.0, reference.astype(np.float32) / 255.0,
+            name=f"Match to {Path(payload.reference).stem}"[:lut_mod.NAME_MAX])
+        return _store_look(params)
+
+    @app.post("/api/luts/delete")
+    def delete_look(payload: LutKeyPayload) -> dict[str, Any]:
+        """Remove a look from the library. Projects that use it keep their own
+        copy, so nothing already edited changes."""
+        userstate.delete_lut(payload.key)
+        return {"luts": userstate.list_luts()}
+
     @app.post("/api/edit")
     def save_edit(payload: EditSavePayload) -> dict[str, Any]:
         _require_loaded()
@@ -2032,6 +2136,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         photo = ctx.photo_index.get(payload.rel_path)
         if photo is None:
             raise HTTPException(status_code=404, detail="photo not found")
+        _keep_lut(ctx, payload.edit)
         _apply_edit_to_photo(photo, payload.edit)
         with ctx.save_lock:
             db.save(ctx.db_path, ctx.data)
@@ -2052,6 +2157,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             edit = payload.edit
             if payload.mode == "add":
                 edit = editing.merge_additive(photo.get("edit"), edit)
+            _keep_lut(ctx, edit)
             _apply_edit_to_photo(photo, edit)
         with ctx.save_lock:
             db.save(ctx.db_path, ctx.data)
@@ -2552,7 +2658,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             out = editing.render(ctx.decode_view(rel_path), edit,
                                  meta=ctx.photo_meta(rel_path),
                                  auto=ctx.auto_fields(rel_path, edit),
-                                 src=ctx.range_src(rel_path, edit))
+                                 src=ctx.range_src(rel_path, edit),
+                                 luts=_lut_tables(ctx, edit))
             buf = io.BytesIO()
             Image.fromarray(out).save(buf, "JPEG", quality=90)
             return Response(content=buf.getvalue(), media_type="image/jpeg",
@@ -2573,7 +2680,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         thumb = _ensure_thumb(src, ctx.thumbs_root, rel_path, edit,
                               ctx.photo_meta(rel_path),
                               auto_fields=lambda: ctx.auto_fields(rel_path, edit),
-                              range_src=lambda: ctx.range_src(rel_path, edit))
+                              range_src=lambda: ctx.range_src(rel_path, edit),
+                              luts=lambda: _lut_tables(ctx, edit))
         return FileResponse(thumb, media_type="image/jpeg")
 
     @app.get("/peak/{rel_path:path}")
@@ -2596,7 +2704,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         thumb = _ensure_thumb(src, ctx.thumbs_root, rel_path, edit,
                               ctx.photo_meta(rel_path), watermark=False,
                               auto_fields=lambda: ctx.auto_fields(rel_path, edit),
-                              range_src=lambda: ctx.range_src(rel_path, edit))
+                              range_src=lambda: ctx.range_src(rel_path, edit),
+                              luts=lambda: _lut_tables(ctx, edit))
         if level not in PEAK_LEVELS:
             raise HTTPException(status_code=400, detail=f"unknown level: {level}")
         out = _ensure_peak(thumb, ctx.peaks_root, rel_path,

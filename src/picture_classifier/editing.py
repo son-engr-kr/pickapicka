@@ -40,6 +40,7 @@ import numpy as np
 from . import film as film_mod
 from . import grading as grading_mod
 from . import healing as healing_mod
+from . import lut as lut_mod
 from . import rangemask as rangemask_mod
 from . import redeye as redeye_mod
 from . import segment as segment_mod
@@ -89,6 +90,9 @@ DEFAULT_EDIT: dict[str, Any] = {
     # Repairs, applied before anything tonal. See `_repair`.
     "healing": None,   # heal / clone / spot; see the healing module
     "redeye": None,    # red-eye and pet-eye; see the redeye module
+    # A colour look (a .cube or a fitted colour match) under the sliders; see
+    # "looks" below. Stored as a reference, {key, name, amount}.
+    "lut": None,
     "masks": [],       # local adjustments; see the "masks" section below
     "film": None,      # film emulation chain; see the film module
     "watermark": None, # signature / shooting info; see the watermark module
@@ -584,8 +588,11 @@ def normalize(edit: dict[str, Any] | None) -> dict[str, Any]:
     out["grading"] = None
     out["healing"] = None
     out["redeye"] = None
+    out["lut"] = None
     if not edit:
         return out
+    if edit.get("lut") is not None:
+        out["lut"] = normalize_lut_ref(edit["lut"])
     if edit.get("healing") is not None:
         out["healing"] = healing_mod.normalize(edit["healing"])
     if edit.get("redeye") is not None:
@@ -653,6 +660,8 @@ def merge_additive(base: dict[str, Any] | None,
         out["crop"] = dict(over["crop"])   # an aspect preset is worth carrying
     if over["film"] is not None:
         out["film"] = dict(over["film"])
+    if over["lut"] is not None:
+        out["lut"] = dict(over["lut"])
     # Band by band, for the same reason the sliders merge one at a time: a
     # preset that only cools the blues must not wipe someone's reds.
     if over["hsl"] is not None:
@@ -707,6 +716,8 @@ def is_neutral(edit: dict[str, Any] | None) -> bool:
         return False   # likewise: grading.normalize drops anything neutral
     if e["healing"] is not None or e["redeye"] is not None:
         return False   # both normalize to None unless they would change pixels
+    if e["lut"] is not None:
+        return False   # normalize_lut_ref drops a look at zero amount
     return all(_curve_is_identity(e[k]) for k in CURVE_KEYS)
 
 
@@ -1603,6 +1614,58 @@ def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
 
 # ----- top-level render ---------------------------------------------------
 
+# ----- looks (colour LUTs) -------------------------------------------------
+#
+# A look sits under every slider, the way a profile sits under Lightroom's: the
+# sliders then adjust the look rather than the look being laid over them. For a
+# colour match that order is not a preference but a requirement. The match is
+# fitted against this photo's ungraded pixels (`lut.fit_from_reference`), so it
+# is only right when it is handed ungraded pixels.
+#
+# The edit holds a reference, not the table. A 33-point cube is 290 KB of
+# base64, and one look applied across a shoot would put that in the db once per
+# photo. The caller owns the tables, keyed by `lut.table_key`, and passes the
+# ones an edit names to `render`.
+
+_LUT_KEY_LEN = 16
+
+
+def normalize_lut_ref(raw: Any) -> dict[str, Any] | None:
+    """{key, name, amount}, or None when there is no look or it is at zero."""
+    if not isinstance(raw, dict):
+        return None
+    key = raw.get("key")
+    if not isinstance(key, str) or len(key) != _LUT_KEY_LEN \
+            or any(c not in "0123456789abcdef" for c in key):
+        return None
+    try:
+        amount = int(round(min(100.0, max(0.0, float(raw.get("amount", 100))))))
+    except (TypeError, ValueError):
+        amount = 100
+    if amount == 0:
+        return None
+    name = raw.get("name")
+    return {"key": key, "amount": amount,
+            "name": str(name)[:lut_mod.NAME_MAX] if isinstance(name, str) else ""}
+
+
+def _apply_look(rgb: np.ndarray, ref: dict[str, Any],
+                luts: dict[str, dict[str, Any]] | None) -> np.ndarray:
+    """The look an edit names, on uint8 RGB, back to uint8.
+
+    Back to 8 bits for the reason `_repair` gives: `_grade`'s white balance and
+    tone then stay one `cv2.LUT` lookup. The source is 8-bit already, so what
+    the round trip costs is the look's own rounding, half a level.
+    """
+    assert rgb.dtype == np.uint8, "a look is applied to the 8-bit source"
+    assert luts is not None and ref["key"] in luts, (
+        f"the edit names look {ref['key']} ({ref['name'] or 'unnamed'}) "
+        "but the caller did not pass its table")
+    params = {**luts[ref["key"]], "amount": ref["amount"]}
+    out = lut_mod.apply_lut(rgb.astype(np.float32) / 255.0, params)
+    return np.rint(out * 255.0).astype(np.uint8)
+
+
 def _repair(rgb: np.ndarray, e: dict[str, Any],
             roi: tuple[float, float, float, float]) -> np.ndarray:
     """Red-eye and healing, before anything tonal.
@@ -1775,7 +1838,8 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
            with_watermark: bool = True,
            geometry: bool = True,
            auto: dict[str, np.ndarray] | None = None,
-           src: np.ndarray | None = None) -> np.ndarray:
+           src: np.ndarray | None = None,
+           luts: dict[str, dict[str, Any]] | None = None) -> np.ndarray:
     """Apply `edit` to an RGB uint8 image and return a new RGB uint8 image.
     A neutral edit returns the input array unchanged (no copy).
 
@@ -1813,6 +1877,10 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     measured on a fixed grid derived from whatever it is handed and two different
     inputs would select two slightly different things.
 
+    `luts` maps a look's key to its table (see "looks"), and must hold the one
+    the edit names; an edit whose look is missing raises rather than rendering
+    as if it had none.
+
     `meta` is the photo's shooting info (see `exifinfo`), used to fill the
     watermark's tokens. `with_watermark=False` grades without stamping, for
     callers that measure the result rather than show it — focus peaking would
@@ -1842,7 +1910,10 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         # Grain must be the same grain every time this photo is rendered, so it
         # is seeded from the photo rather than from chance.
         seed = film_mod.seed_for(str((meta or {}).get("file") or ""))
-        img = _grade(_repair(rgb, e, roi), e, roi, seed)
+        img = _repair(rgb, e, roi)
+        if e["lut"] is not None:
+            img = _apply_look(img, e["lut"], luts)
+        img = _grade(img, e, roi, seed)
         img = np.clip(img, 0.0, 1.0)
         if e["masks"]:
             img = _apply_masks(img, e["masks"], roi, auto, src)

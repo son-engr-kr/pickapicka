@@ -131,7 +131,7 @@ const EDIT_NEUTRAL = (() => {
   // not a slider a mask could ever carry, and they are applied before anything
   // tonal. Mirrors editing.DEFAULT_EDIT.
   const e = { masks: [], watermark: null,
-              film: null, hsl: null, grading: null, tilt: 0, crop: null };
+              film: null, hsl: null, grading: null, lut: null, tilt: 0, crop: null };
   for (const c of CURVE_CHANNELS) e[c.k] = CURVE_IDENTITY.map((p) => p.slice());
   // Not every slider is neutral at zero: sharpen_radius sits in the middle,
   // mirroring editing.DEFAULT_EDIT. Anything else here would make a freshly
@@ -160,6 +160,7 @@ function mergeNeutralEdit(edit) {
   e.film = (edit && edit.film) ? { ...edit.film } : null;
   e.hsl = cloneHsl(edit && edit.hsl);
   e.grading = cloneGrading(edit && edit.grading);
+  e.lut = (edit && edit.lut) ? { ...edit.lut } : null;
   if (edit) for (const f of EDIT_FIELDS) if (edit[f.k] != null) e[f.k] = edit[f.k];
   return e;
 }
@@ -177,7 +178,12 @@ function editsEqual(a, b) {
   if (canonFilm(a.film) !== canonFilm(b.film)) return false;
   if (canonHsl(a.hsl) !== canonHsl(b.hsl)) return false;
   if (canonGrading(a.grading) !== canonGrading(b.grading)) return false;
+  if (canonLut(a.lut) !== canonLut(b.lut)) return false;
   return canonMasks(a.masks) === canonMasks(b.masks);
+}
+// Mirrors editing.normalize_lut_ref: a look at zero amount is no look.
+function canonLut(l) {
+  return l && l.key && l.amount > 0 ? `${l.key}:${l.amount}` : "";
 }
 function canonFilm(f) {
   if (!f || !f.enabled) return "";
@@ -2304,6 +2310,8 @@ function openEditModal(absIdx) {
   renderHslPanel();
   renderGradePanel();
   renderCurveChannels();
+  lookState.matching = false;
+  renderLookPanel();
   loadWatermarkInfo(photo.rel_path);
   selectMask(-1, { silent: true });
   setEditTool(null);
@@ -2597,6 +2605,7 @@ function refreshEditUi() {
   renderHslPanel();
   renderGradePanel();
   renderCurveChannels();
+  renderLookPanel();
   syncEditSliders();
   drawCurve();
   drawOverlay();
@@ -2621,6 +2630,7 @@ function resetEdit() {
     renderHslPanel();
     renderGradePanel();
     renderCurveChannels();
+    renderLookPanel();
   }
   syncEditSliders();
   drawCurve();
@@ -2987,6 +2997,127 @@ function buildFilmFields() {
     // Touching a slider means this is no longer that stock, it is yours.
     updateFilm({ [sl.dataset.film]: parseInt(sl.value, 10), stock: "" });
   });
+}
+
+// ---------- looks (colour LUTs) ----------
+// The library is app-global and lists name and key only; the table stays on
+// the server. The edit stores {key, name, amount}.
+const lookState = { luts: [], matching: false };
+
+async function loadLooks() {
+  const res = await fetch("/api/luts", { cache: "no-store" });
+  lookState.luts = res.ok ? (await res.json()).luts : [];
+  renderLookPanel();
+}
+
+function renderLookPanel() {
+  const sel = $("#look-select");
+  if (!sel || !editSession.edit) return;
+  const cur = editSession.edit.lut;
+  const known = lookState.luts.some((l) => cur && l.key === cur.key);
+  // A look the edit uses but the library no longer has (deleted, or another
+  // machine) still renders from the project's copy, so it stays selectable.
+  const extra = cur && !known ? [{ key: cur.key, name: cur.name || "(this photo's look)" }] : [];
+  sel.innerHTML = `<option value="">None</option>` + [...lookState.luts, ...extra]
+    .map((l) => `<option value="${l.key}">${escapeHtml(l.name || l.key)}</option>`).join("");
+  sel.value = cur ? cur.key : "";
+  $("#look-amount").value = cur ? cur.amount : 100;
+  $("#look-amount-val").textContent = cur ? cur.amount : "—";
+  $("#look-amount").disabled = !cur;
+  $("#look-delete").disabled = !(cur && known);
+  $("#look-summary-state").textContent = cur ? `· ${cur.name || "on"}` : "";
+  $("#look-match-picker").classList.toggle("hidden", !lookState.matching);
+}
+
+function setLook(entry, amount) {
+  editSession.edit.lut = entry
+    ? { key: entry.key, name: entry.name || "", amount: amount ?? (editSession.edit.lut?.amount || 100) }
+    : null;
+  renderLookPanel();
+  setEditDirty();
+  fetchEditPreview(true);
+}
+
+async function importLook(file) {
+  const status = $("#look-status");
+  status.textContent = `reading ${file.name}…`;
+  const res = await fetch("/api/luts/import", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: file.name, text: await file.text() }),
+  });
+  const d = await res.json();
+  if (!res.ok) { status.textContent = d.detail || `import failed: ${res.status}`; return; }
+  status.textContent = `imported ${d.name} (${d.dim === 3 ? `${d.size}³ cube` : `1D, ${d.size} points`})`;
+  await loadLooks();
+  setLook(d, 100);
+}
+
+// The reference comes from the same scene: matching is meant for one moment
+// shot on two bodies, and the scene is where those frames sit together.
+function renderMatchPicker() {
+  const photo = state.filteredPhotos[editSession.idx];
+  const scene = photo ? photo.scene : null;
+  const pool = (state.byScene.get(scene) || []).filter((p) => p.rel_path !== editSession.relPath);
+  $("#look-match-thumbs").innerHTML = pool.length
+    ? pool.map((p) => `<button type="button" class="look-match-thumb" data-rel="${escapeAttr(p.rel_path)}" `
+        + `title="${escapeHtml(basename(p.rel_path))}"><img loading="lazy" src="${thumbUrl(p)}" alt="" /></button>`).join("")
+    : `<p class="hsl-note">No other photos in this scene.</p>`;
+  $$("#look-match-thumbs .look-match-thumb").forEach((b) =>
+    b.addEventListener("click", () => matchLookTo(b.dataset.rel)));
+}
+
+async function matchLookTo(reference) {
+  const status = $("#look-status");
+  status.textContent = `matching colours to ${basename(reference)}…`;
+  const res = await fetch("/api/luts/match", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rel_path: editSession.relPath, reference }),
+  });
+  const d = await res.json();
+  if (!res.ok) { status.textContent = d.detail || `match failed: ${res.status}`; return; }
+  status.textContent = "";
+  lookState.matching = false;
+  await loadLooks();
+  setLook(d, 100);
+}
+
+async function deleteLook() {
+  const cur = editSession.edit.lut;
+  if (!cur || !confirm(`Remove "${cur.name}" from the look library?\n\n`
+      + "Photos already using it keep it; it just stops being offered.")) return;
+  await fetch("/api/luts/delete", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: cur.key }),
+  });
+  await loadLooks();
+}
+
+function bindLookPanel() {
+  $("#look-select").addEventListener("change", (e) => {
+    const key = e.target.value;
+    const entry = lookState.luts.find((l) => l.key === key)
+      || (editSession.edit.lut && editSession.edit.lut.key === key ? editSession.edit.lut : null);
+    setLook(key ? entry : null);
+  });
+  $("#look-amount").addEventListener("input", (e) => {
+    if (!editSession.edit.lut) return;
+    editSession.edit.lut.amount = parseInt(e.target.value, 10);
+    $("#look-amount-val").textContent = e.target.value;
+    setEditDirty();
+    previewDuringDrag();
+  });
+  $("#look-import").addEventListener("click", () => $("#look-file").click());
+  $("#look-file").addEventListener("change", (e) => {
+    const f = e.target.files[0];
+    e.target.value = "";          // picking the same file again still fires
+    if (f) importLook(f);
+  });
+  $("#look-match").addEventListener("click", () => {
+    lookState.matching = !lookState.matching;
+    if (lookState.matching) renderMatchPicker();
+    renderLookPanel();
+  });
+  $("#look-delete").addEventListener("click", deleteLook);
 }
 
 function renderFilmPanel() {
@@ -4836,6 +4967,8 @@ function slotLoad(i) {
   renderFilmPanel();
   renderHslPanel();
   renderGradePanel();
+  renderCurveChannels();
+  renderLookPanel();
   syncEditSliders();
   drawCurve();
   drawOverlay();
@@ -4915,6 +5048,24 @@ function mergeAdditive(base, overlay) {
   }
   if (!curveIsIdentity(over.curve)) out.curve = over.curve.map((p) => p.slice());
   if (over.watermark) out.watermark = cloneWatermark(over.watermark);
+  // The rest mirrors editing.merge_additive, which the bulk apply uses: this
+  // used to stop at the watermark, so a preset added here lost its film, its
+  // colour mixer, its grading, its crop and its look, which a bulk apply kept.
+  if (over.crop) out.crop = { ...over.crop };
+  if (over.film) out.film = { ...over.film };
+  if (over.lut) out.lut = { ...over.lut };
+  if (over.hsl) {
+    const merged = cloneHsl(out.hsl) || {};
+    for (const [band, vals] of Object.entries(over.hsl)) merged[band] = { ...(merged[band] || {}), ...vals };
+    out.hsl = merged;
+  }
+  if (over.grading) {
+    const merged = cloneGrading(out.grading) || {};
+    for (const [k, v] of Object.entries(over.grading)) {
+      merged[k] = (v && typeof v === "object") ? { ...(merged[k] || {}), ...v } : v;
+    }
+    out.grading = merged;
+  }
   out.masks = out.masks.concat(over.masks).slice(0, MASK_MAX);
   return out;
 }
@@ -4941,6 +5092,11 @@ async function applyPreset(id) {
   selectMask(focus, { silent: true });
   setEditTool(null);
   renderWatermarkPanel();
+  renderFilmPanel();
+  renderHslPanel();
+  renderGradePanel();
+  renderCurveChannels();
+  renderLookPanel();
   syncEditSliders();
   drawCurve();
   drawOverlay();
@@ -5576,6 +5732,7 @@ function bindUi() {
   // Editor
   renderEditControls();
   bindEditControls();
+  bindLookPanel();
   bindMaskUi();
   bindSlots();
   bindWatermarkUi();
@@ -6968,6 +7125,7 @@ async function bootMain() {
   loadPresets();
   loadSubjects();
   loadFilmStocks();
+  loadLooks();
   syncViewControls();
   renderSidebar();
   renderPeopleChips();

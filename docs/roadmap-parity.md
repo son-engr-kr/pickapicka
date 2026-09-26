@@ -130,8 +130,16 @@ existing pipeline and the existing mask system with no architectural change.
   further than 1.25/0.75 per channel, which a deep tungsten frame is, and then
   aims green at the midpoint of the red and blue it could reach so the residual
   is a weaker version of the same cast rather than a green one on top of it.
-- AI Color Match, Camera Profile Matching — fit a 3D LUT from a reference frame
-- Profile browser and `.cube` LUT import — Evoto's `AI Color Looks`
+- ~~AI Color Match, Camera Profile Matching — fit a 3D LUT from a reference
+  frame~~ `done`, and
+- ~~Profile browser and `.cube` LUT import — Evoto's `AI Color Looks`~~ `done`,
+  as the editor's **Look** panel. Applied under every slider, before the grade,
+  because a match is fitted on ungraded pixels. Edits store `{key, name,
+  amount}` and the tables live in an app-global library (`userstate.LUT_DIR`)
+  plus a per-project copy in `picks.json` (`luts`), keyed by `lut.table_key`,
+  which now covers the shape and domain as well as the table. The match takes
+  the reference as edited and the source as shot, and offers frames from the
+  same scene only.
 - Dehaze's inverse presets: `Vintage Filter`, `Cinematic Filters`
 - ~~Red Eye Remover, pet eye~~ `done` in the pipeline; **no UI yet** — placing a
   correction needs a click on the preview. 153 ms at 24 MP. Detection gates on

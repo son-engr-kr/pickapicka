@@ -863,6 +863,40 @@
             </div>
           </details>
 
+          <details class="edit-group" id="edit-look-group">
+            <summary>Look <span id="look-summary-state"></span></summary>
+            <div class="edit-group-body">
+              <p class="hsl-note">
+                A colour lookup table under every slider, the way a profile sits
+                under Lightroom's: import a <code>.cube</code>, or match this
+                photo's colours to another frame of the same scene, such as one
+                from a second camera. Whole photo only.
+              </p>
+              <div class="look-pick-row">
+                <select id="look-select" aria-label="Look"></select>
+                <button id="look-delete" type="button" data-icon="trash"
+                        title="Remove this look from the library" aria-label="Remove this look from the library"></button>
+              </div>
+              <label class="look-row"><span class="look-name">Amount</span>
+                <input type="range" id="look-amount" min="0" max="100" step="1" />
+                <span class="look-val" id="look-amount-val"></span></label>
+              <div class="look-actions">
+                <button id="look-import" type="button">Import .cube…</button>
+                <button id="look-match" type="button">Match colours to…</button>
+              </div>
+              <input type="file" id="look-file" accept=".cube,.CUBE" hidden />
+              <div id="look-match-picker" class="hidden">
+                <p class="hsl-note">
+                  Pick the frame to match. It is taken as you edited it; this photo
+                  is taken as shot, and your sliders here then apply on top. Works
+                  best on the same subject under the same light.
+                </p>
+                <div id="look-match-thumbs"></div>
+              </div>
+              <p class="hsl-note" id="look-status"></p>
+            </div>
+          </details>
+
           <div class="mask-context" id="mask-context">Global adjustments</div>
           <details class="edit-group" open>
             <summary>Light</summary>

@@ -132,6 +132,51 @@ def set_export_settings(settings: dict[str, Any]) -> None:
     _save(data)
 
 
+# ----- look library (app-global) -------------------------------------------
+# Imported .cube files and fitted colour matches, one JSON file each, named by
+# `lut.table_key`. Global like presets, so a look imported once is there in
+# every project. A project also keeps its own copy of each look its edits use
+# (the "luts" map in picks.json), so it still renders if this library is
+# cleared or the project moves to another machine.
+
+LUT_DIR = CONFIG_DIR / "luts"
+
+
+def _lut_path(key: str) -> Path:
+    assert len(key) == 16 and all(c in "0123456789abcdef" for c in key), \
+        f"not a look key: {key!r}"
+    return LUT_DIR / f"{key}.json"
+
+
+def list_luts() -> list[dict[str, Any]]:
+    """Every look in the library, by name, without its table."""
+    if not LUT_DIR.is_dir():
+        return []
+    out = []
+    for f in LUT_DIR.glob("*.json"):
+        p = json.loads(f.read_text(encoding="utf-8"))
+        out.append({"key": f.stem, "name": p.get("name", ""),
+                    "dim": p.get("dim"), "size": p.get("size")})
+    return sorted(out, key=lambda e: e["name"].lower())
+
+
+def save_lut(key: str, params: dict[str, Any]) -> None:
+    LUT_DIR.mkdir(parents=True, exist_ok=True)
+    dst = _lut_path(key)
+    tmp = dst.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(params), encoding="utf-8")
+    tmp.replace(dst)
+
+
+def load_lut(key: str) -> dict[str, Any] | None:
+    path = _lut_path(key)
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def delete_lut(key: str) -> None:
+    _lut_path(key).unlink(missing_ok=True)
+
+
 # ----- remembered view, per project ---------------------------------------
 # Which filter, layout and page a project was last left on, so reopening it puts
 # you back where you were instead of on page 1 of everything. A user preference

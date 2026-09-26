@@ -1782,3 +1782,18 @@ input[type="range"] { accent-color: var(--accent); }
 .quit-box { max-width: 420px; text-align: center; }
 .quit-box h2 { margin: 0 0 var(--s2); font-size: 18px; }
 .quit-box p { margin: 0; color: var(--ink-dim); line-height: 1.6; }
+
+/* ----- look (colour LUT) panel ----- */
+.look-pick-row { display: flex; gap: var(--s1); margin-bottom: var(--s2); }
+.look-pick-row select { flex: 1; min-width: 0; }
+.look-actions { display: flex; flex-wrap: wrap; gap: var(--s1); margin: var(--s2) 0; }
+#look-match-picker.hidden { display: none; }
+#look-match-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: var(--s1); max-height: 220px; overflow-y: auto; margin-bottom: var(--s2); }
+.look-match-thumb { padding: 0; border-radius: var(--r1); overflow: hidden;
+  aspect-ratio: 3 / 2; }
+.look-match-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.look-match-thumb:hover { outline: 2px solid var(--accent); }
+#look-status:empty { display: none; }
+#look-summary-state { color: var(--accent); font-weight: 500;
+  text-transform: none; letter-spacing: 0; }

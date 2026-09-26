@@ -249,6 +249,80 @@ def test_table_key_identifies_the_look() -> None:
     assert lut.table_key(a) and lut.table_key(a) == lut.table_key(dict(a))
     assert lut.table_key(a) != lut.table_key(b)
     assert lut.table_key(None) == "" and lut.table_key({}) == ""
+    # The same numbers read over another input range are another look, and the
+    # key is what an edit stores, so the two must not collide.
+    wide = _params(lut.identity_table(3, 5) ** 0.9, 5, domain=([0.0] * 3, [2.0] * 3))
+    assert lut.table_key(wide) != lut.table_key(a)
+    # The name and the amount are not part of what the table is.
+    assert lut.table_key({**a, "name": "other", "amount": 40}) == lut.table_key(a)
+
+
+# ----- riding in an edit --------------------------------------------------
+
+def _look():
+    params = lut.normalize(_params(lut.identity_table(3, 9) ** 0.6, 9))
+    key = lut.table_key(params)
+    return key, params
+
+
+def _photo() -> np.ndarray:
+    rng = np.random.default_rng(3)
+    return rng.integers(0, 256, (24, 32, 3), dtype=np.uint8)
+
+
+def test_an_edit_stores_a_reference_not_the_table() -> None:
+    key, _ = _look()
+    e = editing.normalize({"lut": {"key": key, "name": "Gamma", "amount": 140}})
+    assert e["lut"] == {"key": key, "name": "Gamma", "amount": 100}
+    assert editing.normalize({"lut": {"key": key, "amount": 0}})["lut"] is None
+    assert editing.normalize({"lut": {"key": "../../etc", "amount": 50}})["lut"] is None
+    assert not editing.is_neutral({"lut": {"key": key, "amount": 30}})
+    assert editing.is_neutral({"lut": {"key": key, "amount": 0}})
+    a = editing.edit_hash({"lut": {"key": key, "amount": 30}})
+    assert a and a != editing.edit_hash({"lut": {"key": key, "amount": 60}})
+
+
+def test_the_look_runs_under_the_sliders() -> None:
+    """Look first, then the grade, so a colour match fitted on ungraded pixels
+    is handed ungraded pixels. Exposure after a gamma curve is not the same as
+    the curve after exposure, which is what makes the order visible."""
+    key, params = _look()
+    img = _photo()
+    looked = np.rint(lut.apply_lut(img.astype(np.float32) / 255.0, params) * 255.0).astype(np.uint8)
+    want = editing.render(looked, {"exposure": 0.7})
+    got = editing.render(img, {"exposure": 0.7, "lut": {"key": key, "amount": 100}},
+                         luts={key: params})
+    assert np.array_equal(got, want)
+    wrong = np.rint(lut.apply_lut(editing.render(img, {"exposure": 0.7}).astype(np.float32) / 255.0,
+                                  params) * 255.0).astype(np.uint8)
+    assert not np.array_equal(got, wrong)
+
+
+def test_amount_blends_the_look() -> None:
+    key, params = _look()
+    img = _photo()
+    half = editing.render(img, {"lut": {"key": key, "amount": 50}}, luts={key: params})
+    full = editing.render(img, {"lut": {"key": key, "amount": 100}}, luts={key: params})
+    mid = (img.astype(np.float32) + full.astype(np.float32)) / 2.0
+    assert np.abs(half.astype(np.float32) - mid).max() <= 1.0
+
+
+def test_a_missing_table_is_an_error_not_a_blank_look() -> None:
+    key, _ = _look()
+    try:
+        editing.render(_photo(), {"lut": {"key": key, "amount": 100}})
+    except AssertionError as exc:
+        assert key in str(exc)
+    else:
+        raise AssertionError("rendered a look without its table")
+
+
+def test_a_preset_added_on_top_brings_its_look() -> None:
+    key, _ = _look()
+    merged = editing.merge_additive({"exposure": 0.5}, {"lut": {"key": key, "amount": 70}})
+    assert merged["exposure"] == 0.5 and merged["lut"]["key"] == key
+    kept = editing.merge_additive({"lut": {"key": key, "amount": 70}}, {"contrast": 10})
+    assert kept["lut"]["amount"] == 70
 
 
 # ----- applying -----------------------------------------------------------
@@ -558,8 +632,8 @@ def test_a_fit_of_different_scenes_stays_in_range() -> None:
 # ----- fitting into the pipeline ------------------------------------------
 
 def test_a_look_can_ride_along_with_an_edit() -> None:
-    """Not wired into `editing` yet, but the parameter dict has to survive the
-    trip an edit takes: JSON, a hash, and back."""
+    """The parameter dict has to survive the trip a stored look takes: JSON, a
+    hash, and back."""
     import json
 
     params = lut.normalize(_params(lut.identity_table(3, 5) ** 0.9, 5))

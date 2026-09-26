@@ -124,14 +124,20 @@ def entry_count(dim: int, size: int) -> int:
 
 
 def table_key(params: dict[str, Any] | None) -> str:
-    """A short content hash of the table, or '' when there is none.
+    """A short content hash of the look, or '' when there is none.
 
     Offered so a caller can store one shared look once — keyed by this — and put
-    the key on each photo's edit instead of 39 KB of base64 per photo.
+    the key on each photo's edit instead of 39 KB of base64 per photo. The shape
+    and the domain are in it as well as the table: the same numbers read over a
+    different input range are a different look, and two of those must not share
+    a key when the key is what an edit stores. The name and amount are not, since
+    renaming or dialling back a look does not change what its table is.
     """
     if not params or not params.get("table"):
         return ""
-    return hashlib.sha1(params["table"].encode("ascii")).hexdigest()[:16]
+    p = {**DEFAULT_LUT, **params}
+    head = f"{p['dim']}:{p['size']}:{p['domain_min']}:{p['domain_max']}:"
+    return hashlib.sha1((head + params["table"]).encode("ascii")).hexdigest()[:16]
 
 
 # ----- .cube parsing ------------------------------------------------------

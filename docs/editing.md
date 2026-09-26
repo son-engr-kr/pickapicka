@@ -135,6 +135,29 @@ Two stages that fix the captured image rather than interpret it, and they run
   through the crop, so they stay on the car they were found on; one the crop cuts
   out stops being drawn.
 
+## Looks
+
+- **A look sits under every slider**, the way a profile sits under Lightroom's:
+  it is applied to the photo as shot, and the sliders then adjust the look.
+  **Import a `.cube`** (1D or 3D, the format creative profiles and colourists'
+  show LUTs ship in), or **match colours to another photo** of the same scene,
+  which fits a table that moves this frame's colours towards that one's. The
+  match is for a moment shot on two bodies: same subject, same light. It
+  matches distributions, not content, so a grey street matched to a red sunset
+  comes out red. **Amount** dials either kind back. Whole photo only.
+- **Parsed strictly.** A file that is not a LUT (a wrong entry count, no
+  declared size, a video-range flag) is refused with the line that is wrong,
+  rather than guessed at.
+- **The reference is taken as edited, the source as shot.** Matching to how a
+  frame looks is the point, and the look is applied before any grading, so it
+  has to be fitted on ungraded pixels.
+- **A look library, shared by every project.** Imported and fitted looks are
+  kept once each, and an edit stores a reference to one, not its table: a
+  33-point cube is 290 KB, and one look across a shoot would otherwise sit in
+  `picks.json` once per photo. A project also keeps its own copy of each look
+  its edits use, so it still renders after the library is cleared or on
+  another machine.
+
 ## Tone curves
 
 - **Four point curves**: the master plus one each for **R, G and B**. The master
