@@ -418,6 +418,72 @@ def test_roi_brush_strokes_land_in_the_window() -> None:
 
 # ----- additive preset merge ----------------------------------------------
 
+# ----- optics (lens and perspective) ---------------------------------------
+
+def _optics_photo() -> np.ndarray:
+    rng = np.random.default_rng(11)
+    img = rng.integers(40, 220, (60, 90, 3), dtype=np.uint8)
+    img[:, ::9] = 250            # vertical lines, so a warp visibly moves them
+    return img
+
+
+def test_optics_normalize_to_none_when_untouched() -> None:
+    e = editing.normalize({"lens": {"distortion": 0, "vignette_midpoint": 70},
+                           "transform": {"scale": 100, "upright": "off"}})
+    assert e["lens"] is None and e["transform"] is None
+    assert editing.is_neutral(e) and editing.optics_key(e) == ""
+    lensed = {"lens": {"distortion": 30}}
+    assert not editing.is_neutral(lensed)
+    assert editing.optics_key(lensed) and editing.optics_key(lensed) != editing.optics_key(
+        {"lens": {"distortion": 31}})
+    # The grade does not move the key: it is what a cache of corrected frames keys on.
+    assert editing.optics_key({**lensed, "exposure": 1.0}) == editing.optics_key(lensed)
+
+
+def test_optics_run_first_and_masks_sit_on_the_corrected_frame() -> None:
+    """Rendering with the optics is the same as correcting first and rendering
+    the rest, which is what places a mask on the corrected picture."""
+    img = _optics_photo()
+    edit = {"lens": {"distortion": 40, "vignette_amount": 30},
+            "transform": {"vertical": 25, "scale": 115},
+            "exposure": 0.4,
+            "masks": [{"type": "radial", "cx": 0.3, "cy": 0.4, "rx": 0.2, "ry": 0.3,
+                       "adj": {"exposure": -1.0}}]}
+    whole = editing.render(img, edit)
+    corrected = editing.apply_optics(img, edit)
+    assert not np.array_equal(corrected, img)
+    rest = editing.render(corrected, edit, optics=False)
+    assert np.array_equal(whole, rest)
+
+
+def test_a_window_needs_the_frame_corrected_first() -> None:
+    img = _optics_photo()
+    edit = {"lens": {"distortion": 40}, "exposure": 0.3}
+    try:
+        editing.render(img[:30, :45], edit, roi=(0.0, 0.0, 0.5, 0.5), geometry=False)
+    except AssertionError as exc:
+        assert "whole frame" in str(exc)
+    else:
+        raise AssertionError("rendered a lens correction on a window")
+    # Correct the whole frame first, then any window of it renders.
+    corrected = editing.apply_optics(img, edit)
+    win = editing.render(corrected[:30, :45], edit, roi=(0.0, 0.0, 0.5, 0.5),
+                         geometry=False, optics=False)
+    assert win.shape == (30, 45, 3)
+
+
+def test_optics_keep_the_frame_size() -> None:
+    img = _optics_photo()
+    out = editing.apply_optics(img, {"lens": {"distortion": -50, "ca_red_cyan": 40},
+                                     "transform": {"horizontal": 30, "aspect": 10}})
+    assert out.shape == img.shape and out.dtype == np.uint8
+
+
+def test_a_preset_brings_its_lens_correction() -> None:
+    merged = editing.merge_additive({"exposure": 0.5}, {"lens": {"distortion": 12}})
+    assert merged["lens"]["distortion"] == 12 and merged["exposure"] == 0.5
+
+
 def test_merge_additive_appends_repairs() -> None:
     """Heals and red-eye fixes from a preset are added to the photo's own. The
     red-eye half used to raise a KeyError: it was read as "ops"."""

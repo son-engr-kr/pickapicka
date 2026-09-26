@@ -40,11 +40,13 @@ import numpy as np
 from . import film as film_mod
 from . import grading as grading_mod
 from . import healing as healing_mod
+from . import lens as lens_mod
 from . import lut as lut_mod
 from . import rangemask as rangemask_mod
 from . import redeye as redeye_mod
 from . import segment as segment_mod
 from . import sharpening as sharpening_mod
+from . import transform as transform_mod
 from . import watermark as watermark_mod
 
 # ----- schema -------------------------------------------------------------
@@ -80,6 +82,9 @@ DEFAULT_EDIT: dict[str, Any] = {
     "vignette": 0,
     "tilt": 0.0,       # straighten, degrees; + levels a horizon drooping right
     "crop": None,      # {x, y, w, h} of the straightened frame; see "geometry"
+    # Optics, before everything else; see "optics" below.
+    "lens": None,      # distortion, chromatic aberration, lens vignetting
+    "transform": None, # perspective (keystone) and Upright
     "curve": [[0.0, 0.0], [1.0, 1.0]],
     # Per-channel point curves, applied after the master one. See CURVE_KEYS.
     "curve_r": [[0.0, 0.0], [1.0, 1.0]],
@@ -589,8 +594,14 @@ def normalize(edit: dict[str, Any] | None) -> dict[str, Any]:
     out["healing"] = None
     out["redeye"] = None
     out["lut"] = None
+    out["lens"] = None
+    out["transform"] = None
     if not edit:
         return out
+    if edit.get("lens") is not None:
+        out["lens"] = lens_mod.normalize(edit["lens"])
+    if edit.get("transform") is not None:
+        out["transform"] = transform_mod.normalize(edit["transform"])
     if edit.get("lut") is not None:
         out["lut"] = normalize_lut_ref(edit["lut"])
     if edit.get("healing") is not None:
@@ -662,6 +673,12 @@ def merge_additive(base: dict[str, Any] | None,
         out["film"] = dict(over["film"])
     if over["lut"] is not None:
         out["lut"] = dict(over["lut"])
+    # A lens correction belongs to a lens, not a frame, so a preset carrying one
+    # is how it reaches every photo that lens took.
+    if over["lens"] is not None:
+        out["lens"] = dict(over["lens"])
+    if over["transform"] is not None:
+        out["transform"] = dict(over["transform"])
     # Band by band, for the same reason the sliders merge one at a time: a
     # preset that only cools the blues must not wipe someone's reds.
     if over["hsl"] is not None:
@@ -723,6 +740,8 @@ def is_neutral(edit: dict[str, Any] | None) -> bool:
         return False   # both normalize to None unless they would change pixels
     if e["lut"] is not None:
         return False   # normalize_lut_ref drops a look at zero amount
+    if not optics_is_neutral(e):
+        return False   # both modules normalize to None when they change nothing
     return all(_curve_is_identity(e[k]) for k in CURVE_KEYS)
 
 
@@ -1619,6 +1638,66 @@ def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
 
 # ----- top-level render ---------------------------------------------------
 
+# ----- optics (lens corrections and perspective) --------------------------
+#
+# Applied first, to the whole frame as it was decoded, before the repairs and
+# the grade. Lightroom applies its lens and Transform panels at the same point,
+# and for the same reasons. Lens vignetting is a falloff of the light the
+# sensor received, so it is undone before any tone decision. Chromatic
+# aberration is a misregistration of the channels, which sharpening would
+# otherwise emphasise.
+#
+# The corrected frame is the frame. Masks, repairs, the white-balance picker
+# and red-eye all store and read positions as fractions of it, which is what
+# the editor shows, since it previews the corrected picture. So nothing
+# downstream needs to know the optics exist, and the editor's
+# original-to-display transform stays the affine one the tilt and crop make.
+# Both corrections keep the frame's size, so a fraction means the same pixel
+# before and after them.
+#
+# The cost is resampling: one pass for the lens (distortion and CA share a
+# grid, see lens.apply_lens), one for a perspective, and the tilt's own
+# afterwards. transform.py recommends folding its homography into the tilt's
+# warp to save one. That would put masks in pre-transform coordinates, where
+# the editor could not draw them with its affine transform, so it is not done.
+
+
+def optics_is_neutral(e: dict[str, Any]) -> bool:
+    """True when neither a lens correction nor a perspective is set, for a
+    normalized edit."""
+    return e["lens"] is None and e["transform"] is None
+
+
+def optics_key(edit: dict[str, Any] | None) -> str:
+    """A short hash of the optics alone, or '' when there are none. What a
+    caller keys a cache of corrected frames on: the grade changes on every
+    slider drag and the optics almost never do."""
+    e = normalize(edit)
+    if optics_is_neutral(e):
+        return ""
+    payload = json.dumps({"lens": e["lens"], "transform": e["transform"]},
+                         sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def apply_optics(rgb: np.ndarray, edit: dict[str, Any] | None) -> np.ndarray:
+    """The lens corrections, then the perspective, on a WHOLE uint8 frame.
+
+    Back to 8 bits after each, which keeps `_grade` on its lookup path. It also
+    clips a lens-vignetting lift that pushes a bright corner past white, which
+    an 8-bit pipeline cannot hold.
+    """
+    assert rgb.dtype == np.uint8, "optics are applied to the 8-bit decode"
+    e = normalize(edit)
+    out = rgb
+    if e["lens"] is not None:
+        f = lens_mod.apply_lens(out.astype(np.float32) / 255.0, e["lens"])
+        out = np.rint(np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8)
+    if e["transform"] is not None:
+        out = transform_mod.apply_transform(out, e["transform"])
+    return out
+
+
 # ----- looks (colour LUTs) -------------------------------------------------
 #
 # A look sits under every slider, the way a profile sits under Lightroom's: the
@@ -1844,7 +1923,8 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
            geometry: bool = True,
            auto: dict[str, np.ndarray] | None = None,
            src: np.ndarray | None = None,
-           luts: dict[str, dict[str, Any]] | None = None) -> np.ndarray:
+           luts: dict[str, dict[str, Any]] | None = None,
+           optics: bool = True) -> np.ndarray:
     """Apply `edit` to an RGB uint8 image and return a new RGB uint8 image.
     A neutral edit returns the input array unchanged (no copy).
 
@@ -1886,6 +1966,11 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     the edit names; an edit whose look is missing raises rather than rendering
     as if it had none.
 
+    `optics=False` is for a caller that has already applied the lens and
+    perspective corrections (`apply_optics`) to the whole frame, which it must
+    to render a window: those corrections move pixels across the frame, so they
+    cannot be applied to a piece of it.
+
     `meta` is the photo's shooting info (see `exifinfo`), used to fill the
     watermark's tokens. `with_watermark=False` grades without stamping, for
     callers that measure the result rather than show it — focus peaking would
@@ -1894,6 +1979,11 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     e = normalize(edit)
     if is_neutral(e):
         return rgb
+    if optics and not optics_is_neutral(e):
+        assert roi == FULL_ROI, \
+            "lens and perspective corrections need the whole frame; apply_optics " \
+            "to it first and pass optics=False for a window"
+        rgb = apply_optics(rgb, e)
 
     do_geom = geometry and not geometry_is_neutral(e)
     if do_geom:
@@ -1904,7 +1994,8 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         "a window cannot be stamped here: only its caller knows where it sits " \
         "in the cropped frame. Stamp it yourself with watermark.render()."
     # Geometry excluded: on its own it leaves nothing for the tonal stages to do.
-    tone_neutral = is_neutral({**e, "watermark": None, "crop": None, "tilt": 0.0})
+    tone_neutral = is_neutral({**e, "watermark": None, "crop": None, "tilt": 0.0,
+                               "lens": None, "transform": None})
     if tone_neutral and stamp is None and not do_geom:
         return rgb
 

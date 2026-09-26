@@ -29,7 +29,7 @@ from pydantic import BaseModel
 from . import (
     cameras, db, editing, exifinfo, exporting, film as film_mod, folderinfo, hdr,
     lut as lut_mod, metadata as metadata_mod, presets as presets_mod,
-    redeye as redeye_mod, raw, relink, scenes, segment as segment_mod,
+    redeye as redeye_mod, transform as transform_mod, raw, relink, scenes, segment as segment_mod,
     userstate, watermark as watermark_mod,
 )
 from .scoring import objects as objects_mod
@@ -141,6 +141,7 @@ class NeutralPickPayload(BaseModel):
     rel_path: str
     x: float
     y: float
+    edit: dict[str, Any] | None = None   # only its optics are read
 
 
 # One of a photo's edit slots. `edit: None` clears the slot; anything else
@@ -235,14 +236,22 @@ class LutKeyPayload(BaseModel):
 
 class RedeyeFindPayload(BaseModel):
     rel_path: str
+    edit: dict[str, Any] | None = None   # only its optics are read
 
 
 class RedeyeRegionPayload(BaseModel):
     rel_path: str
-    cx: float          # fractions of the original frame
+    cx: float          # fractions of the (corrected) frame
     cy: float
     r: float           # a fraction of the frame width
     kind: Literal["red", "pet"] = "red"
+    edit: dict[str, Any] | None = None
+
+
+class UprightPayload(BaseModel):
+    rel_path: str
+    mode: Literal["level", "vertical", "full", "auto"]
+    edit: dict[str, Any] | None = None   # its lens correction is applied first
 
 
 class QuitPayload(BaseModel):
@@ -553,8 +562,11 @@ class AppContext:
                   if m["type"] == "auto" and editing.mask_is_active(m)}
         if not groups:
             return None
-        base = self.get_decoded_base(rel_path)
-        return {g: segment_mod.class_mask(base, g, key=rel_path) for g in groups}
+        # The corrected frame, since that is the frame the masks sit on; the
+        # cache key carries the optics so a new correction segments afresh.
+        base = self.get_corrected_base(rel_path, edit)
+        key = f"{rel_path}#{editing.optics_key(edit)}"
+        return {g: segment_mod.class_mask(base, g, key=key) for g in groups}
 
     def range_src(self, rel_path: str,
                   edit: dict[str, Any] | None) -> np.ndarray | None:
@@ -572,7 +584,7 @@ class AppContext:
         wanted = any(m["range_luma"] is not None or m["range_color"] is not None
                      for m in editing.normalize(edit)["masks"]
                      if editing.mask_is_active(m))
-        return self.get_decoded_base(rel_path) if wanted else None
+        return self.get_corrected_base(rel_path, edit) if wanted else None
 
     def photo_meta(self, rel_path: str) -> dict[str, Any]:
         """Shooting info for the watermark and the info panel. Normally cached
@@ -616,6 +628,45 @@ class AppContext:
             self.edit_base_cache[key] = arr
             while len(self.edit_base_cache) > EDIT_BASE_CACHE_MAX * 2:
                 self.edit_base_cache.popitem(last=False)
+        return arr
+
+    def get_corrected_base(self, rel_path: str, edit: dict[str, Any] | None) -> np.ndarray:
+        """The preview base with the edit's lens and perspective corrections
+        applied: the frame every position in an edit is a fraction of. Cached
+        by the optics alone, which a slider drag does not change."""
+        okey = editing.optics_key(edit)
+        if not okey:
+            return self.get_decoded_base(rel_path)
+        key = f"{rel_path}#optics:{okey}"
+        with self.decode_lock:
+            arr = self.edit_base_cache.get(key)
+            if arr is not None:
+                self.edit_base_cache.move_to_end(key)
+                return arr
+        arr = editing.apply_optics(self.get_decoded_base(rel_path), edit)
+        with self.decode_lock:
+            self.edit_base_cache[key] = arr
+            while len(self.edit_base_cache) > EDIT_BASE_CACHE_MAX * 2:
+                self.edit_base_cache.popitem(last=False)
+        return arr
+
+    def get_corrected_full(self, rel_path: str, edit: dict[str, Any] | None) -> np.ndarray:
+        """`get_full_base` with the optics applied, for the 1:1 view: a window
+        can only be cut from a frame that is already corrected."""
+        okey = editing.optics_key(edit)
+        if not okey:
+            return self.get_full_base(rel_path)
+        key = f"{rel_path}#optics:{okey}"
+        with self.decode_lock:
+            arr = self.full_base_cache.get(key)
+            if arr is not None:
+                self.full_base_cache.move_to_end(key)
+                return arr
+        arr = editing.apply_optics(self.get_full_base(rel_path), edit)
+        with self.decode_lock:
+            self.full_base_cache[key] = arr
+            while len(self.full_base_cache) > FULL_BASE_CACHE_MAX:
+                self.full_base_cache.popitem(last=False)
         return arr
 
     def get_full_base(self, rel_path: str) -> np.ndarray:
@@ -934,7 +985,7 @@ def _render_roi(ctx: "AppContext", payload: EditPreviewPayload) -> np.ndarray:
     if payload.skip_crop:                    # the crop tool shows the frame whole
         edit = {**editing.normalize(edit), "crop": None}
 
-    base = ctx.get_full_base(payload.rel_path)
+    base = ctx.get_corrected_full(payload.rel_path, edit)
     fh, fw = base.shape[:2]
     _, (ow, oh) = editing.geometry_matrix(fw, fh, edit)
 
@@ -957,6 +1008,7 @@ def _render_roi(ctx: "AppContext", payload: EditPreviewPayload) -> np.ndarray:
         meta=ctx.photo_meta(payload.rel_path),
         with_watermark=False,     # placed below, against the cropped frame
         geometry=False,           # this is a patch of the original, not a frame
+        optics=False,             # ...already corrected, as a whole, above
         auto=ctx.auto_fields(payload.rel_path, edit),
         src=ctx.range_src(payload.rel_path, edit),
         luts=_lut_tables(ctx, edit),
@@ -2041,14 +2093,19 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         if payload.roi is None:
             # Graded whole, then cropped — the same order `render` uses for an
             # export, so the fit view is what the file will be.
-            base = ctx.get_decoded_base(payload.rel_path)
+            # A drag's draft is small enough to correct on the fly; the settled
+            # render reuses the cached corrected frame.
+            base = ctx.get_corrected_base(payload.rel_path, fit_edit)
+            corrected = True
             if payload.max_edge and payload.max_edge < max(base.shape[:2]):
                 base = ctx.get_draft_base(payload.rel_path, payload.max_edge)
+                corrected = False
             out = editing.render(base, fit_edit,
                                  meta=ctx.photo_meta(payload.rel_path),
                                  auto=ctx.auto_fields(payload.rel_path, fit_edit),
                                  src=ctx.range_src(payload.rel_path, fit_edit),
-                                 luts=_lut_tables(ctx, fit_edit))
+                                 luts=_lut_tables(ctx, fit_edit),
+                                 optics=not corrected)
         else:
             out = _render_roi(ctx, payload)
         buf = io.BytesIO()
@@ -2145,26 +2202,52 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     # Both measure the photo as shot: red-eye is a repair to the capture and
     # runs before any grading, so the grade must not be what it looks at.
 
-    def _eye_frame(rel: str) -> np.ndarray:
+    def _eye_frame(rel: str, edit: dict[str, Any] | None) -> np.ndarray:
         if ctx.photo_index.get(rel) is None:
             raise HTTPException(status_code=404, detail="photo not found")
-        return ctx.get_decoded_base(rel).astype(np.float32) / 255.0
+        return ctx.get_corrected_base(rel, edit).astype(np.float32) / 255.0
 
     @app.post("/api/edit/redeye/detect")
     def redeye_detect(payload: RedeyeFindPayload) -> dict[str, Any]:
         """Human red-eye, found automatically. Eyes are located geometrically
         first, so a red jumper or a brake light is never looked at."""
         _require_loaded()
-        return {"corrections": redeye_mod.detect(_eye_frame(payload.rel_path))}
+        return {"corrections": redeye_mod.detect(_eye_frame(payload.rel_path, payload.edit))}
 
     @app.post("/api/edit/redeye/region")
     def redeye_region(payload: RedeyeRegionPayload) -> dict[str, Any]:
         """Verify and tighten a circle drawn over one eye, or say there is
         nothing there to fix. The only way in for pet eye."""
         _require_loaded()
-        found = redeye_mod.detect_in_region(_eye_frame(payload.rel_path), payload.cx,
+        found = redeye_mod.detect_in_region(_eye_frame(payload.rel_path, payload.edit), payload.cx,
                                             payload.cy, payload.r, payload.kind)
         return {"correction": found}
+
+    @app.post("/api/edit/upright")
+    def upright(payload: UprightPayload) -> dict[str, Any]:
+        """Estimate a perspective from the photo's own lines, once.
+
+        Returned as manual values with `upright` off, so the editor puts them on
+        the sliders and the edit stores numbers: resolving the request at every
+        render would re-measure on each size of the frame, and the preview and
+        the export could then disagree. Measured after the lens correction, since
+        distortion bends the lines this reads.
+
+        "level" is returned as a tilt, not a perspective rotate, as transform.py
+        advises: tilt crops back to the largest level rectangle rather than
+        needing a zoom.
+        """
+        _require_loaded()
+        if ctx.photo_index.get(payload.rel_path) is None:
+            raise HTTPException(status_code=404, detail="photo not found")
+        e = editing.normalize(payload.edit)
+        base = ctx.get_corrected_base(payload.rel_path, {"lens": e["lens"]})
+        est = transform_mod.estimate_upright(base, payload.mode)
+        if payload.mode == "level":
+            return {"tilt": round(float(est["rotate"]), 2), "transform": None,
+                    "found": abs(est["rotate"]) > 1e-3}
+        found = not transform_mod.is_neutral({**est, "scale": 100.0})
+        return {"tilt": None, "transform": transform_mod.normalize(est), "found": found}
 
     @app.post("/api/edit")
     def save_edit(payload: EditSavePayload) -> dict[str, Any]:
@@ -2255,7 +2338,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         _require_loaded()
         if ctx.photo_index.get(payload.rel_path) is None:
             raise HTTPException(status_code=404, detail="photo not found")
-        base = ctx.get_decoded_base(payload.rel_path)
+        # Corrected, because (x, y) are fractions of the corrected frame; the
+        # lens and perspective move pixels, the grade is still left out.
+        base = ctx.get_corrected_base(payload.rel_path, payload.edit)
         wb = editing.neutral_wb(base, payload.x, payload.y)
         if wb is None:
             raise HTTPException(

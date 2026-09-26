@@ -863,6 +863,32 @@
             </div>
           </details>
 
+          <details class="edit-group" id="edit-optics-group">
+            <summary>Lens &amp; perspective <span id="optics-summary-state"></span></summary>
+            <div class="edit-group-body">
+              <p class="hsl-note">
+                Corrections for what the lens and the camera angle did, applied
+                before everything else. Masks and repairs are placed on the
+                corrected picture, so set these first.
+              </p>
+              <div class="optics-sub">Upright</div>
+              <div class="optics-upright" id="optics-upright">
+                <button type="button" data-upright="level" title="Level the horizon (sets Straighten)">Level</button>
+                <button type="button" data-upright="vertical" title="Level, then make leaning verticals vertical">Vertical</button>
+                <button type="button" data-upright="full" title="Level, and straighten both verticals and horizontals">Full</button>
+                <button type="button" data-upright="auto" title="Full, held back so the result does not look staged">Auto</button>
+              </div>
+              <div id="optics-transform-fields"></div>
+              <div class="optics-sub">Lens</div>
+              <label class="optics-check" title="Estimate the colour fringing from the photo itself">
+                <input type="checkbox" id="lens-ca-auto" /> Remove colour fringing automatically
+              </label>
+              <div id="optics-lens-fields"></div>
+              <button class="hsl-reset" id="optics-reset" type="button">Reset lens &amp; perspective</button>
+              <p class="hsl-note" id="optics-status"></p>
+            </div>
+          </details>
+
           <details class="edit-group" id="edit-look-group">
             <summary>Look <span id="look-summary-state"></span></summary>
             <div class="edit-group-body">

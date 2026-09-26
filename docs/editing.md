@@ -128,6 +128,33 @@ Two stages that fix the captured image rather than interpret it, and they run
 - Press `\` to see the selection. For a shape carrying a refinement the tint is
   the shape *narrowed* to the selection, which is what actually gets graded.
 
+## Lens and perspective
+
+- **Applied first, to the frame as shot**, as Lightroom's Lens Corrections and
+  Transform panels are. Masks, repairs, the white-balance picker and red-eye
+  are all placed on the corrected picture, which is the one on screen, so set
+  these before the rest.
+- **Lens**: **distortion** (+ straightens barrel, − pincushion), **colour
+  fringing**, by hand as red/cyan and blue/yellow or estimated from the photo,
+  and **vignetting** with its midpoint. This vignetting is the correction that
+  makes a flat wall come out flat. The creative vignette under Effects is a
+  separate thing, applied last. Distortion and fringing share one resampling
+  pass, and the frame keeps its size: correcting barrel drops the outermost
+  ring, and pincushion is scaled to fit rather than leaving black corners.
+- **Upright** reads the photo's own lines. **Level** straightens the horizon,
+  and it does so through **Straighten**, which crops to the largest level
+  rectangle instead of needing a zoom. **Vertical** also makes leaning verticals
+  vertical. **Full** straightens horizontals too. **Auto** is Full held back so
+  it does not look staged. The modes replace one another, and each is measured
+  once when you press it and put on the sliders (vertical and horizontal
+  keystone, rotate, aspect, scale, offset), so what you see is numbers you can
+  adjust, and the preview and the export cannot disagree. A photo with no strong
+  lines gets no correction, which is the right answer for fog.
+- **What it costs**: with both a lens correction and a perspective set, the
+  frame is resampled once for each, and again if it is straightened. Folding
+  the perspective into the straighten would save a pass but put masks in
+  uncorrected coordinates, where the editor could not draw them.
+
 ## Crop and straighten
 
 - **Crop & straighten**: drag a box on the photo, or lock it to Free / Original /

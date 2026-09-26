@@ -132,7 +132,8 @@ const EDIT_NEUTRAL = (() => {
   // tonal. Mirrors editing.DEFAULT_EDIT.
   const e = { masks: [], watermark: null,
               film: null, hsl: null, grading: null, lut: null,
-              healing: null, redeye: null, tilt: 0, crop: null };
+              healing: null, redeye: null, lens: null, transform: null,
+              tilt: 0, crop: null };
   for (const c of CURVE_CHANNELS) e[c.k] = CURVE_IDENTITY.map((p) => p.slice());
   // Not every slider is neutral at zero: sharpen_radius sits in the middle,
   // mirroring editing.DEFAULT_EDIT. Anything else here would make a freshly
@@ -168,6 +169,8 @@ function mergeNeutralEdit(edit) {
     ? { ops: edit.healing.ops.map((o) => JSON.parse(JSON.stringify(o))) } : null;
   e.redeye = (edit && edit.redeye && (edit.redeye.corrections || []).length)
     ? { enabled: true, corrections: edit.redeye.corrections.map((c) => ({ ...c })) } : null;
+  e.lens = (edit && edit.lens) ? { ...edit.lens } : null;
+  e.transform = (edit && edit.transform) ? { ...edit.transform } : null;
   if (edit) for (const f of EDIT_FIELDS) if (edit[f.k] != null) e[f.k] = edit[f.k];
   return e;
 }
@@ -188,7 +191,15 @@ function editsEqual(a, b) {
   if (canonLut(a.lut) !== canonLut(b.lut)) return false;
   if (JSON.stringify(a.healing || null) !== JSON.stringify(b.healing || null)) return false;
   if (JSON.stringify(a.redeye || null) !== JSON.stringify(b.redeye || null)) return false;
+  if (canonOptic(a.lens, LENS_DEFAULT) !== canonOptic(b.lens, LENS_DEFAULT)) return false;
+  if (canonOptic(a.transform, TRANSFORM_DEFAULT) !== canonOptic(b.transform, TRANSFORM_DEFAULT)) return false;
   return canonMasks(a.masks) === canonMasks(b.masks);
+}
+// Mirrors lens.normalize and transform.normalize: at its defaults a panel is no
+// correction, whatever object is holding the numbers.
+function canonOptic(o, defaults) {
+  if (!o || opticIsNeutral(o, defaults)) return "";
+  return JSON.stringify(Object.keys(defaults).sort().map((k) => o[k] ?? defaults[k]));
 }
 // Mirrors editing.normalize_lut_ref: a look at zero amount is no look.
 function canonLut(l) {
@@ -2323,6 +2334,7 @@ function openEditModal(absIdx) {
   repairState.cloneSrc = null;
   renderLookPanel();
   renderRepairPanel();
+  renderOpticsPanel();
   loadWatermarkInfo(photo.rel_path);
   selectMask(-1, { silent: true });
   setEditTool(null);
@@ -2618,6 +2630,7 @@ function refreshEditUi() {
   renderCurveChannels();
   renderLookPanel();
   renderRepairPanel();
+  renderOpticsPanel();
   syncEditSliders();
   drawCurve();
   drawOverlay();
@@ -2644,6 +2657,7 @@ function resetEdit() {
     renderCurveChannels();
     renderLookPanel();
     renderRepairPanel();
+    renderOpticsPanel();
   }
   syncEditSliders();
   drawCurve();
@@ -2664,7 +2678,7 @@ async function pickNeutral(f) {
     const res = await fetch("/api/edit/neutral", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rel_path: editSession.relPath, x: f.x, y: f.y }),
+      body: JSON.stringify({ rel_path: editSession.relPath, x: f.x, y: f.y, edit: opticsPayload() }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -3012,6 +3026,151 @@ function buildFilmFields() {
   });
 }
 
+// ---------- lens & perspective ----------
+// Mirrors lens.DEFAULT_LENS and transform.DEFAULT_TRANSFORM. Both are applied
+// before anything else, and every position in the edit is a fraction of the
+// frame they produce, which is the frame on screen.
+const LENS_DEFAULT = { distortion: 0, ca_red_cyan: 0, ca_blue_yellow: 0, ca_auto: false,
+                       vignette_amount: 0, vignette_midpoint: 50 };
+const TRANSFORM_DEFAULT = { vertical: 0, horizontal: 0, rotate: 0, aspect: 0, scale: 100,
+                            offset_x: 0, offset_y: 0, upright: "off" };
+const LENS_FIELDS = [
+  { k: "distortion", label: "Distortion", min: -100, max: 100, step: 1, fmt: 0,
+    hint: "+ straightens barrel distortion, − straightens pincushion" },
+  { k: "ca_red_cyan", label: "Red / cyan", min: -100, max: 100, step: 1, fmt: 0,
+    hint: "Removes red or cyan fringes along edges towards the corners" },
+  { k: "ca_blue_yellow", label: "Blue / yellow", min: -100, max: 100, step: 1, fmt: 0,
+    hint: "Removes blue or yellow fringes along edges towards the corners" },
+  { k: "vignette_amount", label: "Vignetting", min: -100, max: 100, step: 1, fmt: 0,
+    hint: "+ brightens corners the lens left dark" },
+  { k: "vignette_midpoint", label: "Midpoint", min: 0, max: 100, step: 1, fmt: 0,
+    hint: "How far in from the corners the falloff reaches" },
+];
+const TRANSFORM_FIELDS = [
+  { k: "vertical", label: "Vertical", min: -100, max: 100, step: 0.5, fmt: 1,
+    hint: "Keystone: + widens the top, for buildings that lean back" },
+  { k: "horizontal", label: "Horizontal", min: -100, max: 100, step: 0.5, fmt: 1,
+    hint: "Keystone: + widens the left" },
+  { k: "rotate", label: "Rotate", min: -45, max: 45, step: 0.1, fmt: 1,
+    hint: "Rotation inside the perspective. To straighten a horizon, use Straighten" },
+  { k: "aspect", label: "Aspect", min: -100, max: 100, step: 1, fmt: 0,
+    hint: "Undoes the stretch a keystone leaves: + wider, − taller" },
+  { k: "scale", label: "Scale", min: 10, max: 200, step: 1, fmt: 0,
+    hint: "Zoom, to push the blank edges a perspective leaves out of the frame" },
+  { k: "offset_x", label: "Offset X", min: -100, max: 100, step: 1, fmt: 0 },
+  { k: "offset_y", label: "Offset Y", min: -100, max: 100, step: 1, fmt: 0 },
+];
+const opticsState = { built: false };
+
+function opticIsNeutral(o, defaults) {
+  return Object.keys(defaults).every((k) => k === "vignette_midpoint" || k === "upright"
+    || (o[k] ?? defaults[k]) === defaults[k]) && (!o.upright || o.upright === "off");
+}
+
+function opticsPayload() {
+  return { lens: editSession.edit.lens, transform: editSession.edit.transform };
+}
+
+function buildOpticsFields() {
+  if (opticsState.built) return;
+  const row = (group, f) => `<label class="look-row"${f.hint ? ` title="${escapeHtml(f.hint)}"` : ""}>`
+    + `<span class="look-name">${f.label}</span>`
+    + `<input type="range" data-optic="${group}:${f.k}" min="${f.min}" max="${f.max}" step="${f.step}" />`
+    + `<span class="look-val" data-optic-val="${group}:${f.k}"></span></label>`;
+  $("#optics-lens-fields").innerHTML = LENS_FIELDS.map((f) => row("lens", f)).join("");
+  $("#optics-transform-fields").innerHTML = TRANSFORM_FIELDS.map((f) => row("transform", f)).join("");
+  opticsState.built = true;
+}
+
+function renderOpticsPanel() {
+  if (!$("#optics-lens-fields") || !editSession.edit) return;
+  buildOpticsFields();
+  const lens = { ...LENS_DEFAULT, ...(editSession.edit.lens || {}) };
+  const tf = { ...TRANSFORM_DEFAULT, ...(editSession.edit.transform || {}) };
+  for (const [group, fields, vals] of [["lens", LENS_FIELDS, lens], ["transform", TRANSFORM_FIELDS, tf]]) {
+    for (const f of fields) {
+      $(`[data-optic="${group}:${f.k}"]`).value = vals[f.k];
+      $(`[data-optic-val="${group}:${f.k}"]`).textContent = Number(vals[f.k]).toFixed(f.fmt);
+    }
+  }
+  $("#lens-ca-auto").checked = !!lens.ca_auto;
+  const on = [editSession.edit.lens && "lens", editSession.edit.transform && "perspective"].filter(Boolean);
+  $("#optics-summary-state").textContent = on.length ? `· ${on.join(" + ")}` : "";
+}
+
+// Write one value, and drop the whole block back to null once it is at its
+// defaults, so an untouched panel never makes a photo count as edited.
+function setOptic(group, key, value) {
+  const defaults = group === "lens" ? LENS_DEFAULT : TRANSFORM_DEFAULT;
+  const next = { ...defaults, ...(editSession.edit[group] || {}), [key]: value };
+  editSession.edit[group] = opticIsNeutral(next, defaults) ? null : next;
+}
+
+async function applyUpright(mode) {
+  const status = $("#optics-status");
+  status.textContent = "reading the lines in the photo…";
+  const res = await fetch("/api/edit/upright", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rel_path: editSession.relPath, mode, edit: opticsPayload() }),
+  });
+  if (!res.ok) { status.textContent = `upright failed: ${res.status}`; return; }
+  const d = await res.json();
+  if (!d.found) {
+    status.textContent = "No lines strong enough to straighten by. Set it by hand below.";
+    return;
+  }
+  // The modes replace one another, as Lightroom's do. Each one measures the
+  // roll afresh from the uncorrected lines, so keeping the last mode's rotation
+  // (or a Level's tilt) alongside a new one would turn the photo twice.
+  if (d.tilt !== null) {
+    // Level is a straighten, which crops to the largest level rectangle
+    // instead of needing a zoom (see transform.py).
+    editSession.edit.tilt = d.tilt;
+    editSession.edit.transform = null;
+    status.textContent = `levelled by ${d.tilt.toFixed(1)}° with Straighten`;
+  } else {
+    editSession.edit.transform = d.transform;
+    editSession.edit.tilt = 0;
+    status.textContent = "applied; the sliders below show what it did";
+  }
+  syncCropControls();
+  renderOpticsPanel();
+  setEditDirty();
+  drawOverlay();
+  fetchEditPreview(true);
+}
+
+function bindOpticsPanel() {
+  const body = $("#edit-optics-group");
+  body.addEventListener("input", (e) => {
+    const sl = e.target.closest("[data-optic]");
+    if (!sl) return;
+    const [group, key] = sl.dataset.optic.split(":");
+    setOptic(group, key, parseFloat(sl.value));
+    const f = (group === "lens" ? LENS_FIELDS : TRANSFORM_FIELDS).find((x) => x.k === key);
+    $(`[data-optic-val="${group}:${key}"]`).textContent = Number(sl.value).toFixed(f.fmt);
+    setEditDirty();
+    previewDuringDrag();
+  });
+  $("#lens-ca-auto").addEventListener("change", (e) => {
+    setOptic("lens", "ca_auto", e.target.checked);
+    renderOpticsPanel();
+    setEditDirty();
+    fetchEditPreview(true);
+  });
+  $$("#optics-upright [data-upright]").forEach((b) =>
+    b.addEventListener("click", () => applyUpright(b.dataset.upright)));
+  $("#optics-reset").addEventListener("click", () => {
+    editSession.edit.lens = null;
+    editSession.edit.transform = null;
+    $("#optics-status").textContent = "";
+    renderOpticsPanel();
+    setEditDirty();
+    drawOverlay();
+    fetchEditPreview(true);
+  });
+}
+
 // ---------- repairs: spot, heal, clone, red eye ----------
 // Stored as the server normalizes them, in original-frame fractions: healing
 // is {ops: [...]} and red-eye {enabled, corrections: [...]}, each null when
@@ -3119,7 +3278,8 @@ async function repairUp(d) {
   status.textContent = "checking the eye…";
   const res = await fetch("/api/edit/redeye/region", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rel_path: editSession.relPath, cx: d.start.x, cy: d.start.y, r, kind: d.eyeKind }),
+    body: JSON.stringify({ rel_path: editSession.relPath, cx: d.start.x, cy: d.start.y, r,
+                           kind: d.eyeKind, edit: opticsPayload() }),
   });
   const { correction } = await res.json();
   if (!correction) {
@@ -3140,7 +3300,7 @@ async function findRedEyes() {
   status.textContent = "looking for eyes…";
   const res = await fetch("/api/edit/redeye/detect", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rel_path: editSession.relPath }),
+    body: JSON.stringify({ rel_path: editSession.relPath, edit: opticsPayload() }),
   });
   if (!res.ok) { status.textContent = `red-eye search failed: ${res.status}`; return; }
   const { corrections } = await res.json();
@@ -5272,6 +5432,7 @@ function slotLoad(i) {
   renderCurveChannels();
   renderLookPanel();
   renderRepairPanel();
+  renderOpticsPanel();
   syncEditSliders();
   drawCurve();
   drawOverlay();
@@ -5357,6 +5518,8 @@ function mergeAdditive(base, overlay) {
   if (over.crop) out.crop = { ...over.crop };
   if (over.film) out.film = { ...over.film };
   if (over.lut) out.lut = { ...over.lut };
+  if (over.lens) out.lens = { ...over.lens };
+  if (over.transform) out.transform = { ...over.transform };
   // Appended, as editing.merge_additive does: dust sits in the same place on
   // every frame a body shoots, so a preset of spots is meant to add to a photo.
   if (over.healing) out.healing = { ops: [...(out.healing ? out.healing.ops : []), ...over.healing.ops] };
@@ -5408,6 +5571,7 @@ async function applyPreset(id) {
   renderCurveChannels();
   renderLookPanel();
   renderRepairPanel();
+  renderOpticsPanel();
   syncEditSliders();
   drawCurve();
   drawOverlay();
@@ -6045,6 +6209,7 @@ function bindUi() {
   bindEditControls();
   bindLookPanel();
   bindRepairPanel();
+  bindOpticsPanel();
   bindMaskUi();
   bindSlots();
   bindWatermarkUi();

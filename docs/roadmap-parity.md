@@ -111,8 +111,17 @@ existing pipeline and the existing mask system with no architectural change.
   because the new operator clamps every pixel into the range of luma around it
   and the old one overshot freely. `sharpen` keeps its name and scale so saved
   edits load unchanged; what they render to improves and does change.
-- Lens corrections — chromatic aberration, manual distortion, manual vignetting
-- Transform / Upright — `AI Perspective Correction Tool`, auto-level and manual
+- ~~Lens corrections — chromatic aberration, manual distortion, manual
+  vignetting~~ `done`, and
+- ~~Transform / Upright — `AI Perspective Correction Tool`, auto-level and
+  manual~~ `done`, as the editor's **Lens & perspective** panel. Both run
+  first (`editing.apply_optics`), on the whole frame, and the corrected frame
+  is the frame every stored position refers to, so the editor's affine
+  original-to-display transform is unchanged. The server caches corrected
+  frames by `editing.optics_key` and cuts 1:1 windows from the corrected
+  full-size frame. Upright is resolved once, on request, into manual values
+  (`POST /api/edit/upright`); Level is returned as a tilt, as transform.py
+  advises.
 - ~~Colour range and luminance range masks~~ `done` for luminance, as both a
   `range` mask kind and a refinement every kind can carry (so it composes with
   an automatic mask). Measured on the whole ungraded frame at a fixed grid, for
