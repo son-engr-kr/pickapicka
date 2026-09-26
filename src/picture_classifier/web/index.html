@@ -897,6 +897,35 @@
             </div>
           </details>
 
+          <details class="edit-group" id="edit-repair-group">
+            <summary>Heal &amp; red eye <span id="repair-summary-state"></span></summary>
+            <div class="edit-group-body">
+              <div class="repair-tools">
+                <button type="button" data-repair-tool="spot" title="Click a dust spot or a blemish">Spot</button>
+                <button type="button" data-repair-tool="heal" title="Paint over something to fill it in from around it">Heal</button>
+                <button type="button" data-repair-tool="clone" title="Alt-click where to copy from, then paint">Clone</button>
+              </div>
+              <label class="look-row"><span class="look-name">Size</span>
+                <input type="range" id="repair-size" min="1" max="150" step="1" />
+                <span class="look-val" id="repair-size-val"></span></label>
+              <p class="hsl-note">
+                Heal fills in from the edges: right for dust, spots, a stray hair
+                or a wire against the sky, but it smears texture like fabric,
+                grass or hair. Use Clone there, which copies real texture from a
+                place you choose. Runs before every other adjustment.
+              </p>
+              <div class="repair-list" id="repair-list"></div>
+              <div class="repair-sub">Red eye</div>
+              <div class="repair-tools">
+                <button type="button" id="redeye-auto" title="Find people's red eyes automatically">Find red eyes</button>
+                <button type="button" data-repair-tool="redeye" title="Drag from the pupil's centre to the edge of the iris">Fix an eye</button>
+                <button type="button" data-repair-tool="peteye" title="Drag from the centre of a pet's eye to the edge of the glow">Pet eye</button>
+              </div>
+              <div class="repair-list" id="redeye-list"></div>
+              <p class="hsl-note" id="repair-status"></p>
+            </div>
+          </details>
+
           <div class="mask-context" id="mask-context">Global adjustments</div>
           <details class="edit-group" open>
             <summary>Light</summary>

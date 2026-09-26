@@ -141,8 +141,8 @@ existing pipeline and the existing mask system with no architectural change.
   the reference as edited and the source as shot, and offers frames from the
   same scene only.
 - Dehaze's inverse presets: `Vintage Filter`, `Cinematic Filters`
-- ~~Red Eye Remover, pet eye~~ `done` in the pipeline; **no UI yet** — placing a
-  correction needs a click on the preview. 153 ms at 24 MP. Detection gates on
+- ~~Red Eye Remover, pet eye~~ `done`, pipeline and UI (the **Heal & red eye**
+  panel: automatic for people, a dragged circle per eye for people and pets). 153 ms at 24 MP. Detection gates on
   geometry before colour, which is what stops it firing on a red jumper.
 - Change Color of Image, Image Color Inverter, Double Exposure, Glitch Effect
 - ~~Image Resizer~~ `done`, as the export's long-edge setting, with JPEG
@@ -153,8 +153,8 @@ existing pipeline and the existing mask system with no architectural change.
   profile. Export sharpening and colour space selection remain. The second
   needs colour management, which the pipeline does not have: it never
   converts colour, it only labels it.
-- ~~Brush healing — the manual half of Batch 6~~ `done` in the pipeline; **no UI
-  yet** — drawing a heal needs the brush interaction. 331 ms at 24 MP for a spot,
+- ~~Brush healing — the manual half of Batch 6~~ `done`, pipeline and UI (spot,
+  heal and clone in the **Heal & red eye** panel). 331 ms at 24 MP for a spot,
   nearly all of which is the two full-frame float conversions rather than the
   heal; converting only the touched bounding boxes would remove most of it and is
   not worth the complexity until it shows up in use. Runs before the grade, and a

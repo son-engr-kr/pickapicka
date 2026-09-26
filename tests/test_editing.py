@@ -418,6 +418,21 @@ def test_roi_brush_strokes_land_in_the_window() -> None:
 
 # ----- additive preset merge ----------------------------------------------
 
+def test_merge_additive_appends_repairs() -> None:
+    """Heals and red-eye fixes from a preset are added to the photo's own. The
+    red-eye half used to raise a KeyError: it was read as "ops"."""
+    spot = {"kind": "spot", "points": [[0.3, 0.3]], "radius": 0.01}
+    eye = {"kind": "red", "cx": 0.5, "cy": 0.4, "r": 0.02}
+    base = {"healing": {"ops": [spot]},
+            "redeye": {"enabled": True, "corrections": [eye]}}
+    over = {"healing": {"ops": [{**spot, "points": [[0.6, 0.6]]}]},
+            "redeye": {"enabled": True, "corrections": [{**eye, "cx": 0.6}]}}
+    out = editing.merge_additive(base, over)
+    assert len(out["healing"]["ops"]) == 2
+    assert [c["cx"] for c in out["redeye"]["corrections"]] == [0.5, 0.6]
+    assert editing.merge_additive({}, {"redeye": base["redeye"]})["redeye"]["enabled"]
+
+
 def test_merge_keeps_the_base_where_the_overlay_is_neutral() -> None:
     """A mask-only preset must not flatten the grade already on the photo."""
     base = {"exposure": 0.5, "contrast": 20, "temp": -15}

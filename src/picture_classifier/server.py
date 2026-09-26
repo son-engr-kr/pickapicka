@@ -28,7 +28,8 @@ from pydantic import BaseModel
 
 from . import (
     cameras, db, editing, exifinfo, exporting, film as film_mod, folderinfo, hdr,
-    lut as lut_mod, metadata as metadata_mod, presets as presets_mod, raw, relink, scenes, segment as segment_mod,
+    lut as lut_mod, metadata as metadata_mod, presets as presets_mod,
+    redeye as redeye_mod, raw, relink, scenes, segment as segment_mod,
     userstate, watermark as watermark_mod,
 )
 from .scoring import objects as objects_mod
@@ -230,6 +231,18 @@ class LutMatchPayload(BaseModel):
 
 class LutKeyPayload(BaseModel):
     key: str
+
+
+class RedeyeFindPayload(BaseModel):
+    rel_path: str
+
+
+class RedeyeRegionPayload(BaseModel):
+    rel_path: str
+    cx: float          # fractions of the original frame
+    cy: float
+    r: float           # a fraction of the frame width
+    kind: Literal["red", "pet"] = "red"
 
 
 class QuitPayload(BaseModel):
@@ -2127,6 +2140,31 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         copy, so nothing already edited changes."""
         userstate.delete_lut(payload.key)
         return {"luts": userstate.list_luts()}
+
+    # ----- red eye ----------------------------------------------------
+    # Both measure the photo as shot: red-eye is a repair to the capture and
+    # runs before any grading, so the grade must not be what it looks at.
+
+    def _eye_frame(rel: str) -> np.ndarray:
+        if ctx.photo_index.get(rel) is None:
+            raise HTTPException(status_code=404, detail="photo not found")
+        return ctx.get_decoded_base(rel).astype(np.float32) / 255.0
+
+    @app.post("/api/edit/redeye/detect")
+    def redeye_detect(payload: RedeyeFindPayload) -> dict[str, Any]:
+        """Human red-eye, found automatically. Eyes are located geometrically
+        first, so a red jumper or a brake light is never looked at."""
+        _require_loaded()
+        return {"corrections": redeye_mod.detect(_eye_frame(payload.rel_path))}
+
+    @app.post("/api/edit/redeye/region")
+    def redeye_region(payload: RedeyeRegionPayload) -> dict[str, Any]:
+        """Verify and tighten a circle drawn over one eye, or say there is
+        nothing there to fix. The only way in for pet eye."""
+        _require_loaded()
+        found = redeye_mod.detect_in_region(_eye_frame(payload.rel_path), payload.cx,
+                                            payload.cy, payload.r, payload.kind)
+        return {"correction": found}
 
     @app.post("/api/edit")
     def save_edit(payload: EditSavePayload) -> dict[str, Any]:

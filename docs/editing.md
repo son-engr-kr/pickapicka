@@ -44,9 +44,13 @@ Two stages that fix the captured image rather than interpret it, and they run
   crushed, so the repair has the grade baked into it and stops matching its
   surroundings the moment you move the curve again.
 
-- **Heal, clone and spot.** Spot is the one-click circular heal for dust and
-  blemishes; heal fills a region from what surrounds it; clone copies from a
-  place you pick, through a feathered edge.
+- **Heal, clone and spot**, in the editor's **Heal & red eye** panel. **Spot**
+  is one click on dust or a blemish; **Heal** is painted over what should go
+  and fills it from what surrounds it; **Clone** copies from a place you pick
+  (Alt-click, or the first click), through a feathered edge, and every stroke
+  reads from that same point. **Size** is the brush, `[` and `]` nudge it, and
+  each repair in the list can be switched off or removed. Opening the panel
+  shows every repair on the photo.
   - What this is good at, and what it is not, stated plainly: dust, sensor
     spots, lint, a blemish, a stray hair, a power line against a sky — excellent,
     indistinguishable in practice. Anything asked to reproduce *texture* —
@@ -65,6 +69,11 @@ Two stages that fix the captured image rather than interpret it, and they run
   gates on luminance instead, because a tapetum reflection is green or yellow or
   blown white and a red-channel test finds none of it, and it draws a synthetic
   catchlight back in because the real one was destroyed.
+  - **Find red eyes** looks for people's eyes automatically. **Fix an eye** and
+    **Pet eye** take one eye at a time: drag from the centre of the pupil out
+    to the edge of the iris (or of the glow, for a pet). The circle is verified
+    and tightened, not taken as drawn, so one much larger than the eye, or over
+    anything red that is not an eye, is refused.
   - The automatic detection finds *eyes* geometrically first and only then tests
     for redness. That ordering is the whole defence against the failure this
     feature is infamous for: a red jumper, red lipstick and a brake light are all

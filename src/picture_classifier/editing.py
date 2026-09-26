@@ -683,11 +683,16 @@ def merge_additive(base: dict[str, Any] | None,
     # Repairs are appended, like masks, and for a concrete reason: sensor dust
     # lands in the same place on every frame a body shoots, so "remove the dust
     # spots" is exactly the kind of thing a preset should carry across a shoot.
-    for key, mod in (("healing", healing_mod), ("redeye", redeye_mod)):
-        if over[key] is None:
-            continue
-        base_ops = list((out[key] or {}).get("ops", []))
-        out[key] = mod.normalize({"ops": base_ops + list(over[key]["ops"])})
+    # The two keep their lists under different names, "ops" and "corrections",
+    # and red-eye also needs switching on; this read "ops" for both and raised
+    # a KeyError for any preset carrying a red-eye fix.
+    if over["healing"] is not None:
+        ops = list((out["healing"] or {}).get("ops", [])) + list(over["healing"]["ops"])
+        out["healing"] = healing_mod.normalize({"ops": ops})
+    if over["redeye"] is not None:
+        fixes = (list((out["redeye"] or {}).get("corrections", []))
+                 + list(over["redeye"]["corrections"]))
+        out["redeye"] = redeye_mod.normalize({"enabled": True, "corrections": fixes})
     out["masks"] = (out["masks"] + over["masks"])[:MASK_MAX]
     return out
 

@@ -1797,3 +1797,20 @@ input[type="range"] { accent-color: var(--accent); }
 #look-status:empty { display: none; }
 #look-summary-state { color: var(--accent); font-weight: 500;
   text-transform: none; letter-spacing: 0; }
+
+/* ----- heal & red eye panel ----- */
+.repair-tools { display: flex; flex-wrap: wrap; gap: var(--s1); margin-bottom: var(--s2); }
+.repair-tools button.armed { background: var(--accent); border-color: var(--accent);
+  color: var(--accent-ink); }
+.repair-sub { margin: var(--s3) 0 var(--s2); font-size: var(--fs-xs); font-weight: 600;
+  letter-spacing: 0.8px; text-transform: uppercase; color: var(--ink-faint); }
+.repair-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: var(--s1); }
+.repair-list:empty { display: none; }
+.repair-item { display: flex; align-items: center; justify-content: space-between;
+  font-size: var(--fs-sm); padding: 1px 4px; border-radius: var(--r1); }
+.repair-item:hover { background: var(--raised); }
+.repair-item label { display: flex; align-items: center; gap: 6px; }
+.repair-item button { padding: 0 6px; }
+#repair-status:empty { display: none; }
+#repair-summary-state { color: var(--accent); font-weight: 500;
+  text-transform: none; letter-spacing: 0; }

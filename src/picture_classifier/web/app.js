@@ -131,7 +131,8 @@ const EDIT_NEUTRAL = (() => {
   // not a slider a mask could ever carry, and they are applied before anything
   // tonal. Mirrors editing.DEFAULT_EDIT.
   const e = { masks: [], watermark: null,
-              film: null, hsl: null, grading: null, lut: null, tilt: 0, crop: null };
+              film: null, hsl: null, grading: null, lut: null,
+              healing: null, redeye: null, tilt: 0, crop: null };
   for (const c of CURVE_CHANNELS) e[c.k] = CURVE_IDENTITY.map((p) => p.slice());
   // Not every slider is neutral at zero: sharpen_radius sits in the middle,
   // mirroring editing.DEFAULT_EDIT. Anything else here would make a freshly
@@ -161,6 +162,12 @@ function mergeNeutralEdit(edit) {
   e.hsl = cloneHsl(edit && edit.hsl);
   e.grading = cloneGrading(edit && edit.grading);
   e.lut = (edit && edit.lut) ? { ...edit.lut } : null;
+  // The repairs were not copied here at all, so opening a photo that had one
+  // and pressing Save wrote the edit back without it.
+  e.healing = (edit && edit.healing && (edit.healing.ops || []).length)
+    ? { ops: edit.healing.ops.map((o) => JSON.parse(JSON.stringify(o))) } : null;
+  e.redeye = (edit && edit.redeye && (edit.redeye.corrections || []).length)
+    ? { enabled: true, corrections: edit.redeye.corrections.map((c) => ({ ...c })) } : null;
   if (edit) for (const f of EDIT_FIELDS) if (edit[f.k] != null) e[f.k] = edit[f.k];
   return e;
 }
@@ -179,6 +186,8 @@ function editsEqual(a, b) {
   if (canonHsl(a.hsl) !== canonHsl(b.hsl)) return false;
   if (canonGrading(a.grading) !== canonGrading(b.grading)) return false;
   if (canonLut(a.lut) !== canonLut(b.lut)) return false;
+  if (JSON.stringify(a.healing || null) !== JSON.stringify(b.healing || null)) return false;
+  if (JSON.stringify(a.redeye || null) !== JSON.stringify(b.redeye || null)) return false;
   return canonMasks(a.masks) === canonMasks(b.masks);
 }
 // Mirrors editing.normalize_lut_ref: a look at zero amount is no look.
@@ -2311,7 +2320,9 @@ function openEditModal(absIdx) {
   renderGradePanel();
   renderCurveChannels();
   lookState.matching = false;
+  repairState.cloneSrc = null;
   renderLookPanel();
+  renderRepairPanel();
   loadWatermarkInfo(photo.rel_path);
   selectMask(-1, { silent: true });
   setEditTool(null);
@@ -2606,6 +2617,7 @@ function refreshEditUi() {
   renderGradePanel();
   renderCurveChannels();
   renderLookPanel();
+  renderRepairPanel();
   syncEditSliders();
   drawCurve();
   drawOverlay();
@@ -2631,6 +2643,7 @@ function resetEdit() {
     renderGradePanel();
     renderCurveChannels();
     renderLookPanel();
+    renderRepairPanel();
   }
   syncEditSliders();
   drawCurve();
@@ -2999,6 +3012,259 @@ function buildFilmFields() {
   });
 }
 
+// ---------- repairs: spot, heal, clone, red eye ----------
+// Stored as the server normalizes them, in original-frame fractions: healing
+// is {ops: [...]} and red-eye {enabled, corrections: [...]}, each null when
+// empty. A radius is a fraction of the frame WIDTH, as a brush stroke's is.
+const REPAIR_TOOLS = ["spot", "heal", "clone", "redeye", "peteye"];
+const REPAIR_LABELS = { spot: "Spot", heal: "Heal", clone: "Clone" };
+const repairState = { size: 20, cloneSrc: null };   // size in 1/1000 of the width
+const EYE_CLICK_RADIUS = 0.02;   // a click with no drag: an eye in a portrait
+
+function isRepairTool(t) { return REPAIR_TOOLS.includes(t); }
+function isRepairBrush(t) { return t === "spot" || t === "heal" || t === "clone"; }
+function healOps() { return (editSession.edit.healing && editSession.edit.healing.ops) || []; }
+function eyeFixes() { return (editSession.edit.redeye && editSession.edit.redeye.corrections) || []; }
+function setHealOps(ops) { editSession.edit.healing = ops.length ? { ops } : null; }
+function setEyeFixes(list) {
+  editSession.edit.redeye = list.length ? { enabled: true, corrections: list } : null;
+}
+function repairsShown() {
+  return isRepairTool(editSession.tool) || $("#edit-repair-group").open;
+}
+
+function repairChanged() {
+  renderRepairPanel();
+  setEditDirty();
+  drawOverlay();
+  fetchEditPreview(true);
+}
+
+function renderRepairPanel() {
+  if (!$("#repair-list") || !editSession.edit) return;
+  $("#repair-size").value = repairState.size;
+  $("#repair-size-val").textContent = repairState.size;
+  const ops = healOps(), fixes = eyeFixes();
+  $("#repair-list").innerHTML = ops.map((op, i) =>
+    `<div class="repair-item"><label><input type="checkbox" data-heal-on="${i}"`
+    + `${op.enabled === false ? "" : " checked"} /> ${REPAIR_LABELS[op.kind] || op.kind} ${i + 1}</label>`
+    + `<button type="button" class="quiet" data-heal-del="${i}" aria-label="Remove">×</button></div>`).join("");
+  $("#redeye-list").innerHTML = fixes.map((c, i) =>
+    `<div class="repair-item"><span>${c.kind === "pet" ? "Pet eye" : "Red eye"} ${i + 1}</span>`
+    + `<button type="button" class="quiet" data-eye-del="${i}" aria-label="Remove">×</button></div>`).join("");
+  const n = ops.length + fixes.length;
+  $("#repair-summary-state").textContent = n ? `· ${n}` : "";
+}
+
+function repairDown(e, f) {
+  const tool = editSession.tool;
+  const radius = repairState.size / 1000;
+  const base = { radius, feather: 50, opacity: 100, method: "ns", enabled: true };
+  e.preventDefault();
+  if (tool === "spot") {
+    setHealOps([...healOps(), { ...base, kind: "spot", points: [[f.x, f.y]] }]);
+    repairChanged();
+    return;
+  }
+  if (tool === "clone" && (e.altKey || !repairState.cloneSrc)) {
+    repairState.cloneSrc = { x: f.x, y: f.y };
+    setEditTool("clone");            // refreshes the hint for the next step
+    drawOverlay();
+    return;
+  }
+  if (tool === "heal" || tool === "clone") {
+    const op = { ...base, kind: tool, points: [[f.x, f.y]] };
+    // Non-aligned, as Photoshop's clone is by default: every stroke reads from
+    // the same source point, however far from the last one it starts.
+    if (tool === "clone") {
+      op.dx = repairState.cloneSrc.x - f.x;
+      op.dy = repairState.cloneSrc.y - f.y;
+    }
+    setHealOps([...healOps(), op]);
+    editSession.drag = { kind: "repair-paint", op };
+  } else {
+    editSession.drag = { kind: "eye", start: f, r: 0, eyeKind: tool === "peteye" ? "pet" : "red" };
+  }
+  $("#edit-overlay").setPointerCapture(e.pointerId);
+  drawOverlay();
+}
+
+// A drag's length as a fraction of the frame width, which is what a radius is.
+function widthFraction(a, b) {
+  const aspect = (editSession.natural.h || 1) / (editSession.natural.w || 1);
+  return Math.hypot(b.x - a.x, (b.y - a.y) * aspect);
+}
+
+function repairMove(e, f, d) {
+  if (d.kind === "eye") {
+    d.r = widthFraction(d.start, f);
+    scheduleOverlay();
+    return;
+  }
+  const pts = d.op.points;
+  const step = Math.max(0.002, d.op.radius * 0.33);
+  for (const q of pointerPath(e, f)) {
+    const last = pts[pts.length - 1];
+    if (Math.hypot(q.x - last[0], q.y - last[1]) >= step) pts.push([q.x, q.y]);
+  }
+  scheduleOverlay();
+  setEditDirty();
+  previewDuringDrag();
+}
+
+async function repairUp(d) {
+  if (d.kind === "repair-paint") { repairChanged(); return; }
+  const status = $("#repair-status");
+  const r = d.r < 0.004 ? EYE_CLICK_RADIUS : d.r;
+  status.textContent = "checking the eye…";
+  const res = await fetch("/api/edit/redeye/region", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rel_path: editSession.relPath, cx: d.start.x, cy: d.start.y, r, kind: d.eyeKind }),
+  });
+  const { correction } = await res.json();
+  if (!correction) {
+    status.textContent = d.eyeKind === "pet"
+      ? "No eye glow found there. Drag from the centre of the eye to the edge of the glow."
+      : "No red pupil found there. Drag from the pupil's centre to the edge of the iris; "
+        + "a circle much larger than the eye is refused, and so is anything red that is not an eye.";
+    drawOverlay();
+    return;
+  }
+  status.textContent = "";
+  setEyeFixes([...eyeFixes(), correction]);
+  repairChanged();
+}
+
+async function findRedEyes() {
+  const status = $("#repair-status");
+  status.textContent = "looking for eyes…";
+  const res = await fetch("/api/edit/redeye/detect", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rel_path: editSession.relPath }),
+  });
+  if (!res.ok) { status.textContent = `red-eye search failed: ${res.status}`; return; }
+  const { corrections } = await res.json();
+  // Skip what is already fixed, so pressing it twice does not double up.
+  const have = eyeFixes();
+  const fresh = corrections.filter((c) =>
+    !have.some((h) => Math.hypot(h.cx - c.cx, h.cy - c.cy) < Math.max(h.r, c.r)));
+  status.textContent = fresh.length
+    ? `fixed ${fresh.length} red eye${fresh.length === 1 ? "" : "s"}`
+    : corrections.length ? "those eyes are already fixed"
+    : "No red eyes found. Faces need to be fairly large and facing the camera; "
+      + "you can still fix an eye by hand.";
+  if (fresh.length) { setEyeFixes([...have, ...fresh]); repairChanged(); }
+}
+
+function drawRepairs(ctx, mr) {
+  const px = (x) => fx2px(mr, x), py = (y) => fy2px(mr, y);
+  const path = (pts, ox = 0, oy = 0) => {
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(px(x + ox), py(y + oy)) : ctx.moveTo(px(x + ox), py(y + oy))));
+    if (pts.length === 1) ctx.lineTo(px(pts[0][0] + ox) + 0.01, py(pts[0][1] + oy));
+  };
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (const op of healOps()) {
+    const on = op.enabled !== false;
+    const rad = op.radius * mr.w;
+    // A translucent band as wide as the brush, then a thin line down its middle.
+    ctx.lineWidth = rad * 2;
+    ctx.strokeStyle = on ? "rgba(255,255,255,0.16)" : "rgba(255,255,255,0.06)";
+    path(op.points);
+    ctx.stroke();
+    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = on ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.35)";
+    if (op.kind === "spot") {
+      ctx.beginPath();
+      ctx.arc(px(op.points[0][0]), py(op.points[0][1]), rad, 0, Math.PI * 2);
+    } else {
+      path(op.points);
+    }
+    ctx.stroke();
+    if (op.kind === "clone") {
+      // Where it copies from: the same path, dashed, and a line joining the two.
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = on ? "rgba(122,167,255,0.9)" : "rgba(122,167,255,0.35)";
+      path(op.points, op.dx, op.dy);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(px(op.points[0][0] + op.dx), py(op.points[0][1] + op.dy));
+      ctx.lineTo(px(op.points[0][0]), py(op.points[0][1]));
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+  for (const c of eyeFixes()) {
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = c.kind === "pet" ? "rgba(255,209,102,0.9)" : "rgba(255,120,120,0.9)";
+    ctx.beginPath();
+    ctx.arc(px(c.cx), py(c.cy), c.r * mr.w, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  const d = editSession.drag;
+  if (d && d.kind === "eye") {
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = "#ffffff";
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.arc(px(d.start.x), py(d.start.y), Math.max(d.r, 0.002) * mr.w, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  if (editSession.tool === "clone" && repairState.cloneSrc) {
+    const x = px(repairState.cloneSrc.x), y = py(repairState.cloneSrc.y);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "#7aa7ff";
+    ctx.beginPath();
+    ctx.moveTo(x - 8, y); ctx.lineTo(x + 8, y); ctx.moveTo(x, y - 8); ctx.lineTo(x, y + 8);
+    ctx.stroke();
+  }
+  // The brush ring is the cursor for the three painting tools, as for masks.
+  if (isRepairBrush(editSession.tool) && editSession.hover) {
+    const x = px(editSession.hover.x), y = py(editSession.hover.y);
+    const rad = repairState.size / 1000 * mr.w;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.55)";
+    ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = "#ffffff";
+    ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function bindRepairPanel() {
+  $$("#edit-repair-group [data-repair-tool]").forEach((b) => b.addEventListener("click", () => {
+    const tool = b.dataset.repairTool;
+    // A mask selected under a repair tool would draw its handles over the work.
+    if (editSession.tool !== tool) selectMask(-1, { silent: true });
+    setEditTool(editSession.tool === tool ? null : tool);
+    drawOverlay();
+  }));
+  $("#repair-size").addEventListener("input", (e) => {
+    repairState.size = parseInt(e.target.value, 10);
+    $("#repair-size-val").textContent = repairState.size;
+    drawOverlay();
+  });
+  $("#redeye-auto").addEventListener("click", findRedEyes);
+  $("#repair-list").addEventListener("click", (e) => {
+    const del = e.target.closest("[data-heal-del]");
+    if (del) { setHealOps(healOps().filter((_, i) => i !== Number(del.dataset.healDel))); repairChanged(); }
+  });
+  $("#repair-list").addEventListener("change", (e) => {
+    const on = e.target.closest("[data-heal-on]");
+    if (on) { healOps()[Number(on.dataset.healOn)].enabled = on.checked; repairChanged(); }
+  });
+  $("#redeye-list").addEventListener("click", (e) => {
+    const del = e.target.closest("[data-eye-del]");
+    if (del) { setEyeFixes(eyeFixes().filter((_, i) => i !== Number(del.dataset.eyeDel))); repairChanged(); }
+  });
+  // Opening or closing the panel shows or hides the markers on the photo.
+  $("#edit-repair-group").addEventListener("toggle", drawOverlay);
+}
+
 // ---------- looks (colour LUTs) ----------
 // The library is app-global and lists name and key only; the table stays on
 // the server. The edit stores {key, name, amount}.
@@ -3008,6 +3274,7 @@ async function loadLooks() {
   const res = await fetch("/api/luts", { cache: "no-store" });
   lookState.luts = res.ok ? (await res.json()).luts : [];
   renderLookPanel();
+  renderRepairPanel();
 }
 
 function renderLookPanel() {
@@ -3327,9 +3594,12 @@ function setEditTool(tool) {
   $$("#edit-modal .mask-add-btn[data-add-mask]").forEach((b) =>
     b.classList.toggle("armed", b.dataset.addMask === tool));
   $("#wb-pick").classList.toggle("armed", tool === "wb");
+  $$("#edit-repair-group [data-repair-tool]").forEach((b) =>
+    b.classList.toggle("armed", b.dataset.repairTool === tool));
   const wrap = $(".edit-canvas-wrap");
-  wrap.classList.toggle("tool-place", tool === "radial" || tool === "linear");
-  wrap.classList.toggle("tool-brush", tool === "brush");
+  wrap.classList.toggle("tool-place", tool === "radial" || tool === "linear"
+    || tool === "redeye" || tool === "peteye");
+  wrap.classList.toggle("tool-brush", tool === "brush" || isRepairBrush(tool));
   wrap.classList.toggle("tool-crop", tool === "crop");
   wrap.classList.toggle("tool-wb", tool === "wb");
   const text = tool === "radial" ? "Drag on the photo to place the ellipse"
@@ -3337,6 +3607,12 @@ function setEditTool(tool) {
     : tool === "brush" ? "Paint over the area · Alt = erase · [ ] = brush size"
     : tool === "crop" ? "Drag the box or its corners · press Crop again when done"
     : tool === "wb" ? "Click something that should be grey — a white wall, a grey card, a white shirt"
+    : tool === "spot" ? "Click a dust spot or blemish · [ ] = size"
+    : tool === "heal" ? "Paint over what should go; it fills from around it · [ ] = size"
+    : tool === "clone" ? (repairState.cloneSrc ? "Paint where the copy goes · Alt-click to pick a new source"
+                                               : "Alt-click (or click) where to copy from")
+    : tool === "redeye" ? "Drag from the centre of the pupil out to the edge of the iris"
+    : tool === "peteye" ? "Drag from the centre of the eye out to the edge of the glow"
     : "";
   const hint = $("#edit-tool-hint");
   hint.textContent = text;
@@ -3867,6 +4143,11 @@ function drawOverlay() {
   // is the space masks are stored and graded in.
   const mr = maskRect(r);
   const turned = !maskXformIsIdentity();
+  if (repairsShown()) {
+    if (turned) { ctx.save(); applyMaskXform(ctx, r, mr); }
+    drawRepairs(ctx, mr);
+    if (turned) ctx.restore();
+  }
   if (editSession.showMask && !m) {
     for (const other of (editSession.edit.masks || [])) {
       if (!other.enabled) continue;
@@ -4391,6 +4672,10 @@ function overlayDown(e) {
     e.preventDefault();
     return;
   }
+  if (isRepairTool(editSession.tool) && !panButton) {
+    repairDown(e, f0);
+    return;
+  }
   if (editSession.tool === "crop" && !panButton) {
     // A crop box is measured against what is on screen, not against the original
     // frame the masks use, so this branch has its own coordinates.
@@ -4490,7 +4775,7 @@ function overlayMove(e) {
   }
   if (!d) {
     const cv = $("#edit-overlay");
-    if (m && m.type === "brush" && editSession.tool === "brush") {
+    if ((m && m.type === "brush" && editSession.tool === "brush") || isRepairBrush(editSession.tool)) {
       cv.style.cursor = "none";
       scheduleOverlay();           // the brush ring follows the pointer
     } else if (editSession.tool) {
@@ -4504,6 +4789,10 @@ function overlayMove(e) {
   if (d.kind === "pan") {
     panBy(f.x - d.last.x, f.y - d.last.y);
     return;   // `last` stays put: the delta is measured against the grab point
+  }
+  if (d.kind === "repair-paint" || d.kind === "eye") {
+    repairMove(e, f, d);
+    return;
   }
   if (!m) return;
   const aspect = r.h ? r.w / r.h : 1;
@@ -4602,6 +4891,13 @@ function overlayUp(e) {
     }
     fetchEditPreview(true);
     fetchOriginalPreview();
+    return;
+  }
+  if (d.kind === "repair-paint" || d.kind === "eye") {
+    if (e && e.pointerId != null) {
+      try { $("#edit-overlay").releasePointerCapture(e.pointerId); } catch { /* gone */ }
+    }
+    repairUp(d);
     return;
   }
   const m = activeMask();
@@ -4805,6 +5101,12 @@ function setBrushErase(on) {
 }
 
 function nudgeBrushSize(delta) {
+  if (isRepairBrush(editSession.tool)) {
+    repairState.size = Math.max(1, Math.min(150, repairState.size + Math.sign(delta) * 2));
+    renderRepairPanel();
+    drawOverlay();
+    return;
+  }
   const sl = $("#mask-brush-size");
   editSession.brush.size = Math.max(5, Math.min(300, editSession.brush.size + delta));
   sl.value = editSession.brush.size;
@@ -4969,6 +5271,7 @@ function slotLoad(i) {
   renderGradePanel();
   renderCurveChannels();
   renderLookPanel();
+  renderRepairPanel();
   syncEditSliders();
   drawCurve();
   drawOverlay();
@@ -5054,6 +5357,13 @@ function mergeAdditive(base, overlay) {
   if (over.crop) out.crop = { ...over.crop };
   if (over.film) out.film = { ...over.film };
   if (over.lut) out.lut = { ...over.lut };
+  // Appended, as editing.merge_additive does: dust sits in the same place on
+  // every frame a body shoots, so a preset of spots is meant to add to a photo.
+  if (over.healing) out.healing = { ops: [...(out.healing ? out.healing.ops : []), ...over.healing.ops] };
+  if (over.redeye) {
+    out.redeye = { enabled: true,
+                   corrections: [...(out.redeye ? out.redeye.corrections : []), ...over.redeye.corrections] };
+  }
   if (over.hsl) {
     const merged = cloneHsl(out.hsl) || {};
     for (const [band, vals] of Object.entries(over.hsl)) merged[band] = { ...(merged[band] || {}), ...vals };
@@ -5097,6 +5407,7 @@ async function applyPreset(id) {
   renderGradePanel();
   renderCurveChannels();
   renderLookPanel();
+  renderRepairPanel();
   syncEditSliders();
   drawCurve();
   drawOverlay();
@@ -5733,6 +6044,7 @@ function bindUi() {
   renderEditControls();
   bindEditControls();
   bindLookPanel();
+  bindRepairPanel();
   bindMaskUi();
   bindSlots();
   bindWatermarkUi();
