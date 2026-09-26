@@ -1466,6 +1466,15 @@ async function decideAt(absIdx, decision) {
 }
 
 // ---------- export picks ----------
+// Tokens a file-name template can use, with what each turns into. The server
+// checks the template too; this list is only what the chips offer.
+const EXPORT_TOKENS = [
+  ["name", "original name"], ["seq", "001, 002…"], ["date", "capture date"],
+  ["time", "capture time"], ["scene", "scene"], ["project", "project"],
+];
+const EXPORT_EXT = { jpeg: ".jpg", tiff: ".tif" };
+const exportUi = { pollTimer: null, nameTimer: null };
+
 async function openExportModal() {
   const res = await fetch("/api/export/picks/preview");
   if (!res.ok) {
@@ -1476,25 +1485,125 @@ async function openExportModal() {
   $("#export-count").textContent = `${info.count} photo${info.count === 1 ? "" : "s"}`;
   $("#export-target").value = info.default_target;
   setOptionCardValue("#export-mode-cards", "folder");
+  applyExportSettings(info.settings);
   $("#export-status").textContent = "";
+  $("#export-progress").classList.add("hidden");
   $("#export-confirm").disabled = info.count === 0;
+  setBtnLabel($("#export-cancel"), "Cancel");
   $("#export-modal").classList.remove("hidden");
+  // An export started earlier may still be running, if the dialog was closed
+  // on it; show that rather than a fresh form.
+  const st = await (await fetch("/api/export/status")).json();
+  if (st.running) followExport();
 }
 
 function closeExportModal() {
   $("#export-modal").classList.add("hidden");
 }
 
+function applyExportSettings(st) {
+  $$("#export-format button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.format === st.format));
+  $("#export-quality").value = st.quality;
+  const size = st.long_edge == null ? "" : String(st.long_edge);
+  const preset = [...$("#export-size").options].some((o) => o.value === size);
+  $("#export-size").value = preset ? size : "custom";
+  $("#export-size-custom").value = preset ? "" : size;
+  $("#export-name").value = st.name_template;
+  $("#export-metadata").value = st.metadata;
+  syncExportForm();
+  previewExportName();
+}
+
+function exportFormat() {
+  return $("#export-format button.active")?.dataset.format || "jpeg";
+}
+
+function syncExportForm() {
+  const fmt = exportFormat();
+  $("#export-quality-row").classList.toggle("hidden", fmt !== "jpeg");
+  $("#export-quality-val").textContent = $("#export-quality").value;
+  $("#export-format-note").textContent = fmt === "tiff"
+    ? "Lossless and uncompressed, for printing and further editing: about 70 MB for 24 megapixels."
+    : "";
+  $("#export-size-custom").classList.toggle("hidden", $("#export-size").value !== "custom");
+}
+
+// The settings as the server wants them, or a string saying what is wrong.
+function readExportSettings() {
+  let longEdge = null;
+  const size = $("#export-size").value;
+  if (size === "custom") {
+    longEdge = parseInt($("#export-size-custom").value, 10);
+    if (!(longEdge >= 64 && longEdge <= 20000)) return "Enter a long edge between 64 and 20000 px.";
+  } else if (size) {
+    longEdge = parseInt(size, 10);
+  }
+  return {
+    format: exportFormat(),
+    quality: parseInt($("#export-quality").value, 10),
+    long_edge: longEdge,
+    metadata: $("#export-metadata").value,
+    name_template: $("#export-name").value,
+  };
+}
+
+// Show what the template names the first pick, after a pause in typing.
+function previewExportName() {
+  clearTimeout(exportUi.nameTimer);
+  exportUi.nameTimer = setTimeout(async () => {
+    const out = $("#export-name-example");
+    const res = await fetch("/api/export/name-preview", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ template: $("#export-name").value }),
+    });
+    const d = await res.json();
+    out.classList.toggle("error", !res.ok);
+    if (!res.ok) { out.textContent = d.detail || "Invalid file name."; return; }
+    out.textContent = d.example ? `e.g. ${d.example}${EXPORT_EXT[exportFormat()]}` : "";
+  }, 250);
+}
+
+function insertExportToken(token) {
+  const input = $("#export-name");
+  const at = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? at;
+  const text = `{${token}}`;
+  input.value = input.value.slice(0, at) + text + input.value.slice(end);
+  input.focus();
+  input.setSelectionRange(at + text.length, at + text.length);
+  previewExportName();
+}
+
+function bindExportForm() {
+  $("#export-tokens").innerHTML = EXPORT_TOKENS.map(([t, what]) =>
+    `<button type="button" data-token="${t}" title="${escapeHtml(what)}">{${t}}</button>`).join("");
+  $$("#export-tokens button").forEach((b) =>
+    b.addEventListener("click", () => insertExportToken(b.dataset.token)));
+  $$("#export-format button").forEach((b) => b.addEventListener("click", () => {
+    $$("#export-format button").forEach((o) => o.classList.toggle("active", o === b));
+    syncExportForm();
+    previewExportName();
+  }));
+  $("#export-quality").addEventListener("input", syncExportForm);
+  $("#export-size").addEventListener("change", () => {
+    syncExportForm();
+    if ($("#export-size").value === "custom") $("#export-size-custom").focus();
+  });
+  $("#export-name").addEventListener("input", previewExportName);
+}
+
 async function confirmExport() {
   const target = $("#export-target").value.trim();
-  if (!target) { alert("Target folder is required."); return; }
+  if (!target) { $("#export-status").textContent = "Choose a target folder."; return; }
+  const settings = readExportSettings();
+  if (typeof settings === "string") { $("#export-status").textContent = settings; return; }
   const mode = getOptionCardValue("#export-mode-cards") || "folder";
   $("#export-confirm").disabled = true;
-  $("#export-status").textContent = "Copying…";
   const res = await fetch("/api/export/picks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target_dir: target, mode }),
+    body: JSON.stringify({ target_dir: target, mode, settings }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -1502,15 +1611,62 @@ async function confirmExport() {
     $("#export-confirm").disabled = false;
     return;
   }
-  const result = await res.json();
-  let html = `${icon("check")} Copied <b>${result.copied}</b> photos to<br><code>${result.target_dir}</code>`;
-  if (result.skipped) html += `<br>Skipped ${result.skipped} (missing source).`;
-  if (result.per_combo && Object.keys(result.per_combo).length) {
-    const sorted = Object.entries(result.per_combo).sort((a, b) => b[1] - a[1]);
+  followExport();
+}
+
+// The Cancel button stops a running export, and closes the dialog otherwise.
+async function exportCancelOrClose() {
+  const st = await (await fetch("/api/export/status")).json();
+  if (!st.running) { closeExportModal(); return; }
+  setBtnLabel($("#export-cancel"), "Stopping…");
+  await fetch("/api/export/cancel", { method: "POST" });
+}
+
+// Poll a running export into the progress bar. Closing the dialog does not
+// stop it; the toast says when it is done.
+function followExport() {
+  $("#export-progress").classList.remove("hidden");
+  $("#export-status").textContent = "";
+  $("#export-confirm").disabled = true;
+  setBtnLabel($("#export-cancel"), "Stop");
+  clearInterval(exportUi.pollTimer);
+  const tick = async () => {
+    const st = await (await fetch("/api/export/status")).json();
+    const pct = st.total ? (100 * st.idx) / st.total : 0;
+    $("#export-bar-fill").style.width = pct.toFixed(1) + "%";
+    $("#export-progress-text").textContent =
+      `${st.idx} of ${st.total}` + (st.current ? ` · ${basename(st.current)}` : "");
+    if (st.running) return;
+    clearInterval(exportUi.pollTimer);
+    exportUi.pollTimer = null;
+    finishExport(st);
+  };
+  tick();
+  exportUi.pollTimer = setInterval(tick, 400);
+}
+
+function finishExport(st) {
+  $("#export-progress").classList.add("hidden");
+  $("#export-confirm").disabled = false;
+  setBtnLabel($("#export-cancel"), "Close");
+  const status = $("#export-status");
+  if (st.error) {
+    status.textContent = "Export failed: " + st.error;
+    return;
+  }
+  const r = st.result;
+  const verb = r.cancelled ? "Stopped after" : "Exported";
+  let html = `${icon("check")} ${verb} <b>${r.copied}</b> photo${r.copied === 1 ? "" : "s"} to<br>`
+    + `<code>${escapeHtml(r.target_dir)}</code>`;
+  if (r.skipped) html += `<br>Skipped ${r.skipped} (missing source).`;
+  if (r.per_combo && Object.keys(r.per_combo).length) {
+    const sorted = Object.entries(r.per_combo).sort((a, b) => b[1] - a[1]);
     html += `<br><span class="combo-summary">${sorted.map(([k, v]) => `${escapeHtml(k)}: ${v}`).join(" · ")}</span>`;
   }
-  $("#export-status").innerHTML = html;
-  $("#export-confirm").disabled = false;
+  status.innerHTML = html;
+  if ($("#export-modal").classList.contains("hidden")) {
+    showDownloadToast(`${verb} ${r.copied} photo${r.copied === 1 ? "" : "s"}`, r.target_dir);
+  }
 }
 
 // ---------- bulk actions ----------
@@ -5066,6 +5222,12 @@ function bindKeys() {
           && !["checkbox", "radio", "range", "button", "submit", "color"].includes(type));
     if (textEntry && k !== "Escape") return;
 
+    // Export picks; Esc only, or R/V/A would decide photos behind the dialog.
+    if (!$("#export-modal").classList.contains("hidden")) {
+      if (k === "Escape") { closeExportModal(); e.preventDefault(); }
+      return;
+    }
+
     // The relink dialog (landing) — Esc only.
     if (!$("#relink-modal").classList.contains("hidden")) {
       if (k === "Escape") { closeRelinkModal(); e.preventDefault(); }
@@ -5279,8 +5441,9 @@ function bindUi() {
   $("#reject-undecided-btn").addEventListener("click", rejectUndecidedInScene);
   $("#export-picks-btn").addEventListener("click", openExportModal);
   $("#export-modal-close").addEventListener("click", closeExportModal);
-  $("#export-cancel").addEventListener("click", closeExportModal);
+  $("#export-cancel").addEventListener("click", exportCancelOrClose);
   $("#export-confirm").addEventListener("click", confirmExport);
+  bindExportForm();
   $$("#export-mode-cards .option-card").forEach((card) => {
     card.addEventListener("click", () => {
       setOptionCardValue("#export-mode-cards", card.dataset.value);

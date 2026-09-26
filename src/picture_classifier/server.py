@@ -16,7 +16,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, BinaryIO, Callable, Literal
 
 import cv2
 import numpy as np
@@ -27,8 +27,8 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel
 
 from . import (
-    cameras, db, editing, exifinfo, film as film_mod, folderinfo, hdr,
-    presets as presets_mod, raw, relink, scenes, segment as segment_mod,
+    cameras, db, editing, exifinfo, exporting, film as film_mod, folderinfo, hdr,
+    metadata as metadata_mod, presets as presets_mod, raw, relink, scenes, segment as segment_mod,
     userstate, watermark as watermark_mod,
 )
 from .scoring import objects as objects_mod
@@ -198,9 +198,24 @@ class SubjectGroupsPayload(BaseModel):
     groups: list[SubjectGroupUpdate]
 
 
+class ExportSettings(BaseModel):
+    """What an export writes. The defaults are what an export always was
+    (full-size JPEG at 95), now with its metadata kept."""
+    format: exporting.Format = "jpeg"
+    quality: int = 95
+    long_edge: int | None = None          # None: full size
+    metadata: metadata_mod.MetadataMode = "all"
+    name_template: str = "{name}"
+
+
 class ExportPayload(BaseModel):
     target_dir: str | None = None
     mode: Literal["folder", "flat", "by_person"] = "folder"
+    settings: ExportSettings = ExportSettings()
+
+
+class NamePreviewPayload(BaseModel):
+    template: str
 
 
 class OpenPayload(BaseModel):
@@ -302,6 +317,7 @@ class AppContext:
         self.scoring_state: dict[str, Any] = self._fresh_scoring_state()
         self.cluster_state: dict[str, Any] = self._fresh_cluster_state()
         self.opening_state: dict[str, Any] = self._fresh_opening_state()
+        self.export_state: dict[str, Any] = self._fresh_export_state()
 
     @staticmethod
     def _fresh_scoring_state() -> dict[str, Any]:
@@ -316,6 +332,14 @@ class AppContext:
     def _fresh_cluster_state() -> dict[str, Any]:
         return {"running": False, "phase": None, "idx": 0, "total": 0,
                 "started_at": None, "ended_at": None, "error": None}
+
+    @staticmethod
+    def _fresh_export_state() -> dict[str, Any]:
+        # `result` is filled when a run finishes, cancelled or not, so the dialog
+        # can say what was written either way.
+        return {"running": False, "idx": 0, "total": 0, "current": None,
+                "cancel": False, "error": None, "result": None,
+                "started_at": None, "ended_at": None}
 
     @staticmethod
     def _fresh_opening_state() -> dict[str, Any]:
@@ -689,12 +713,56 @@ def _build_peak(thumb: Path, dst: Path, ratio_min: float, grad_floor: float) -> 
     return dst
 
 
-def _baked_name(photo: dict[str, Any], rel: str) -> str:
-    """Output filename: RAW and edited photos come out as JPEG."""
-    name = Path(rel).name
-    if _needs_render(photo):
-        name = Path(name).stem + ".jpg"
-    return name
+def _check_export_settings(settings: ExportSettings) -> None:
+    """Refuse settings the writer would otherwise have to guess about."""
+    if not 50 <= settings.quality <= 100:
+        raise HTTPException(status_code=400, detail="JPEG quality must be 50 to 100")
+    if settings.long_edge is not None and not (
+            exporting.LONG_EDGE_MIN <= settings.long_edge <= exporting.LONG_EDGE_MAX):
+        raise HTTPException(
+            status_code=400,
+            detail=f"long edge must be {exporting.LONG_EDGE_MIN} to {exporting.LONG_EDGE_MAX} px")
+    try:
+        exporting.check_template(settings.name_template)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _copies_as_is(ctx: "AppContext", photo: dict[str, Any], rel: str,
+                  settings: ExportSettings) -> bool:
+    # A merged HDR result is an OpenCV-written JPEG with no metadata of its own,
+    # so it is always written fresh, carrying its 0 EV frame's.
+    needs = _needs_render(photo) or photo.get("type") == "hdr"
+    return exporting.can_copy(ctx.source_path(rel), needs_render=needs, settings=settings)
+
+
+def _baked_name(ctx: "AppContext", photo: dict[str, Any], rel: str,
+                settings: ExportSettings, stem: str | None = None) -> str:
+    """Output file name. A copied original keeps its own extension; anything
+    written fresh takes the export format's."""
+    stem = Path(rel).stem if stem is None else stem
+    if _copies_as_is(ctx, photo, rel, settings):
+        return stem + Path(rel).suffix
+    return stem + exporting.EXTENSIONS[settings.format]
+
+
+def _templated_stem(ctx: "AppContext", photo: dict[str, Any], rel: str,
+                    settings: ExportSettings, seq: int, width: int) -> str:
+    project = ctx.project_dir.name if ctx.project_dir else ctx.db_path.stem
+    stem = exporting.render_name(
+        settings.name_template, name=Path(rel).stem, seq=seq, width=width,
+        captured_at=ctx.photo_meta(rel).get("captured_at") or "",
+        scene=photo.get("scene") or "", project=project)
+    return _sanitize_segment(stem)
+
+
+def _metadata_source(ctx: "AppContext", photo: dict[str, Any], rel: str) -> tuple[Path, bool]:
+    """The file whose EXIF and colour profile an export carries, and whether
+    it is a RAW."""
+    if photo.get("type") == "hdr" and photo.get("base"):
+        assert ctx.jpeg_root is not None
+        return ctx.jpeg_root / photo["base"], False
+    return ctx.source_path(rel), photo.get("type") == "raw"
 
 
 def _needs_render(photo: dict[str, Any]) -> bool:
@@ -715,16 +783,106 @@ def _unique_name(parent: Path, base: str, seen: set[str]) -> str:
     return name
 
 
-def _bake_photo(ctx: "AppContext", photo: dict[str, Any], rel: str, dst: Path) -> None:
-    """Write one photo to `dst`, rendering it only when it has to be."""
-    if _needs_render(photo):
-        out = editing.render(ctx.decode_full(rel), photo.get("edit"),
-                             meta=ctx.photo_meta(rel),
-                             auto=ctx.auto_fields(rel, photo.get("edit")),
-                             src=ctx.range_src(rel, photo.get("edit")))
-        Image.fromarray(out).save(dst, "JPEG", quality=95)
-    else:
+def _bake_photo(ctx: "AppContext", photo: dict[str, Any], rel: str, dst: Path,
+                settings: ExportSettings) -> None:
+    """Write one photo to `dst`: the original copied when it already is the
+    export, otherwise rendered, resized and written with its metadata."""
+    if _copies_as_is(ctx, photo, rel, settings):
         shutil.copy2(ctx.source_path(rel), dst)
+        return
+    _bake_rendered(ctx, photo, rel, dst, settings)
+
+
+def _bake_rendered(ctx: "AppContext", photo: dict[str, Any], rel: str,
+                   dst: Path | BinaryIO, settings: ExportSettings) -> None:
+    """Render one photo and write it to `dst`, a path or an open buffer."""
+    edit = photo.get("edit")
+    out = editing.render(ctx.decode_full(rel), edit,
+                         meta=ctx.photo_meta(rel),
+                         auto=ctx.auto_fields(rel, edit),
+                         src=ctx.range_src(rel, edit))
+    out = exporting.resize(out, settings.long_edge)
+    src_path, is_raw = _metadata_source(ctx, photo, rel)
+    src_exif, icc = metadata_mod.read_source(src_path, is_raw)
+    exif = metadata_mod.build_exif(
+        src_exif, size=(out.shape[1], out.shape[0]),
+        captured_at=ctx.photo_meta(rel).get("captured_at") or "",
+        mode=settings.metadata, srgb=is_raw)
+    exporting.write(out, dst, fmt=settings.format, quality=settings.quality,
+                    exif=exif, icc=icc)
+
+
+def _export_picks_to(ctx: "AppContext", picks: list[dict[str, Any]], target: Path,
+                     mode: str, settings: ExportSettings) -> dict[str, Any]:
+    """Write `picks` under `target` in one of the three layouts. Runs on the
+    export thread; progress and cancellation go through ctx.export_state."""
+    state = ctx.export_state
+    people = ctx.data.get("people", []) or []
+    people_by_id = {p["id"]: p for p in people}
+    excluded_ids = {p["id"] for p in people if p.get("excluded")}
+    # Per-target-dir filename uniquifier (used in flat & by_person modes).
+    used_names: dict[Path, set[str]] = {}
+
+    def unique_in(parent: Path, base: str) -> str:
+        return _unique_name(parent, base, used_names.setdefault(parent, set()))
+
+    width = exporting.seq_width(len(picks))
+    copied: list[str] = []
+    skipped: list[str] = []
+    per_combo: dict[str, int] = {}
+    for seq, photo in enumerate(picks, start=1):
+        if state["cancel"]:
+            break
+        rel = photo["rel_path"]
+        state["idx"], state["current"] = seq - 1, rel
+        src = ctx.source_path(rel)
+        if not src.is_file():
+            skipped.append(rel)
+            continue
+        stem = _templated_stem(ctx, photo, rel, settings, seq, width)
+        out_name = _baked_name(ctx, photo, rel, settings, stem)
+        if mode == "by_person":
+            relevant_pids: list[str] = []
+            seen: set[str] = set()
+            for face in photo.get("faces") or []:
+                pid = face.get("person_id")
+                if not pid or pid in excluded_ids or pid in seen:
+                    continue
+                if pid not in people_by_id:
+                    continue
+                seen.add(pid)
+                relevant_pids.append(pid)
+            if not relevant_pids:
+                combo_label = "Others"
+            else:
+                relevant_pids.sort(key=lambda pid: (
+                    people_by_id[pid].get("priority", 999), pid
+                ))
+                combo_label = " & ".join(
+                    _sanitize_segment(people_by_id[pid].get("label", pid))
+                    for pid in relevant_pids
+                )
+            combo_dir = target / _sanitize_segment(combo_label)
+            combo_dir.mkdir(parents=True, exist_ok=True)
+            dst = combo_dir / unique_in(combo_dir, out_name)
+            per_combo[combo_label] = per_combo.get(combo_label, 0) + 1
+        elif mode == "flat":
+            dst = target / unique_in(target, out_name)
+        else:  # "folder"
+            dst = (target / rel).parent / out_name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+        _bake_photo(ctx, photo, rel, dst, settings)
+        copied.append(rel)
+        state["idx"] = seq
+    return {
+        "target_dir": str(target),
+        "copied": len(copied),
+        "skipped": len(skipped),
+        "missing": skipped,
+        "cancelled": bool(state["cancel"]),
+        "mode": mode,
+        "per_combo": per_combo,
+    }
 
 
 def _render_roi(ctx: "AppContext", payload: EditPreviewPayload) -> np.ndarray:
@@ -1225,7 +1383,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
 
     @app.post("/api/close")
     def close_project() -> dict[str, Any]:
-        if ctx.scoring_state["running"] or ctx.cluster_state["running"] or ctx.opening_state["running"]:
+        if (ctx.scoring_state["running"] or ctx.cluster_state["running"]
+                or ctx.opening_state["running"] or ctx.export_state["running"]):
             raise HTTPException(status_code=409, detail="another task is running")
         ctx.close()
         return {"ready": False}
@@ -1393,7 +1552,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
 
     def _claim_open_lock() -> None:
         with ctx.score_lock:
-            if ctx.opening_state["running"] or ctx.scoring_state["running"] or ctx.cluster_state["running"]:
+            if (ctx.opening_state["running"] or ctx.scoring_state["running"]
+                    or ctx.cluster_state["running"] or ctx.export_state["running"]):
                 raise HTTPException(status_code=409, detail="another task is running")
             ctx.opening_state.update(
                 ctx._fresh_opening_state(),
@@ -2188,86 +2348,83 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         _require_loaded()
         picks = [p for p in ctx.data["photos"] if p.get("decision") == "pick"]
         default_target = ctx.db_path.parent / f"{ctx.db_path.stem}.picks"
-        return {"count": len(picks), "default_target": str(default_target)}
+        return {"count": len(picks), "default_target": str(default_target),
+                "settings": ExportSettings(**userstate.get_export_settings()).model_dump()}
+
+    @app.post("/api/export/name-preview")
+    def export_name_preview(payload: NamePreviewPayload) -> dict[str, Any]:
+        """What the template names the first pick, so the dialog can show an
+        example while it is being typed."""
+        _require_loaded()
+        settings = ExportSettings(name_template=payload.template)
+        try:
+            exporting.check_template(settings.name_template)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        picks = [p for p in ctx.data["photos"] if p.get("decision") == "pick"]
+        photo = (picks or ctx.data["photos"] or [None])[0]
+        if photo is None:
+            return {"example": None}
+        width = exporting.seq_width(len(picks))
+        stem = _templated_stem(ctx, photo, photo["rel_path"], settings, 1, width)
+        return {"example": stem}
 
     @app.post("/api/export/picks")
     def export_picks(payload: ExportPayload | None = None) -> dict[str, Any]:
+        """Start writing every PICK to a folder. Rendering a few hundred full-size
+        frames takes minutes, so it runs in the background and reports through
+        /api/export/status."""
         _require_loaded()
+        payload = payload or ExportPayload()
+        settings = payload.settings
+        _check_export_settings(settings)
         target = (
             Path(payload.target_dir).expanduser()
-            if payload and payload.target_dir
+            if payload.target_dir
             else ctx.db_path.parent / f"{ctx.db_path.stem}.picks"
         )
+        if not target.is_absolute():
+            raise HTTPException(status_code=400, detail="the target folder must be a full path")
         target = target.resolve()
-        target.mkdir(parents=True, exist_ok=True)
-        mode = payload.mode if payload else "folder"
-        picks = [p for p in ctx.data["photos"] if p.get("decision") == "pick"]
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=f"cannot use that folder: {exc}") from exc
+        userstate.set_export_settings(settings.model_dump())
+        # Nothing between claiming the run and starting its thread may fail, or
+        # the run would stay marked as running with nothing behind it.
+        with ctx.score_lock:
+            if (ctx.export_state["running"] or ctx.scoring_state["running"]
+                    or ctx.cluster_state["running"] or ctx.opening_state["running"]):
+                raise HTTPException(status_code=409, detail="another task is running")
+            picks = [p for p in ctx.data["photos"] if p.get("decision") == "pick"]
+            ctx.export_state.update(ctx._fresh_export_state(), running=True,
+                                    total=len(picks), started_at=datetime.now().isoformat())
 
-        people = ctx.data.get("people", []) or []
-        people_by_id = {p["id"]: p for p in people}
-        excluded_ids = {p["id"] for p in people if p.get("excluded")}
+        def runner() -> None:
+            try:
+                ctx.export_state["result"] = _export_picks_to(
+                    ctx, picks, target, payload.mode, settings)
+            except Exception as exc:
+                traceback.print_exception(type(exc), exc, exc.__traceback__)
+                ctx.export_state["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                ctx.export_state["running"] = False
+                ctx.export_state["current"] = None
+                ctx.export_state["ended_at"] = datetime.now().isoformat()
 
-        # Per-target-dir filename uniquifier (used in flat & by_person modes).
-        used_names: dict[Path, set[str]] = {}
+        threading.Thread(target=runner, daemon=True).start()
+        return {"started": True, "total": len(picks), "target_dir": str(target)}
 
-        def unique_in(parent: Path, base: str) -> str:
-            return _unique_name(parent, base, used_names.setdefault(parent, set()))
+    @app.get("/api/export/status")
+    def export_status() -> dict[str, Any]:
+        return ctx.export_state
 
-        copied: list[str] = []
-        skipped: list[str] = []
-        per_combo: dict[str, int] = {}
-
-        for photo in picks:
-            rel = photo["rel_path"]
-            src = ctx.source_path(rel)
-            if not src.is_file():
-                skipped.append(rel)
-                continue
-
-            out_name = _baked_name(photo, rel)
-
-            if mode == "by_person":
-                relevant_pids: list[str] = []
-                seen: set[str] = set()
-                for face in photo.get("faces") or []:
-                    pid = face.get("person_id")
-                    if not pid or pid in excluded_ids or pid in seen:
-                        continue
-                    if pid not in people_by_id:
-                        continue
-                    seen.add(pid)
-                    relevant_pids.append(pid)
-                if not relevant_pids:
-                    combo_label = "Others"
-                else:
-                    relevant_pids.sort(key=lambda pid: (
-                        people_by_id[pid].get("priority", 999), pid
-                    ))
-                    combo_label = " & ".join(
-                        _sanitize_segment(people_by_id[pid].get("label", pid))
-                        for pid in relevant_pids
-                    )
-                combo_dir = target / _sanitize_segment(combo_label)
-                combo_dir.mkdir(parents=True, exist_ok=True)
-                dst = combo_dir / unique_in(combo_dir, out_name)
-                per_combo[combo_label] = per_combo.get(combo_label, 0) + 1
-            elif mode == "flat":
-                dst = target / unique_in(target, out_name)
-            else:  # "folder"
-                dst = (target / rel).parent / out_name
-                dst.parent.mkdir(parents=True, exist_ok=True)
-
-            _bake_photo(ctx, photo, rel, dst)
-            copied.append(rel)
-
-        return {
-            "target_dir": str(target),
-            "copied": len(copied),
-            "skipped": len(skipped),
-            "missing": skipped,
-            "mode": mode,
-            "per_combo": per_combo,
-        }
+    @app.post("/api/export/cancel")
+    def export_cancel() -> dict[str, Any]:
+        """Stop after the photo being written now; what is done stays done."""
+        ctx.export_state["cancel"] = True
+        return ctx.export_state
 
     @app.post("/api/download")
     def download_selection(payload: DownloadPayload) -> dict[str, Any]:
@@ -2304,6 +2461,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                 n += 1
             target.mkdir(parents=True)
 
+        # One click, so no choices: full size and all metadata, as a JPEG.
+        settings = ExportSettings()
         used: set[str] = set()
         saved: list[str] = []
         missing: list[str] = []
@@ -2312,8 +2471,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             if photo is None or not ctx.source_path(rel).is_file():
                 missing.append(rel)
                 continue
-            dst = target / _unique_name(target, _baked_name(photo, rel), used)
-            _bake_photo(ctx, photo, rel, dst)
+            dst = target / _unique_name(target, _baked_name(ctx, photo, rel, settings), used)
+            _bake_photo(ctx, photo, rel, dst, settings)
             saved.append(dst.name)
 
         return {"target_dir": str(target), "saved": len(saved),
@@ -2345,12 +2504,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         photo = ctx.photo_index.get(rel_path)
         if photo is None:
             raise HTTPException(status_code=404, detail="photo not found")
-        out = editing.render(ctx.decode_full(rel_path), photo.get("edit"),
-                             meta=ctx.photo_meta(rel_path),
-                             auto=ctx.auto_fields(rel_path, photo.get("edit")),
-                             src=ctx.range_src(rel_path, photo.get("edit")))
+        settings = ExportSettings()
         buf = io.BytesIO()
-        Image.fromarray(out).save(buf, "JPEG", quality=95)
+        _bake_rendered(ctx, photo, rel_path, buf, settings)
         fname = Path(rel_path).stem + ".jpg"
         return Response(
             content=buf.getvalue(), media_type="image/jpeg",

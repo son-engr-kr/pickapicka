@@ -1729,3 +1729,41 @@ input[type="range"] { accent-color: var(--accent); }
   .start-cards { grid-template-columns: 1fr; }
   .project-empty { grid-column: auto; }
 }
+
+/* =====================================================================
+   Export output options
+   The dialog grew from a folder and a layout to the whole output, so it
+   scrolls inside its own frame rather than off a short screen.
+   ===================================================================== */
+
+.export-box { max-height: 92vh; }
+.export-box .export-body { overflow-y: auto; min-height: 0; }
+.export-section { margin-top: var(--s2); padding-top: var(--s3);
+  border-top: 1px solid var(--line); font-size: var(--fs-xs); font-weight: 600;
+  letter-spacing: 0.8px; text-transform: uppercase; color: var(--ink-faint); }
+.export-row input[type="range"] { flex: 1; }
+.export-row input[type="number"] { width: 90px; }
+.export-row input.hidden, .export-row.hidden { display: none; }
+.export-val { width: 28px; text-align: right; font-family: var(--mono);
+  font-size: var(--fs-xs); color: var(--ink-dim); }
+.export-note { font-size: var(--fs-xs); color: var(--ink-faint); line-height: 1.5; }
+.export-note.error { color: var(--reject); }
+.export-copy-note { margin: 0; }
+.export-seg { display: inline-flex; flex-shrink: 0; background: var(--sunken);
+  border: 1px solid var(--line); border-radius: var(--r1); padding: 2px; gap: 2px; }
+.export-seg button { border: 0; background: transparent; padding: 3px 12px;
+  border-radius: 3px; color: var(--ink-dim); }
+.export-seg button.active { background: var(--accent); color: var(--accent-ink);
+  font-weight: 550; }
+/* Sub-rows hang under the field above them, so the gap between is tighter. */
+.export-row.export-sub { margin-top: calc(-1 * var(--s1)); }
+.export-tokens { display: flex; flex-wrap: wrap; gap: var(--s1); }
+.export-tokens button { font-family: var(--mono); font-size: var(--fs-xs);
+  padding: 2px 7px; border-radius: 999px; color: var(--ink-dim); }
+.export-progress { display: flex; flex-direction: column; gap: 6px; }
+.export-progress.hidden { display: none; }
+#export-bar-fill { height: 100%; background: var(--accent); width: 0%;
+  transition: width 0.2s; }
+#export-progress-text { font-family: var(--mono); font-size: var(--fs-xs);
+  color: var(--ink-dim); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }

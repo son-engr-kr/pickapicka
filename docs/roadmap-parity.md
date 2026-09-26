@@ -137,7 +137,14 @@ existing pipeline and the existing mask system with no architectural change.
   correction needs a click on the preview. 153 ms at 24 MP. Detection gates on
   geometry before colour, which is what stops it firing on a red jumper.
 - Change Color of Image, Image Color Inverter, Double Exposure, Glitch Effect
-- Image Resizer, export sharpening, colour space selection
+- ~~Image Resizer~~ `done`, as the export's long-edge setting, with JPEG
+  quality, uncompressed TIFF, file-name templates and a metadata choice
+  alongside it. Rendered exports used to be written without any EXIF; they now
+  carry a fixed list of standard tags rebuilt from the original (see
+  `metadata.py` for why not the whole block) and the original's colour
+  profile. Export sharpening and colour space selection remain. The second
+  needs colour management, which the pipeline does not have: it never
+  converts colour, it only labels it.
 - ~~Brush healing — the manual half of Batch 6~~ `done` in the pipeline; **no UI
   yet** — drawing a heal needs the brush interaction. 331 ms at 24 MP for a spot,
   nearly all of which is the two full-frame float conversions rather than the
@@ -288,7 +295,7 @@ either.
 Editing — the light and colour sliders, master tone curve, clarity, sharpen,
 vignette, crop and straighten, 16 local masks (radial, gradient, brush),
 defocus, motion, glow, mosaic, film emulation as a chain, EXIF watermarks,
-stacking presets, batch apply, JPEG/PNG/TIFF export, RAW decode for all major
+stacking presets, batch apply, JPEG export, RAW decode for all major
 formats. Covers Evoto's `RAW Photo Editor`, `RAW Converter`, `AI Image Cropper`,
 `AI Photo Straightener`, `Add Grain to Photo`, `Vignette Effect`,
 `AI Glow Effect`, `Photo Filters`, `Fix Overexposed Photos`, `Image Brightener`,

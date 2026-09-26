@@ -115,6 +115,23 @@ def delete_preset(preset_id: str) -> None:
     _save(data)
 
 
+# ----- export settings (app-global) ---------------------------------------
+# The last export's format, size, metadata and naming, so the dialog opens on
+# what was used before. Global rather than per project: how someone delivers
+# is a habit of theirs, not a property of one shoot. The target folder is not
+# kept, since that one is per project.
+
+def get_export_settings() -> dict[str, Any]:
+    """The last export's settings, or {} before the first export."""
+    return _load().get("export_settings", {})
+
+
+def set_export_settings(settings: dict[str, Any]) -> None:
+    data = _load()
+    data["export_settings"] = settings
+    _save(data)
+
+
 # ----- remembered view, per project ---------------------------------------
 # Which filter, layout and page a project was last left on, so reopening it puts
 # you back where you were instead of on page 1 of everything. A user preference

@@ -26,11 +26,28 @@ One key per frame, without leaving the keyboard — the full list is in the
 shortcut, so the list is not something you have to have memorised.
 
 - **Bulk actions**: reject all undecided in a scene; export all picks to a
-  folder (preserving structure or flattened).
+  folder (preserving structure, flattened, or one folder per combination of
+  people).
+- **Export options**: JPEG at a chosen quality, or uncompressed TIFF for
+  print; full size or a long edge (4K, 2048 px, 1080 px or your own); file
+  names from a template (`{name}` `{seq}` `{date}` `{time}` `{scene}`
+  `{project}`); and metadata kept whole, kept without location, or left out.
+  The export runs in the background with a progress bar and can be stopped,
+  and the dialog opens on the settings used last.
+- **Metadata survives the export.** Camera, lens, exposure, capture time,
+  copyright and GPS are carried into every rendered file. Orientation is reset
+  because the pixels are already upright, and the size is the exported size.
+  The camera's private MakerNote and the embedded thumbnail are left out: the
+  first cannot be relocated safely and can push the EXIF past a JPEG's 64 KB
+  limit, and the second would show the unedited frame. The colour profile is
+  the original's (sRGB for RAW); a file that had none gets none. A photo with
+  no edits, exported as a full-size JPEG with all its metadata, is copied byte
+  for byte instead.
 - **Download the selection** (`D`): saves the selected photos straight to your
   Downloads folder — no dialog. Edits are baked and RAW is rendered, so what
-  lands there is the photo as you graded it. One photo goes in loose, several
-  go into a dated subfolder; nothing already there is ever overwritten.
+  lands there is the photo as you graded it, as a full-size JPEG with its
+  metadata. One photo goes in loose, several go into a dated subfolder; nothing
+  already there is ever overwritten.
 
 ## Filtering and picking up where you left off
 

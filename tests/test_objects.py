@@ -391,21 +391,35 @@ def test_download_never_overwrites(tmp_path) -> None:
 
 def test_only_raw_and_edited_photos_are_re_encoded() -> None:
     """A plain JPEG is byte-copied: re-encoding it would lose quality for nothing."""
-    from picture_classifier.server import _baked_name, _needs_render
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from picture_classifier.server import ExportSettings, _baked_name, _needs_render
+    ctx = SimpleNamespace(source_path=lambda rel: Path(rel))
+    default = ExportSettings()
     plain = {"rel_path": "a/DSC01.jpg"}
     assert not _needs_render(plain)
-    assert _baked_name(plain, "a/DSC01.jpg") == "DSC01.jpg"
+    assert _baked_name(ctx, plain, "a/DSC01.jpg", default) == "DSC01.jpg"
 
     edited = {"rel_path": "a/DSC01.jpg", "edit": {"exposure": 0.5}}
     assert _needs_render(edited)
-    assert _baked_name(edited, "a/DSC01.jpg") == "DSC01.jpg"
+    assert _baked_name(ctx, edited, "a/DSC01.jpg", default) == "DSC01.jpg"
 
     raw = {"rel_path": "a/DSC01.ARW", "type": "raw"}
     assert _needs_render(raw)
-    assert _baked_name(raw, "a/DSC01.ARW") == "DSC01.jpg", "RAW has to come out as JPEG"
+    assert _baked_name(ctx, raw, "a/DSC01.ARW", default) == "DSC01.jpg", "RAW has to come out as JPEG"
 
     # An edit that does nothing is not a reason to re-encode.
     assert not _needs_render({"rel_path": "a.jpg", "edit": {"exposure": 0}})
+
+    # A copied original keeps its own extension, case and all; a format the
+    # original is not in means writing it fresh.
+    assert _baked_name(ctx, plain, "a/DSC01.JPG", default) == "DSC01.JPG"
+    tiff = ExportSettings(format="tiff")
+    assert _baked_name(ctx, plain, "a/DSC01.jpg", tiff) == "DSC01.tif"
+    # A merged HDR result carries its 0 EV frame's metadata, so it is never a copy.
+    merged = {"rel_path": "hdr::m.jpg", "type": "hdr", "base": "a/DSC02.jpg"}
+    assert _baked_name(ctx, merged, "hdr::m.jpg", default, stem="m") == "m.jpg"
 
 
 # ----- optional: the real model -------------------------------------------

@@ -396,8 +396,8 @@
       </header>
       <div class="export-body">
         <p class="export-hint">
-          Copies all photos marked <b>PICK</b> from the source folder to a target folder.
-          Originals are not modified.
+          Writes every photo marked <b>PICK</b> to a folder, with its edits
+          applied. Originals are never changed.
         </p>
         <div class="export-row">
           <label>Picks</label>
@@ -425,11 +425,68 @@
             </button>
           </div>
         </div>
+
+        <div class="export-section">Output</div>
+        <div class="export-row">
+          <label>Format</label>
+          <span class="export-seg" id="export-format">
+            <button type="button" data-format="jpeg">JPEG</button><button
+                    type="button" data-format="tiff">TIFF</button>
+          </span>
+          <span class="export-note" id="export-format-note"></span>
+        </div>
+        <div class="export-row" id="export-quality-row">
+          <label for="export-quality">Quality</label>
+          <input type="range" id="export-quality" min="50" max="100" step="1" />
+          <span class="export-val" id="export-quality-val"></span>
+        </div>
+        <div class="export-row">
+          <label for="export-size">Size</label>
+          <select id="export-size">
+            <option value="">Full size</option>
+            <option value="3840">Long edge 3840 px (4K screens)</option>
+            <option value="2048">Long edge 2048 px (web and sharing)</option>
+            <option value="1080">Long edge 1080 px (social media)</option>
+            <option value="custom">Custom…</option>
+          </select>
+          <input type="number" id="export-size-custom" class="hidden" min="64" max="20000"
+                 step="1" placeholder="px" aria-label="Long edge in pixels" />
+          <span class="export-note">Never enlarged.</span>
+        </div>
+        <div class="export-row">
+          <label for="export-name">File names</label>
+          <input type="text" id="export-name" spellcheck="false" />
+        </div>
+        <div class="export-row export-sub">
+          <label></label>
+          <div class="export-tokens" id="export-tokens"></div>
+        </div>
+        <div class="export-row export-sub">
+          <label></label>
+          <span class="export-note" id="export-name-example"></span>
+        </div>
+        <div class="export-row">
+          <label for="export-metadata">Metadata</label>
+          <select id="export-metadata">
+            <option value="all">All: camera, lens, capture time and location</option>
+            <option value="no_location">All except location (GPS)</option>
+            <option value="none">None</option>
+          </select>
+        </div>
+        <p class="export-note export-copy-note">
+          A photo with no edits is copied as it is, untouched, when the settings
+          above would not change it (full-size JPEG with all metadata).
+        </p>
+
+        <div class="export-progress hidden" id="export-progress">
+          <div class="score-bar"><div id="export-bar-fill"></div></div>
+          <div id="export-progress-text"></div>
+        </div>
         <div id="export-status"></div>
       </div>
       <footer>
         <button id="export-cancel">Cancel</button>
-        <button id="export-confirm" class="primary">Copy</button>
+        <button id="export-confirm" class="primary">Export</button>
       </footer>
     </div>
   </div>
