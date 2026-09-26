@@ -73,7 +73,8 @@ rather than deletes.
 `L` loupe · `D` download the selection
 
 In the editor: `R` `G` `B` add a radial, gradient or brush mask · `\` show the
-mask · `Del` remove it · `C` hold the original · `F` fit ↔ 100%
+mask · `Del` remove it · `C` hold the original · `F` fit ↔ 100% ·
+`⌘Z` / `Ctrl+Z` undo · `⇧⌘Z` / `Ctrl+Y` redo
 
 Hovering any button shows what it does and its shortcut.
 

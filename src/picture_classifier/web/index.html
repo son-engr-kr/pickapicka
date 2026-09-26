@@ -10,6 +10,7 @@
   <div id="landing" class="hidden">
     <div class="landing-shell">
       <header class="landing-header">
+        <button type="button" class="quit-btn quiet" data-icon="power" title="Quit Picture Classifier">quit</button>
         <h1>Picture Classifier</h1>
         <p class="landing-tagline">Score your photos for blur, exposure, and faces — then cull &amp; edit fast.</p>
       </header>
@@ -269,7 +270,10 @@
           <span class="unit">minutes</span>
         </div>
       </div>
-      <button id="switch-project-btn" data-icon="swap" title="Open a different project">switch project</button>
+      <div class="sidebar-actions">
+        <button id="switch-project-btn" data-icon="swap" title="Open a different project">switch project</button>
+        <button type="button" class="quit-btn" data-icon="power" title="Quit Picture Classifier">quit</button>
+      </div>
     </header>
     <div id="filter-row">
       <button data-filter="all" class="filter active">all</button>
@@ -722,6 +726,8 @@
         </div>
         <div class="edit-controls">
           <div class="edit-actionbar">
+            <button id="edit-undo" data-icon="undo" title="Undo" aria-label="Undo" disabled></button>
+            <button id="edit-redo" data-icon="undo" class="redo" title="Redo" aria-label="Redo" disabled></button>
             <button id="edit-auto" class="primary" data-icon="wand" title="Auto-tone from the histogram">Auto</button>
             <button id="edit-reset"
                     title="Reset the selected mask, or — on Global — every adjustment and mask">Reset</button>
@@ -1166,6 +1172,15 @@
         <button id="relink-cancel" type="button">Cancel</button>
         <button id="relink-confirm" type="button" class="primary">Re-link &amp; open</button>
       </footer>
+    </div>
+  </div>
+
+  <!-- Shown once the server has stopped: the page cannot do anything after. -->
+  <div id="quit-screen" class="hidden">
+    <div class="quit-box">
+      <h2>Picture Classifier has quit</h2>
+      <p>You can close this tab. Your decisions and saved edits are kept, and
+      everything opens where you left it next time.</p>
     </div>
   </div>
 

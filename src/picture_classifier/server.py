@@ -218,6 +218,10 @@ class NamePreviewPayload(BaseModel):
     template: str
 
 
+class QuitPayload(BaseModel):
+    force: bool = False   # quit even with a task still running
+
+
 class OpenPayload(BaseModel):
     photo_dir: str
     jpeg_subdir: str = ""
@@ -1380,6 +1384,23 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                 "page": payload.page, "scene": payload.scene}
         userstate.set_view(_view_key(), view)
         return view
+
+    @app.post("/api/quit")
+    def quit_app(payload: QuitPayload | None = None) -> dict[str, Any]:
+        """Stop the server, which is the whole app: the page is only a view of
+        it. Without this, closing the tab left it running in the background,
+        and on Windows there was no console to close either."""
+        busy = [what for what, st in (
+            ("an export", ctx.export_state), ("scoring", ctx.scoring_state),
+            ("grouping", ctx.cluster_state), ("opening a project", ctx.opening_state),
+        ) if st["running"]]
+        if busy and not (payload and payload.force):
+            raise HTTPException(status_code=409, detail=" and ".join(busy) + " is still running")
+        server = getattr(app.state, "server", None)
+        assert server is not None, "quit needs the uvicorn server that serve() started"
+        # A beat later, so this response reaches the page before the socket goes.
+        threading.Timer(0.3, lambda: setattr(server, "should_exit", True)).start()
+        return {"quitting": True}
 
     @app.post("/api/close")
     def close_project() -> dict[str, Any]:
@@ -2743,4 +2764,7 @@ def serve(db_path: Path | None, host: str, port: int, open_browser: bool = False
             webbrowser.open(url)
 
         threading.Thread(target=_open, daemon=True).start()
-    uvicorn.run(app, host=host, port=actual_port, log_level="warning")
+    # A Server object rather than uvicorn.run, so /api/quit has something to stop.
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=actual_port, log_level="warning"))
+    app.state.server = server
+    server.run()

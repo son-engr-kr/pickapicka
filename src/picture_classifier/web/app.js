@@ -387,6 +387,7 @@ const ICONS = {
   pencil: "M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z",
   plus: "M12 5v14M5 12h14",
   undo: "M3 10h11a5 5 0 0 1 0 10H8M3 10l4-4M3 10l4 4",
+  power: "M12 2v10M18.36 6.64a9 9 0 1 1-12.73 0",
   trash: "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5",
   more: "M12 6.5h.01M12 12h.01M12 17.5h.01",
   left: "M15 18 9 12l6-6",
@@ -465,6 +466,10 @@ function hydrateIcons(root) {
 // were previously only discoverable from the one help strip at the bottom of
 // the viewer. One floating element serves every control: no per-button markup,
 // and nothing gets clipped by a scrolling panel the way a CSS ::after would.
+// Shortcut labels follow the platform: ⌘ on a Mac, Ctrl everywhere else.
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const MOD_KEY = IS_MAC ? "⌘" : "Ctrl+";
+
 const SHORTCUT_TIPS = {
   // grid + header
   "#prev-page": ["Previous page", "["],
@@ -492,6 +497,8 @@ const SHORTCUT_TIPS = {
   "#edit-compare": ["Hold to see the original", "C"],
   "#edit-save": ["Save this edit", "Enter"],
   "#edit-auto": ["Auto-tone from the histogram", null],
+  "#edit-undo": ["Undo", `${MOD_KEY}Z`],
+  "#edit-redo": ["Redo", IS_MAC ? "⇧⌘Z" : "Ctrl+Y"],
   "#edit-apply-more": ["Apply this edit to more photos", null],
   '[data-preset-mode="add"]': ["Lay the preset on top: its masks are added to yours", null],
   '[data-preset-mode="replace"]': ["Discard the current edit and use the preset alone", null],
@@ -1677,7 +1684,7 @@ async function rejectUndecidedInScene() {
   if (!targets.length) return;
   const ok = confirm(
     `Reject all ${targets.length} undecided photos in "${state.selectedScene}"?\n` +
-    `Use the Undo toast (or ⌘Z) to revert.`
+    `Use the Undo toast (or ${MOD_KEY}Z) to revert.`
   );
   if (!ok) return;
   const sceneLabel = state.selectedScene;
@@ -2302,6 +2309,7 @@ function openEditModal(absIdx) {
   setEditTool(null);
   syncEditSliders();
   drawCurve();
+  resetEditHistory();
   setEditDirty();
   $("#edit-modal").classList.remove("hidden");
   resizeOverlay();
@@ -2380,7 +2388,9 @@ function syncEditValues() {
 function setEditDirty() {
   // Every change funnels through here, which makes it the one place the slot
   // marker can be kept true without a render per slider frame: markSlot only
-  // touches the DOM when the answer actually changes.
+  // touches the DOM when the answer actually changes. It is the one place the
+  // undo history can see every change for the same reason.
+  recordEditHistory();
   markSlot();
   const dirty = !editsEqual(editSession.edit, editSession.baseline);
   $("#edit-save").disabled = !dirty;
@@ -2517,6 +2527,83 @@ function editCompareOff() {
 
 // Reset is context-aware: it clears the selected mask's sliders, or — with no
 // mask selected — the whole edit including every mask.
+// ---------- edit history (undo / redo) ----------
+// Snapshots of the whole edit, as JSON. A change starts an entry and the entry
+// is closed once the edit has been still for HISTORY_SETTLE_MS, so one slider
+// drag or one mask drag is one step, not sixty. `committed` is the state the
+// last closed entry left, which is what the next change is undone back to.
+const HISTORY_MAX = 100;
+const HISTORY_SETTLE_MS = 400;
+const editHistory = { undo: [], redo: [], committed: null, timer: null, restoring: false };
+
+function resetEditHistory() {
+  clearTimeout(editHistory.timer);
+  editHistory.timer = null;
+  editHistory.undo = [];
+  editHistory.redo = [];
+  editHistory.committed = JSON.stringify(editSession.edit);
+  syncHistoryButtons();
+}
+
+function recordEditHistory() {
+  if (editHistory.restoring || editHistory.committed == null) return;
+  if (!editHistory.timer) {
+    if (JSON.stringify(editSession.edit) === editHistory.committed) return;
+    editHistory.undo.push(editHistory.committed);
+    if (editHistory.undo.length > HISTORY_MAX) editHistory.undo.shift();
+    editHistory.redo = [];
+  }
+  clearTimeout(editHistory.timer);
+  editHistory.timer = setTimeout(settleEditHistory, HISTORY_SETTLE_MS);
+  syncHistoryButtons();
+}
+
+function settleEditHistory() {
+  clearTimeout(editHistory.timer);
+  editHistory.timer = null;
+  editHistory.committed = JSON.stringify(editSession.edit);
+}
+
+function editUndo() { stepEditHistory(editHistory.undo, editHistory.redo); }
+function editRedo() { stepEditHistory(editHistory.redo, editHistory.undo); }
+
+function stepEditHistory(from, to) {
+  if (!editSession.relPath) return;
+  // A change still settling is closed first, so undo takes back all of it.
+  if (editHistory.timer) settleEditHistory();
+  if (!from.length) return;
+  to.push(editHistory.committed);
+  editHistory.committed = from.pop();
+  editHistory.restoring = true;
+  editSession.edit = JSON.parse(editHistory.committed);
+  refreshEditUi();
+  editHistory.restoring = false;
+  syncHistoryButtons();
+}
+
+function syncHistoryButtons() {
+  $("#edit-undo").disabled = !editHistory.undo.length && !editHistory.timer;
+  $("#edit-redo").disabled = !editHistory.redo.length;
+}
+
+// Put every panel back in step with editSession.edit after it was replaced
+// wholesale, by an undo, a reset or a loaded slot.
+function refreshEditUi() {
+  const masks = editSession.edit.masks || [];
+  selectMask(editSession.activeMask < masks.length ? editSession.activeMask : -1,
+             { silent: true });
+  renderWatermarkPanel();
+  renderFilmPanel();
+  renderHslPanel();
+  renderGradePanel();
+  renderCurveChannels();
+  syncEditSliders();
+  drawCurve();
+  drawOverlay();
+  setEditDirty();
+  fetchEditPreview(true);
+}
+
 function resetEdit() {
   const m = activeMask();
   if (m) {
@@ -5196,6 +5283,21 @@ function toggleCompare() {
 // ---------- keyboard ----------
 function bindKeys() {
   document.addEventListener("keydown", async (e) => {
+    // In the editor, ⌘Z / Ctrl+Z steps back through the edit and ⇧⌘Z or Ctrl+Y
+    // forward. A text field keeps the keys for its own undo.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey
+        && !$("#edit-modal").classList.contains("hidden")) {
+      const t = e.target || {};
+      const tag = (t.tagName || "").toLowerCase();
+      const typing = tag === "textarea" || t.isContentEditable || (tag === "input"
+        && !["checkbox", "radio", "range", "button", "submit", "color"].includes((t.type || "").toLowerCase()));
+      const key = (e.key || "").toLowerCase();
+      if (!typing && (key === "z" || key === "y")) {
+        e.preventDefault();
+        if (key === "y" || e.shiftKey) editRedo(); else editUndo();
+        return;
+      }
+    }
     // ⌘Z (or Ctrl+Z) restores the last bulk-decide action.
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey
         && (e.key === "z" || e.key === "Z")) {
@@ -5482,6 +5584,8 @@ function bindUi() {
   $("#edit-cancel").addEventListener("click", closeEditModal);
   $("#edit-save").addEventListener("click", saveEdit);
   $("#edit-auto").addEventListener("click", autoEdit);
+  $("#edit-undo").addEventListener("click", editUndo);
+  $("#edit-redo").addEventListener("click", editRedo);
   $("#edit-reset").addEventListener("click", resetEdit);
   $("#edit-prev").addEventListener("click", () => editNav(-1));
   $("#edit-next").addEventListener("click", () => editNav(+1));
@@ -6553,6 +6657,24 @@ function bindHelp() {
   $("#help-popover-close").addEventListener("click", closeHelp);
 }
 
+// ---------- quit ----------
+async function quitApp() {
+  if (!confirm("Quit Picture Classifier?\n\nYour decisions and saved edits are kept.")) return;
+  const post = (force) => fetch("/api/quit", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force }),
+  });
+  let res = await post(false);
+  if (res.status === 409) {
+    const err = await res.json();
+    const what = err.detail.charAt(0).toUpperCase() + err.detail.slice(1);
+    if (!confirm(`${what}. Quit anyway? It stops where it is.`)) return;
+    res = await post(true);
+  }
+  if (!res.ok) { alert("Could not quit: " + res.status); return; }
+  $("#quit-screen").classList.remove("hidden");
+}
+
 // ---------- welcome banner ----------
 const WELCOME_BANNER_KEY = "pcls.welcomeBannerSeen";
 
@@ -6913,6 +7035,8 @@ async function applySceneGrouping() {
   initTooltips();
   loupeInit();
   $("#welcome-banner-dismiss").addEventListener("click", dismissWelcomeBanner);
+  $$(".quit-btn").forEach((b) => b.addEventListener("click", quitApp));
+  $("#undo-toast-btn .kbd").textContent = `${MOD_KEY}Z`;
   let s;
   try { s = await fetchState(); } catch { showLanding(); return; }
   if (s.opening && s.opening.running) {
