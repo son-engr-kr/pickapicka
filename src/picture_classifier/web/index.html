@@ -952,6 +952,22 @@
             </div>
           </details>
 
+          <details class="edit-group" id="edit-portrait-group">
+            <summary>Portrait <span id="portrait-summary-state"></span></summary>
+            <div class="edit-group-body">
+              <p class="hsl-note">
+                Evens out skin on every face found, leaving the eyes, brows and
+                mouth alone and keeping the pores. Sized to each face, so a
+                headshot and a group photo get the same look.
+              </p>
+              <label class="look-row" title="Even out blotches and fine lines; the texture stays">
+                <span class="look-name">Smooth skin</span>
+                <input type="range" id="portrait-smooth" min="0" max="100" step="1" />
+                <span class="look-val" id="portrait-smooth-val"></span></label>
+              <p class="hsl-note" id="portrait-faces"></p>
+            </div>
+          </details>
+
           <div class="mask-context" id="mask-context">Global adjustments</div>
           <details class="edit-group" open>
             <summary>Light</summary>

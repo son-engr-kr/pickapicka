@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 from . import (
     cameras, db, editing, exifinfo, exporting, film as film_mod, folderinfo, hdr,
-    lut as lut_mod, metadata as metadata_mod, presets as presets_mod,
+    lut as lut_mod, metadata as metadata_mod, portrait as portrait_mod, presets as presets_mod,
     redeye as redeye_mod, transform as transform_mod, raw, relink, scenes, segment as segment_mod,
     userstate, watermark as watermark_mod,
 )
@@ -56,6 +56,7 @@ WEB_DIR = Path(__file__).parent / "web"
 EDIT_PREVIEW_EDGE = 2048   # long edge the live editor previews at (cached, re-graded on drag)
 EDIT_VIEW_EDGE = 2560      # long edge the full-size viewer renders edited/RAW photos at
 EDIT_BASE_CACHE_MAX = 4    # decoded-base LRU size (RAW A/B benefits from >1)
+PORTRAIT_CACHE_MAX = 64    # photos whose faces are kept analysed
 FULL_BASE_CACHE_MAX = 2    # full-res decode LRU: big arrays, so keep very few
 EDIT_ZOOM_MAX_OUT = 3200   # cap on the pixels a 1:1 request may return
 # Per-photo edit slots: a scratchpad for "try this, keep that". Six fits one
@@ -248,6 +249,11 @@ class RedeyeRegionPayload(BaseModel):
     edit: dict[str, Any] | None = None
 
 
+class FacesPayload(BaseModel):
+    rel_path: str
+    edit: dict[str, Any] | None = None   # only its optics are read
+
+
 class UprightPayload(BaseModel):
     rel_path: str
     mode: Literal["level", "vertical", "full", "auto"]
@@ -358,6 +364,11 @@ class AppContext:
         self.cluster_state: dict[str, Any] = self._fresh_cluster_state()
         self.opening_state: dict[str, Any] = self._fresh_opening_state()
         self.export_state: dict[str, Any] = self._fresh_export_state()
+        # Faces for skin smoothing, per photo and optics. One lock, because the
+        # face model is one session and a grid full of thumbnails would
+        # otherwise analyse the same photo several times at once.
+        self.portrait_cache: "OrderedDict[str, list[dict[str, Any]]]" = OrderedDict()
+        self.portrait_lock = threading.Lock()
 
     @staticmethod
     def _fresh_scoring_state() -> dict[str, Any]:
@@ -409,6 +420,7 @@ class AppContext:
         self.hdr_fuse_cache = None
         self.edit_base_cache.clear()
         self.full_base_cache.clear()
+        self.portrait_cache.clear()
         self.opening_state = self._fresh_opening_state()
 
     def load_db(self, db_path: Path) -> None:
@@ -479,6 +491,7 @@ class AppContext:
         # decoded-base cache so previews decode the fresh files.
         self.edit_base_cache.clear()
         self.full_base_cache.clear()
+        self.portrait_cache.clear()
 
     def _rebuild_index(self) -> None:
         self.photo_index = {p["rel_path"]: p for p in self.data.get("photos", [])}
@@ -567,6 +580,27 @@ class AppContext:
         base = self.get_corrected_base(rel_path, edit)
         key = f"{rel_path}#{editing.optics_key(edit)}"
         return {g: segment_mod.class_mask(base, g, key=key) for g in groups}
+
+    def portrait_faces(self, rel_path: str,
+                       edit: dict[str, Any] | None) -> list[dict[str, Any]] | None:
+        """The faces an edit's skin smoothing works on, found on the corrected
+        preview frame and cached per photo and optics. None when the edit does
+        not smooth skin, so no other photo pays for a face model."""
+        if editing.normalize(edit)["portrait"] is None:
+            return None
+        return self.faces_for(rel_path, edit)
+
+    def faces_for(self, rel_path: str, edit: dict[str, Any] | None) -> list[dict[str, Any]]:
+        key = f"{rel_path}#{editing.optics_key(edit)}"
+        with self.portrait_lock:
+            faces = self.portrait_cache.get(key)
+            if faces is None:
+                faces = portrait_mod.analyze(self.get_corrected_base(rel_path, edit))
+                self.portrait_cache[key] = faces
+                while len(self.portrait_cache) > PORTRAIT_CACHE_MAX:
+                    self.portrait_cache.popitem(last=False)
+            self.portrait_cache.move_to_end(key)
+            return faces
 
     def range_src(self, rel_path: str,
                   edit: dict[str, Any] | None) -> np.ndarray | None:
@@ -883,7 +917,8 @@ def _bake_rendered(ctx: "AppContext", photo: dict[str, Any], rel: str,
                          meta=ctx.photo_meta(rel),
                          auto=ctx.auto_fields(rel, edit),
                          src=ctx.range_src(rel, edit),
-                         luts=_lut_tables(ctx, edit))
+                         luts=_lut_tables(ctx, edit),
+                         faces=ctx.portrait_faces(rel, edit))
     out = exporting.resize(out, settings.long_edge)
     src_path, is_raw = _metadata_source(ctx, photo, rel)
     src_exif, icc = metadata_mod.read_source(src_path, is_raw)
@@ -999,7 +1034,8 @@ def _render_roi(ctx: "AppContext", payload: EditPreviewPayload) -> np.ndarray:
 
     # As much surrounding pixel data as this edit reaches for, plus a couple of
     # pixels for the straighten to interpolate against.
-    pad = int(round(editing.effect_padding(edit, max(fw, fh)))) + 2
+    faces = ctx.portrait_faces(payload.rel_path, edit)
+    pad = int(round(editing.effect_padding(edit, max(fw, fh), faces))) + 2
     box = editing.geometry_source_box(fw, fh, edit, window, pad)
     bx, by, bw, bh = box
     graded = editing.render(
@@ -1012,6 +1048,7 @@ def _render_roi(ctx: "AppContext", payload: EditPreviewPayload) -> np.ndarray:
         auto=ctx.auto_fields(payload.rel_path, edit),
         src=ctx.range_src(payload.rel_path, edit),
         luts=_lut_tables(ctx, edit),
+        faces=faces,
     )
     out = editing.geometry_window(graded, box, fw, fh, edit, window)
 
@@ -1167,7 +1204,8 @@ def _ensure_thumb(src: Path, thumbs_root: Path, rel_path: str,
                   watermark: bool = True,
                   auto_fields: Callable[[], dict[str, np.ndarray] | None] | None = None,
                   range_src: Callable[[], "np.ndarray | None"] | None = None,
-                  luts: Callable[[], dict[str, Any] | None] | None = None
+                  luts: Callable[[], dict[str, Any] | None] | None = None,
+                  faces: Callable[[], list[dict[str, Any]] | None] | None = None
                   ) -> Path:
     # A non-neutral edit gets its own cache file (…​.<hash>.<ver>.jpg) so changing
     # an edit invalidates automatically; unedited photos keep the plain name and
@@ -1217,7 +1255,8 @@ def _ensure_thumb(src: Path, thumbs_root: Path, rel_path: str,
                                    with_watermark=watermark,
                                    auto=auto_fields() if auto_fields else None,
                                    src=range_src() if range_src else None,
-                                   luts=luts() if luts else None))
+                                   luts=luts() if luts else None,
+                                   faces=faces() if faces else None))
             with _atomic_write(dst) as tmp:
                 img.save(tmp, "JPEG", quality=THUMB_QUALITY, optimize=True)
     return dst
@@ -1244,7 +1283,8 @@ def _prebuild_thumbs(ctx: "AppContext", rel_paths: "list[str]") -> None:
                               ctx.auto_fields(r, p.get("edit")),
                           range_src=lambda r=rel_path, p=photo:
                               ctx.range_src(r, p.get("edit")),
-                          luts=lambda p=photo: _lut_tables(ctx, p.get("edit")))
+                          luts=lambda p=photo: _lut_tables(ctx, p.get("edit")),
+                          faces=lambda r=rel_path, p=photo: ctx.portrait_faces(r, p.get("edit")))
 
     def report(fut: "Future[None]") -> None:
         # An executor keeps a worker's exception inside the Future, where it
@@ -2105,7 +2145,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                                  auto=ctx.auto_fields(payload.rel_path, fit_edit),
                                  src=ctx.range_src(payload.rel_path, fit_edit),
                                  luts=_lut_tables(ctx, fit_edit),
-                                 optics=not corrected)
+                                 optics=not corrected,
+                                 faces=ctx.portrait_faces(payload.rel_path, fit_edit))
         else:
             out = _render_roi(ctx, payload)
         buf = io.BytesIO()
@@ -2184,7 +2225,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             meta=ctx.photo_meta(payload.reference), with_watermark=False,
             auto=ctx.auto_fields(payload.reference, ref_edit),
             src=ctx.range_src(payload.reference, ref_edit),
-            luts=_lut_tables(ctx, ref_edit))
+            luts=_lut_tables(ctx, ref_edit),
+            faces=ctx.portrait_faces(payload.reference, ref_edit))
         source = ctx.get_decoded_base(payload.rel_path)
         params = lut_mod.fit_from_reference(
             source.astype(np.float32) / 255.0, reference.astype(np.float32) / 255.0,
@@ -2222,6 +2264,16 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         found = redeye_mod.detect_in_region(_eye_frame(payload.rel_path, payload.edit), payload.cx,
                                             payload.cy, payload.r, payload.kind)
         return {"correction": found}
+
+    @app.post("/api/edit/faces")
+    def portrait_face_boxes(payload: FacesPayload) -> dict[str, Any]:
+        """The faces skin smoothing would work on, as boxes on the corrected
+        frame, so the panel can say how many and show where."""
+        _require_loaded()
+        if ctx.photo_index.get(payload.rel_path) is None:
+            raise HTTPException(status_code=404, detail="photo not found")
+        faces = ctx.faces_for(payload.rel_path, payload.edit)
+        return {"faces": [{"box": f["box"]} for f in faces]}
 
     @app.post("/api/edit/upright")
     def upright(payload: UprightPayload) -> dict[str, Any]:
@@ -2782,7 +2834,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                                  meta=ctx.photo_meta(rel_path),
                                  auto=ctx.auto_fields(rel_path, edit),
                                  src=ctx.range_src(rel_path, edit),
-                                 luts=_lut_tables(ctx, edit))
+                                 luts=_lut_tables(ctx, edit),
+                                 faces=ctx.portrait_faces(rel_path, edit))
             buf = io.BytesIO()
             Image.fromarray(out).save(buf, "JPEG", quality=90)
             return Response(content=buf.getvalue(), media_type="image/jpeg",
@@ -2804,7 +2857,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                               ctx.photo_meta(rel_path),
                               auto_fields=lambda: ctx.auto_fields(rel_path, edit),
                               range_src=lambda: ctx.range_src(rel_path, edit),
-                              luts=lambda: _lut_tables(ctx, edit))
+                              luts=lambda: _lut_tables(ctx, edit),
+                              faces=lambda: ctx.portrait_faces(rel_path, edit))
         return FileResponse(thumb, media_type="image/jpeg")
 
     @app.get("/peak/{rel_path:path}")
@@ -2828,7 +2882,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                               ctx.photo_meta(rel_path), watermark=False,
                               auto_fields=lambda: ctx.auto_fields(rel_path, edit),
                               range_src=lambda: ctx.range_src(rel_path, edit),
-                              luts=lambda: _lut_tables(ctx, edit))
+                              luts=lambda: _lut_tables(ctx, edit),
+                              faces=lambda: ctx.portrait_faces(rel_path, edit))
         if level not in PEAK_LEVELS:
             raise HTTPException(status_code=400, detail=f"unknown level: {level}")
         out = _ensure_peak(thumb, ctx.peaks_root, rel_path,

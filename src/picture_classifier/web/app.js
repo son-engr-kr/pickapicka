@@ -132,7 +132,7 @@ const EDIT_NEUTRAL = (() => {
   // tonal. Mirrors editing.DEFAULT_EDIT.
   const e = { masks: [], watermark: null,
               film: null, hsl: null, grading: null, lut: null,
-              healing: null, redeye: null, lens: null, transform: null,
+              healing: null, redeye: null, lens: null, transform: null, portrait: null,
               tilt: 0, crop: null };
   for (const c of CURVE_CHANNELS) e[c.k] = CURVE_IDENTITY.map((p) => p.slice());
   // Not every slider is neutral at zero: sharpen_radius sits in the middle,
@@ -170,6 +170,7 @@ function mergeNeutralEdit(edit) {
   e.redeye = (edit && edit.redeye && (edit.redeye.corrections || []).length)
     ? { enabled: true, corrections: edit.redeye.corrections.map((c) => ({ ...c })) } : null;
   e.lens = (edit && edit.lens) ? { ...edit.lens } : null;
+  e.portrait = (edit && edit.portrait && edit.portrait.smooth) ? { ...edit.portrait } : null;
   e.transform = (edit && edit.transform) ? { ...edit.transform } : null;
   if (edit) for (const f of EDIT_FIELDS) if (edit[f.k] != null) e[f.k] = edit[f.k];
   return e;
@@ -192,6 +193,7 @@ function editsEqual(a, b) {
   if (JSON.stringify(a.healing || null) !== JSON.stringify(b.healing || null)) return false;
   if (JSON.stringify(a.redeye || null) !== JSON.stringify(b.redeye || null)) return false;
   if (canonOptic(a.lens, LENS_DEFAULT) !== canonOptic(b.lens, LENS_DEFAULT)) return false;
+  if (((a.portrait && a.portrait.smooth) || 0) !== ((b.portrait && b.portrait.smooth) || 0)) return false;
   if (canonOptic(a.transform, TRANSFORM_DEFAULT) !== canonOptic(b.transform, TRANSFORM_DEFAULT)) return false;
   return canonMasks(a.masks) === canonMasks(b.masks);
 }
@@ -2332,9 +2334,14 @@ function openEditModal(absIdx) {
   renderCurveChannels();
   lookState.matching = false;
   repairState.cloneSrc = null;
+  portraitState.faces = null;
+  portraitState.key = "";
+  $("#portrait-faces").textContent = "";
+  if ($("#edit-portrait-group").open) setTimeout(loadPortraitFaces, 0);
   renderLookPanel();
   renderRepairPanel();
   renderOpticsPanel();
+  renderPortraitPanel();
   loadWatermarkInfo(photo.rel_path);
   selectMask(-1, { silent: true });
   setEditTool(null);
@@ -2631,6 +2638,7 @@ function refreshEditUi() {
   renderLookPanel();
   renderRepairPanel();
   renderOpticsPanel();
+  renderPortraitPanel();
   syncEditSliders();
   drawCurve();
   drawOverlay();
@@ -2658,6 +2666,7 @@ function resetEdit() {
     renderLookPanel();
     renderRepairPanel();
     renderOpticsPanel();
+    renderPortraitPanel();
   }
   syncEditSliders();
   drawCurve();
@@ -3023,6 +3032,72 @@ function buildFilmFields() {
     if (!sl) return;
     // Touching a slider means this is no longer that stock, it is yours.
     updateFilm({ [sl.dataset.film]: parseInt(sl.value, 10), stock: "" });
+  });
+}
+
+// ---------- portrait (skin smoothing) ----------
+// The faces come from the server (portrait.analyze on the corrected frame) and
+// are only fetched once the panel is opened, so a photo nobody retouches never
+// runs the face model.
+const portraitState = { faces: null, rel: null, key: "" };
+
+async function loadPortraitFaces() {
+  const key = `${editSession.relPath}#${JSON.stringify(opticsPayload())}`;
+  if (portraitState.key === key && portraitState.faces) return;
+  portraitState.key = key;
+  portraitState.faces = null;
+  $("#portrait-faces").textContent = "finding faces…";
+  const res = await fetch("/api/edit/faces", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rel_path: editSession.relPath, edit: opticsPayload() }),
+  });
+  if (!res.ok) { $("#portrait-faces").textContent = `face search failed: ${res.status}`; return; }
+  if (portraitState.key !== key) return;        // moved on to another photo meanwhile
+  portraitState.faces = (await res.json()).faces;
+  renderPortraitPanel();
+  drawOverlay();
+}
+
+function renderPortraitPanel() {
+  if (!$("#portrait-smooth") || !editSession.edit) return;
+  const v = (editSession.edit.portrait && editSession.edit.portrait.smooth) || 0;
+  $("#portrait-smooth").value = v;
+  $("#portrait-smooth-val").textContent = v;
+  $("#portrait-summary-state").textContent = v ? `· smooth ${v}` : "";
+  const faces = portraitState.faces;
+  if (faces) {
+    $("#portrait-faces").textContent = faces.length
+      ? `${faces.length} face${faces.length === 1 ? "" : "s"} found`
+      : "No faces found. Faces have to be at least a few percent of the frame.";
+    $("#portrait-smooth").disabled = !faces.length;
+  }
+}
+
+function drawPortraitFaces(ctx, mr) {
+  if (!$("#edit-portrait-group").open || !portraitState.faces) return;
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,0.7)";
+  ctx.setLineDash([6, 5]);
+  ctx.lineWidth = 1.2;
+  for (const f of portraitState.faces) {
+    const [x, y, w, h] = f.box;
+    ctx.strokeRect(fx2px(mr, x), fy2px(mr, y), w * mr.w, h * mr.h);
+  }
+  ctx.restore();
+}
+
+function bindPortraitPanel() {
+  $("#edit-portrait-group").addEventListener("toggle", () => {
+    if ($("#edit-portrait-group").open && editSession.relPath) loadPortraitFaces();
+    drawOverlay();
+  });
+  $("#portrait-smooth").addEventListener("input", (e) => {
+    const v = parseInt(e.target.value, 10);
+    editSession.edit.portrait = v ? { smooth: v } : null;
+    $("#portrait-smooth-val").textContent = v;
+    $("#portrait-summary-state").textContent = v ? `· smooth ${v}` : "";
+    setEditDirty();
+    previewDuringDrag();
   });
 }
 
@@ -4308,6 +4383,9 @@ function drawOverlay() {
     drawRepairs(ctx, mr);
     if (turned) ctx.restore();
   }
+  if (turned) { ctx.save(); applyMaskXform(ctx, r, mr); }
+  drawPortraitFaces(ctx, mr);
+  if (turned) ctx.restore();
   if (editSession.showMask && !m) {
     for (const other of (editSession.edit.masks || [])) {
       if (!other.enabled) continue;
@@ -5433,6 +5511,7 @@ function slotLoad(i) {
   renderLookPanel();
   renderRepairPanel();
   renderOpticsPanel();
+  renderPortraitPanel();
   syncEditSliders();
   drawCurve();
   drawOverlay();
@@ -5519,6 +5598,7 @@ function mergeAdditive(base, overlay) {
   if (over.film) out.film = { ...over.film };
   if (over.lut) out.lut = { ...over.lut };
   if (over.lens) out.lens = { ...over.lens };
+  if (over.portrait) out.portrait = { ...over.portrait };
   if (over.transform) out.transform = { ...over.transform };
   // Appended, as editing.merge_additive does: dust sits in the same place on
   // every frame a body shoots, so a preset of spots is meant to add to a photo.
@@ -5572,6 +5652,7 @@ async function applyPreset(id) {
   renderLookPanel();
   renderRepairPanel();
   renderOpticsPanel();
+  renderPortraitPanel();
   syncEditSliders();
   drawCurve();
   drawOverlay();
@@ -6210,6 +6291,7 @@ function bindUi() {
   bindLookPanel();
   bindRepairPanel();
   bindOpticsPanel();
+  bindPortraitPanel();
   bindMaskUi();
   bindSlots();
   bindWatermarkUi();

@@ -1825,3 +1825,8 @@ input[type="range"] { accent-color: var(--accent); }
 #optics-status:empty { display: none; }
 #optics-summary-state { color: var(--accent); font-weight: 500;
   text-transform: none; letter-spacing: 0; }
+
+/* ----- portrait panel ----- */
+#portrait-faces:empty { display: none; }
+#portrait-summary-state { color: var(--accent); font-weight: 500;
+  text-transform: none; letter-spacing: 0; }

@@ -42,6 +42,7 @@ from . import grading as grading_mod
 from . import healing as healing_mod
 from . import lens as lens_mod
 from . import lut as lut_mod
+from . import portrait as portrait_mod
 from . import rangemask as rangemask_mod
 from . import redeye as redeye_mod
 from . import segment as segment_mod
@@ -98,6 +99,7 @@ DEFAULT_EDIT: dict[str, Any] = {
     # A colour look (a .cube or a fitted colour match) under the sliders; see
     # "looks" below. Stored as a reference, {key, name, amount}.
     "lut": None,
+    "portrait": None,  # skin smoothing per face; see the portrait module
     "masks": [],       # local adjustments; see the "masks" section below
     "film": None,      # film emulation chain; see the film module
     "watermark": None, # signature / shooting info; see the watermark module
@@ -596,8 +598,11 @@ def normalize(edit: dict[str, Any] | None) -> dict[str, Any]:
     out["lut"] = None
     out["lens"] = None
     out["transform"] = None
+    out["portrait"] = None
     if not edit:
         return out
+    if edit.get("portrait") is not None:
+        out["portrait"] = portrait_mod.normalize(edit["portrait"])
     if edit.get("lens") is not None:
         out["lens"] = lens_mod.normalize(edit["lens"])
     if edit.get("transform") is not None:
@@ -677,6 +682,8 @@ def merge_additive(base: dict[str, Any] | None,
     # is how it reaches every photo that lens took.
     if over["lens"] is not None:
         out["lens"] = dict(over["lens"])
+    if over["portrait"] is not None:
+        out["portrait"] = dict(over["portrait"])
     if over["transform"] is not None:
         out["transform"] = dict(over["transform"])
     # Band by band, for the same reason the sliders merge one at a time: a
@@ -742,6 +749,8 @@ def is_neutral(edit: dict[str, Any] | None) -> bool:
         return False   # normalize_lut_ref drops a look at zero amount
     if not optics_is_neutral(e):
         return False   # both modules normalize to None when they change nothing
+    if e["portrait"] is not None:
+        return False   # portrait.normalize drops a panel at zero
     return all(_curve_is_identity(e[k]) for k in CURVE_KEYS)
 
 
@@ -1855,7 +1864,8 @@ def _grade(img: np.ndarray, e: dict[str, Any],
     return img
 
 
-def effect_padding(edit: dict[str, Any] | None, frame_long: float) -> float:
+def effect_padding(edit: dict[str, Any] | None, frame_long: float,
+                   faces: list[dict[str, Any]] | None = None) -> float:
     """How many pixels of neighbourhood a render of one window needs.
 
     Blur, smear and bloom pull in pixels from outside the window, so cutting a
@@ -1903,7 +1913,9 @@ def effect_padding(edit: dict[str, Any] | None, frame_long: float) -> float:
     # larger patch; underestimating would show a seam.
     repair_need = max(healing_mod.padding(e["healing"], int(frame_long), int(frame_long)),
                       redeye_mod.padding(e["redeye"], int(frame_long), int(frame_long)))
-    pad = max(for_adj(e), film_need, repair_need)
+    # The long edge again stands in for the width: faces are sized against it.
+    portrait_need = portrait_mod.padding(e["portrait"], faces, frame_long)
+    pad = max(for_adj(e), film_need, repair_need, portrait_need)
     for m in e["masks"]:
         if mask_is_active(m):
             pad = max(pad, for_adj(m["adj"]))
@@ -1924,7 +1936,8 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
            auto: dict[str, np.ndarray] | None = None,
            src: np.ndarray | None = None,
            luts: dict[str, dict[str, Any]] | None = None,
-           optics: bool = True) -> np.ndarray:
+           optics: bool = True,
+           faces: list[dict[str, Any]] | None = None) -> np.ndarray:
     """Apply `edit` to an RGB uint8 image and return a new RGB uint8 image.
     A neutral edit returns the input array unchanged (no copy).
 
@@ -1965,6 +1978,10 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     `luts` maps a look's key to its table (see "looks"), and must hold the one
     the edit names; an edit whose look is missing raises rather than rendering
     as if it had none.
+
+    `faces` is `portrait.analyze` of the whole corrected frame, for the skin
+    smoothing: the caller's to compute and cache, like `auto`, and required
+    whenever the edit smooths skin (an empty list says there are no faces).
 
     `optics=False` is for a caller that has already applied the lens and
     perspective corrections (`apply_optics`) to the whole frame, which it must
@@ -2007,6 +2024,13 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         # is seeded from the photo rather than from chance.
         seed = film_mod.seed_for(str((meta or {}).get("file") or ""))
         img = _repair(rgb, e, roi)
+        # Retouching before the look and the grade, as a retoucher works on the
+        # capture before any colour: and after the repairs, so a healed spot is
+        # not smoothed into its surroundings before it has gone.
+        if e["portrait"] is not None:
+            assert faces is not None, "smoothing skin needs the caller's portrait.analyze faces"
+            f = portrait_mod.apply_portrait(img.astype(np.float32) / 255.0, e["portrait"], faces, roi)
+            img = np.rint(np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8)
         if e["lut"] is not None:
             img = _apply_look(img, e["lut"], luts)
         img = _grade(img, e, roi, seed)

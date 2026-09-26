@@ -84,6 +84,29 @@ Two stages that fix the captured image rather than interpret it, and they run
   place on every frame a body shoots, so "remove the dust spots" is exactly the
   kind of thing to apply across a whole shoot.
 
+## Portrait
+
+- **Smooth skin** evens out every face the editor finds: blotches, uneven tone
+  and fine lines go, and the pores stay. It is frequency separation. What is
+  finer than the pores is left alone, and the band above it is evened out with
+  an edge-aware (guided) filter, so a nostril or the line of the jaw stays
+  sharp while a blotch does not.
+- **Sized to each face.** Every radius is a fraction of that face's width, so a
+  headshot and a face in a group photo get the same look; the texture slider,
+  sized to the frame, cannot do that.
+- **Only the skin.** The skin is the segmenter's face-skin class, run on a crop
+  around each face, where it follows the jaw rather than the blocky outline it
+  gives on a whole frame. The eyes, brows and mouth are cut out with polygons
+  from InsightFace's 106-point landmarks, from the model pack the app already
+  downloads for face grouping. How much contrast counts as a blotch is
+  relative to the skin's own brightness, so an underexposed face is smoothed as
+  much as a well-exposed one.
+- Measured on a real face at full strength: the band finer than the texture
+  split keeps 95-97% of its amplitude, and the blotch band drops to 70-76%.
+  Deliberately short of plastic; stack negative texture on top for more.
+- Faces are found once per photo when the panel is opened, and marked on the
+  photo while it is open. A face under about 4% of the frame is left alone.
+
 ## Automatic masks
 
 - **Six one-click masks** — Subject, Background, Skin, Face, Hair, Clothes — from

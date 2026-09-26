@@ -221,7 +221,11 @@ control-point offsets, so they stay non-destructive — which is strictly better
 than Evoto's commit-the-pixels approach.
 
 Skin — the frequency-separation family, all as sliders on a skin mask:
-- AI Skin Retouching, AI Blemish Remover, AI Soften Skin
+- ~~AI Skin Retouching, AI Soften Skin~~ `done` as **Smooth skin** in the
+  editor's Portrait panel (`portrait.py`): face-scaled frequency separation
+  with a guided filter, on a per-face-crop skin segmentation with the
+  features cut out by 106-point landmarks (`landmark_2d_106` from buffalo_l,
+  already downloaded, so no new model). AI Blemish Remover to follow.
 - AI Frequency Separation, AI Dodge and Burn (skin contouring)
 - Facial Wrinkle Remover, AI Frown Lines Remover, Remove Marionette Lines,
   Remove Dark Circles, Freckles Filter

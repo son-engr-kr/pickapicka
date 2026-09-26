@@ -31,6 +31,7 @@ uv run python tests/test_paths.py        # app-data dirs, legacy migration
 uv run python tests/test_folderinfo.py   # what the setup screens say about a folder
 uv run python tests/test_metadata.py     # EXIF and colour profile on export
 uv run python tests/test_exporting.py    # export names, sizes, formats, copying
+uv run python tests/test_portrait.py     # skin smoothing
 ```
 
 Most suites collect their own `test_*` functions out of `globals()` and call
