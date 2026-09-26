@@ -38,12 +38,14 @@ Homebrew, from source, and the CLI are in [docs/install.md](docs/install.md).
 
 ## First run
 
-`pcls serve` opens a landing page. Pick a workspace folder, create a project by
-name, point it at your photos, and say what the shoot is *of* if it has a
-subject. Scoring runs once; after that the project opens where you left it.
+`pcls serve` opens a landing page. The first time, it asks where to keep your
+projects, a workspace folder kept apart from your photos, and offers a default.
+Then create a project by name, point it at your photos (the wizard says how many
+it found there), and say what the shoot is *of* if it has a subject. Scoring
+runs once; after that the project opens where you left it.
 
-Your photos are never moved or modified. Everything the app decides lives in one
-`picks.json` beside them.
+Your photos are never moved or modified. Everything the app decides lives in the
+project's own folder, in a `picks.json` that points at them.
 
 ## What it does
 

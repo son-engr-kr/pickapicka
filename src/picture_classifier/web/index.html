@@ -14,12 +14,72 @@
         <p class="landing-tagline">Score your photos for blur, exposure, and faces — then cull &amp; edit fast.</p>
       </header>
 
-      <section class="landing-card">
+      <!-- First launch only: nothing is set up until a workspace is chosen, so
+           the landing explains what one is before asking for it. -->
+      <section class="landing-card onboard hidden" id="onboard">
+        <ol class="onboard-steps">
+          <li class="active"><span class="onboard-num">1</span>Projects folder</li>
+          <li><span class="onboard-num">2</span>First project</li>
+        </ol>
+        <h2 class="onboard-title">First, choose where to keep your projects</h2>
+        <p class="onboard-lead">
+          Your photos are never moved, renamed or changed. The app keeps its own
+          work (your picks, edits and thumbnails) in a separate
+          <b>projects folder</b>, with one subfolder per shoot. The app calls
+          this folder a <b>workspace</b>.
+        </p>
+        <div class="onboard-diagram" aria-hidden="true">
+          <div class="od-box">
+            <div class="od-head">Your photos</div>
+            <ul class="od-tree">
+              <li><span data-icon="folder"></span>Pictures</li>
+              <li class="d1 od-mark"><span data-icon="folder"></span>2026-05-wedding<em>a shoot</em></li>
+              <li class="d2"><span data-icon="folder"></span>ceremony</li>
+              <li class="d2"><span data-icon="folder"></span>reception</li>
+            </ul>
+            <div class="od-foot">Left exactly as they are</div>
+          </div>
+          <div class="od-arrow"><span>points to</span><span class="od-arrow-line"></span></div>
+          <div class="od-box od-box-ws">
+            <div class="od-head">Projects folder <span>(workspace)</span></div>
+            <ul class="od-tree">
+              <li class="od-mark"><span data-icon="folder"></span>PictureClassifier-Projects<em>this one</em></li>
+              <li class="d1"><span data-icon="folder"></span>2026-05-wedding</li>
+              <li class="d1"><span data-icon="folder"></span>2026-06-trip</li>
+            </ul>
+            <div class="od-foot">Picks, edits and thumbnails, written by the app</div>
+          </div>
+        </div>
+        <div class="onboard-choice" id="onboard-choice">
+          <div class="onboard-choice-label">Recommended</div>
+          <code class="onboard-path" id="onboard-default"></code>
+          <div class="onboard-actions">
+            <button type="button" class="primary" id="onboard-use-default">Use this folder</button>
+            <button type="button" id="onboard-choose">Choose a different folder…</button>
+          </div>
+        </div>
+        <div class="onboard-warning hidden" id="onboard-warning" role="alert">
+          <p><span data-icon="warning"></span><span id="onboard-warning-text"></span></p>
+          <code class="onboard-path" id="onboard-warning-path"></code>
+          <div class="onboard-actions">
+            <button type="button" class="primary" id="onboard-choose-again">Choose another folder…</button>
+            <button type="button" id="onboard-use-anyway">Use it anyway</button>
+          </div>
+        </div>
+        <ul class="onboard-tips">
+          <li>Pick a drive with room to spare: thumbnails and previews are stored here.</li>
+          <li>Keep it apart from your photos. Don't choose a photo folder, or a folder inside one.</li>
+          <li>You can add more projects folders later, for example one per drive.</li>
+        </ul>
+        <div class="onboard-status" id="onboard-status"></div>
+      </section>
+
+      <section class="landing-card" id="workspace-card">
         <h2>Workspace</h2>
         <p class="landing-hint">
-          A workspace is a folder that holds your projects. Create projects by
-          name — each becomes a folder inside the workspace. Your photos stay
-          wherever they are; a project just points at them.
+          A workspace is the folder your projects are kept in, one subfolder per
+          project. Keep it apart from your photos: they stay wherever they are,
+          and a project only points at them.
         </p>
         <div class="workspace-row">
           <select id="workspace-select" title="Switch workspace"></select>
@@ -29,7 +89,7 @@
         <div class="workspace-path" id="workspace-path"></div>
       </section>
 
-      <section class="landing-card">
+      <section class="landing-card" id="projects-card">
         <h2>Projects <span class="count-pill" id="workspace-proj-count"></span></h2>
         <div id="workspace-projects" class="project-grid"></div>
       </section>
@@ -62,17 +122,19 @@
       </header>
       <div class="wizard-body">
         <section class="wizard-step" data-step="1">
-          <h3>1. Where are your photos?</h3>
+          <h3>1. Where are the photos?</h3>
           <p class="wizard-hint">
-            Pick the folder that contains the photos you want to triage.
-            Sub-folders are scanned recursively. RAW files are included — when a
-            shot has both a RAW and a JPEG, the RAW is used.
+            Choose the folder of one shoot, such as a wedding or a trip.
+            Subfolders inside it are included, and each one can become a scene.
+            RAW files count too; when a shot has both a RAW and a JPEG, the RAW
+            is used. Nothing in the folder is changed.
           </p>
           <div class="landing-row">
-            <label>Photo folder</label>
-            <input type="text" id="wiz-photo-dir" placeholder="/path/to/photos" />
+            <label for="wiz-photo-dir">Photo folder</label>
+            <input type="text" id="wiz-photo-dir" placeholder="/path/to/photos" spellcheck="false" />
             <button type="button" class="browse-btn" id="wiz-photo-browse">Browse…</button>
           </div>
+          <div class="folder-info" id="wiz-photo-info"></div>
           <details class="landing-advanced">
             <summary>Advanced (separate RAW / JPEG folders)</summary>
             <div class="landing-row">
@@ -112,6 +174,7 @@
               <span class="option-sub">Reads EXIF capture time and starts a new scene when there is a long pause (configurable). Good for unsorted dumps.</span>
             </button>
           </div>
+          <p class="landing-help wiz-scene-note" id="wiz-scene-note"></p>
           <div class="landing-row" id="wiz-gap-row" style="margin-top:8px;display:none;">
             <label>Gap</label>
             <input type="number" id="wiz-gap" value="30" min="1" />
@@ -234,8 +297,8 @@
       <div id="subject-groups"></div>
     </div>
     <ul id="scene-list"></ul>
-    <footer id="sidebar-footer">
-      <h2>Auto-suggestion</h2>
+    <details id="sidebar-footer">
+      <summary>How suggestions are made</summary>
       <div class="criteria">
         <div>
           <code>badness</code> = (1 − <code>blur_rank</code>)
@@ -250,11 +313,26 @@
           ·
           <span class="dot reject"></span>bottom 30% reject
         </div>
+        <div>
+          With subject detection on, frames with no subject, or a small or
+          off-centre one, score worse too.
+        </div>
       </div>
-    </footer>
+    </details>
   </aside>
 
   <main id="main">
+    <div id="welcome-banner" class="hidden">
+      <div id="welcome-banner-text">
+        <b>How it works:</b> every photo already has a suggestion (the
+        <span class="wb-badge">AUTO</span> badge). Confirm or change it with
+        <b>Reject</b> <kbd>R</kbd>, <b>Review</b> <kbd>V</kbd> or
+        <b>Pick</b> <kbd>A</kbd>. Click a photo to see it larger, and use
+        <b>export picks</b> when you are done. Scenes are on the left; switch
+        between grouping by folder and by time gap at any time.
+      </div>
+      <button id="welcome-banner-dismiss" type="button">Got it</button>
+    </div>
     <header id="main-header">
       <span id="scene-title">— select a scene —</span>
       <div id="page-nav">
@@ -289,14 +367,6 @@
       <span id="next-preview-name"></span>
     </div>
   </main>
-
-  <div id="welcome-banner" class="hidden">
-    <span id="welcome-banner-text">
-      Tip: you can change scene grouping (by folder vs time gap) any time
-      from the sidebar. Exclude irrelevant face clusters from the People panel.
-    </span>
-    <button id="welcome-banner-dismiss" type="button">Got it</button>
-  </div>
 
   <div id="help-popover" class="hidden" role="dialog">
     <div id="help-popover-body"></div>
@@ -334,8 +404,9 @@
           <span id="export-count">—</span>
         </div>
         <div class="export-row">
-          <label>Target folder</label>
-          <input type="text" id="export-target" placeholder="/absolute/path/to/output" />
+          <label for="export-target">Target folder</label>
+          <input type="text" id="export-target" placeholder="/absolute/path/to/output" spellcheck="false" />
+          <button type="button" class="browse-btn" id="export-browse">Browse…</button>
         </div>
         <div class="export-row" style="align-items:flex-start;">
           <label>Layout</label>

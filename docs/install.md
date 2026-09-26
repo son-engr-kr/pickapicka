@@ -77,8 +77,9 @@ uv run pcls serve
 ```
 
 This starts the server at <http://127.0.0.1:8765> and opens a landing page.
-Pick a **workspace** folder (or use the default), then create a project inside
-it by name and point it at your photos. The landing lists every project in the
+Pick a **workspace** folder (or use the default; the first launch walks
+through this), then create a project inside it by name and point it at your
+photos. The landing lists every project in the
 current workspace; you can also open a project folder directly, and recent
 projects are listed under that section.
 

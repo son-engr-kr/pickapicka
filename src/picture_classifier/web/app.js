@@ -774,9 +774,8 @@ function renderSubjectPanel() {
   $("#boxes-btn").classList.toggle("hidden", !on);
   if (!on) {
     $("#subject-classes").innerHTML =
-      `<div class="subject-empty">Not detecting anything in this project. ` +
-      `Press <b>rescore</b> and pick what it is a shoot of — cars, pets, ` +
-      `anything COCO.</div>`;
+      `<div class="subject-empty">Off. To detect cars, pets or anything else, ` +
+      `use <b>rescore</b>.</div>`;
     $("#subject-groups").innerHTML = "";
     return;
   }
@@ -1269,7 +1268,7 @@ function renderGrid() {
       + (state.selection.has(p.rel_path) ? " selected" : "");
     const auto = p.auto_suggestion || "";
     const badness = p.scores?.badness != null ? p.scores.badness.toFixed(2) : "—";
-    const fname = p.rel_path.split("/").pop();
+    const fname = basename(p.rel_path);
     const visibleFaces = (p.faces || [])
       .map((f, fi) => ({ f, fi, person: f.person_id ? state.peopleById.get(f.person_id) : null }))
       .filter(({ person }) => !(person && person.excluded))
@@ -1341,7 +1340,7 @@ function renderNextPreview() {
   }
   preview.classList.remove("hidden");
   $("#next-preview-img").src = thumbUrl(next);
-  $("#next-preview-name").textContent = next.rel_path.split("/").pop();
+  $("#next-preview-name").textContent = basename(next.rel_path);
 }
 
 // ---------- focus & paging ----------
@@ -1680,7 +1679,7 @@ function buildHdrThumb(relPath) {
   div.dataset.rel = relPath;
   div.innerHTML =
     `<img loading="lazy" src="/thumb/${enc(relPath)}" alt="" />` +
-    `<span class="hdr-thumb-name">${escapeHtml(relPath.split("/").pop())}</span>`;
+    `<span class="hdr-thumb-name">${escapeHtml(basename(relPath))}</span>`;
   div.addEventListener("click", () => hdrToggleSelect(relPath));
   return div;
 }
@@ -2119,7 +2118,7 @@ function openEditModal(absIdx) {
   if (editSession.objUrl) { URL.revokeObjectURL(editSession.objUrl); editSession.objUrl = null; }
   if (editSession.origUrl) { URL.revokeObjectURL(editSession.origUrl); editSession.origUrl = null; }
   $("#edit-which").textContent =
-    `${photo.rel_path.split("/").pop()} · ${absIdx + 1}/${state.filteredPhotos.length}`;
+    `${basename(photo.rel_path)} · ${absIdx + 1}/${state.filteredPhotos.length}`;
   $("#edit-compare").classList.remove("holding");
   $("#edit-status").textContent = "";
   $("#edit-preset-select").value = "";
@@ -5395,7 +5394,18 @@ function bindUi() {
   // Relink
   $("#relink-close").addEventListener("click", closeRelinkModal);
   $("#relink-cancel").addEventListener("click", closeRelinkModal);
-  $("#relink-browse").addEventListener("click", () => nativeBrowse($("#relink-new"), $("#relink-status")));
+  $("#relink-browse").addEventListener("click", () =>
+    nativeBrowse($("#relink-new"), $("#relink-status"), "relink"));
+  $("#export-browse").addEventListener("click", () =>
+    nativeBrowse($("#export-target"), $("#export-status"), "export"));
+  // Onboarding
+  $("#onboard-use-default").addEventListener("click", () =>
+    onboardChoose(workspaceState.defaultDir));
+  $("#onboard-choose").addEventListener("click", onboardBrowse);
+  $("#onboard-choose-again").addEventListener("click", onboardBrowse);
+  $("#onboard-use-anyway").addEventListener("click", () => {
+    if (onboardState.pending) commitOnboardWorkspace(onboardState.pending);
+  });
   $("#relink-confirm").addEventListener("click", confirmRelink);
   $("#wizard-close").addEventListener("click", () => {
     if (confirm("Cancel project setup?")) closeWizard();
@@ -5403,22 +5413,37 @@ function bindUi() {
   $("#wizard-back").addEventListener("click", () => {
     if (wizardState.step > 1) showWizardStep(wizardState.step - 1);
   });
-  $("#wizard-next").addEventListener("click", () => {
+  $("#wizard-next").addEventListener("click", async () => {
+    if (wizardState.step === 1) {
+      // The folder check is shown inline, where the path is, not in an alert.
+      clearTimeout(wizardState.inspectTimer);
+      if (!$("#wiz-photo-dir").value.trim()) {
+        showWizPhotoInfo("error", "Choose the folder with your photos first.");
+        return;
+      }
+      if (!wizardState.photoInfo) await inspectWizardPhotoDir();
+      if (!wizardState.photoInfo?.usable) return;
+    }
     const ok = validateWizardStep(wizardState.step);
     if (ok !== true) { alert(ok); return; }
     if (wizardState.step < 3) showWizardStep(wizardState.step + 1);
   });
   $("#wizard-create").addEventListener("click", createProject);
-  $("#wiz-photo-browse").addEventListener("click", () =>
-    nativeBrowse($("#wiz-photo-dir"), null));
+  $("#wiz-photo-browse").addEventListener("click", () => {
+    $("#wiz-photo-info").className = "folder-info";
+    nativeBrowse($("#wiz-photo-dir"), $("#wiz-photo-info"), "photos");
+  });
+  $("#wiz-photo-dir").addEventListener("input", () => {
+    wizardState.photoInfo = null;
+    clearTimeout(wizardState.inspectTimer);
+    // Typing a path fires this per keystroke; wait for a pause.
+    wizardState.inspectTimer = setTimeout(inspectWizardPhotoDir, 450);
+  });
   $("#wiz-project-name").addEventListener("input", syncWizardTargetHint);
   $$("#wiz-scene-cards .option-card").forEach((card) => {
     card.addEventListener("click", () => {
-      wizardState.sceneMode = card.dataset.value;
-      $$("#wiz-scene-cards .option-card").forEach((c) =>
-        c.classList.toggle("active", c === card));
-      $("#wiz-gap-row").style.display =
-        card.dataset.value === "time_gap" ? "" : "none";
+      wizardState.sceneTouched = true;
+      setWizardSceneMode(card.dataset.value);
     });
   });
   $$("#wiz-subject-cards .option-card").forEach((card) => {
@@ -5825,7 +5850,9 @@ async function fetchState() {
 }
 
 // ---------- workspaces ----------
-const workspaceState = { current: null, list: [] };
+// `firstRun` is the server saying no workspace has ever been chosen; the list
+// then holds only the default it suggests, which does not exist on disk yet.
+const workspaceState = { current: null, list: [], firstRun: false, defaultDir: null, sep: "/" };
 
 async function loadWorkspaces() {
   try {
@@ -5834,10 +5861,105 @@ async function loadWorkspaces() {
       const d = await res.json();
       workspaceState.list = d.workspaces || [];
       workspaceState.current = d.current || (workspaceState.list[0] || null);
+      workspaceState.firstRun = !!d.first_run;
+      workspaceState.defaultDir = d.default || null;
+      workspaceState.sep = d.sep || "/";
     }
   } catch {}
+  renderOnboarding();
   renderWorkspaceSelect();
   loadWorkspaceProjects();
+}
+
+async function inspectFolder(path, workspace = null) {
+  const res = await fetch("/api/folder/inspect", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, workspace }),
+  });
+  if (!res.ok) throw new Error("folder inspect failed: " + res.status);
+  return res.json();
+}
+
+function plural(n, word) {
+  return `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
+}
+
+// Why a folder makes a poor workspace, or null if it is fine. The mistake this
+// is for is choosing the photo folder itself, which would put every project
+// among the photos.
+function workspaceProblem(info) {
+  if (info.is_project) {
+    return "This is a single project's folder. Choose the folder that holds "
+      + "your projects instead, such as the one it sits in.";
+  }
+  const n = info.photos + info.raws;
+  if (n > 0 && info.projects === 0) {
+    return `This folder already holds ${info.truncated ? "at least " : ""}`
+      + `${plural(n, "photo")}. The projects folder should be separate from your `
+      + "photos, since the app writes its own files into it. An empty or new "
+      + "folder is best.";
+  }
+  return null;
+}
+
+// ---------- first-launch onboarding ----------
+const onboardState = { pending: null };
+
+function renderOnboarding() {
+  const first = workspaceState.firstRun;
+  $("#onboard").classList.toggle("hidden", !first);
+  $("#workspace-card").classList.toggle("hidden", first);
+  $("#projects-card").classList.toggle("hidden", first);
+  if (!first) return;
+  $("#onboard-default").textContent = workspaceState.defaultDir || "";
+  $("#onboard-warning").classList.add("hidden");
+  $("#onboard-choice").classList.remove("hidden");
+  $("#onboard-status").textContent = "";
+}
+
+async function onboardBrowse() {
+  const status = $("#onboard-status");
+  status.textContent = BROWSE_WAITING;
+  const res = await fetch("/api/browse-folder", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ initial: dirname(workspaceState.defaultDir) || null, purpose: "workspace" }),
+  });
+  const result = res.ok ? await res.json() : {};
+  status.textContent = result.error ? "Browse failed: " + result.error : "";
+  if (result.path) await onboardChoose(result.path);
+}
+
+async function onboardChoose(dir) {
+  if (!dir) return;
+  const info = await inspectFolder(dir);
+  const problem = workspaceProblem(info);
+  if (problem) {
+    onboardState.pending = dir;
+    $("#onboard-warning-text").textContent = problem;
+    $("#onboard-warning-path").textContent = info.path;
+    $("#onboard-warning").classList.remove("hidden");
+    $("#onboard-choice").classList.add("hidden");
+    return;
+  }
+  await commitOnboardWorkspace(dir, info.projects);
+}
+
+async function commitOnboardWorkspace(dir, existingProjects = 0) {
+  const status = $("#onboard-status");
+  const res = await fetch("/api/workspaces", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dir }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    status.textContent = "Could not use that folder: " + (err.detail || res.status);
+    return;
+  }
+  onboardState.pending = null;
+  await loadWorkspaces();
+  // A folder that already has projects was chosen to get back to them, so the
+  // list is the next step; otherwise it is making the first one.
+  if (!existingProjects) openWizard({ first: true });
 }
 
 function renderWorkspaceSelect() {
@@ -5863,14 +5985,19 @@ async function switchWorkspace(dir) {
 
 async function addWorkspace() {
   const status = $("#landing-status");
-  status.textContent = "Choose a workspace folder…";
+  status.textContent = BROWSE_WAITING;
   try {
     const res = await fetch("/api/browse-folder", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ initial: workspaceState.current || null }),
+      body: JSON.stringify({ initial: workspaceState.current || null, purpose: "workspace" }),
     });
     const result = res.ok ? await res.json() : {};
     if (!result.path) { status.textContent = ""; return; }
+    const problem = workspaceProblem(await inspectFolder(result.path));
+    if (problem && !confirm(`${problem}\n\n${result.path}\n\nUse it anyway?`)) {
+      status.textContent = "";
+      return;
+    }
     const add = await fetch("/api/workspaces", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dir: result.path }),
@@ -5922,8 +6049,15 @@ function renderProjectGrid(projects) {
   add.type = "button";
   add.innerHTML = `<span class="project-new-icon">${icon("plus")}</span>`
     + `<span class="project-new-label">New project</span>`;
-  add.addEventListener("click", openWizard);
+  add.addEventListener("click", () => openWizard());
   wrap.appendChild(add);
+  if (!projects.length) {
+    const empty = document.createElement("p");
+    empty.className = "project-empty";
+    empty.textContent = "No projects here yet. Make one per shoot: choose the "
+      + "folder its photos are in, and scoring starts straight away.";
+    wrap.appendChild(empty);
+  }
 
   for (const p of projects) {
     const card = document.createElement("div");
@@ -6081,31 +6215,53 @@ async function renderRecents() {
   }
 }
 
+// Paths arrive in the server's own form, so on Windows they use backslashes;
+// anything that takes one apart has to accept either separator. Splitting on
+// "/" alone turned a Windows photo folder into a project named after its whole
+// path, "C__Users_…".
 function basename(p) {
   if (!p) return "";
-  const s = String(p).replace(/\/+$/, "");
-  const i = s.lastIndexOf("/");
+  const s = String(p).replace(/[\\/]+$/, "");
+  const i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
   return i >= 0 ? s.slice(i + 1) : s;
+}
+function dirname(p) {
+  const s = String(p || "").replace(/[\\/]+$/, "");
+  const i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+  return i > 0 ? s.slice(0, i) : s;
+}
+function joinPath(dir, name) {
+  const sep = workspaceState.sep || "/";
+  return String(dir).replace(/[\\/]+$/, "") + sep + name;
 }
 function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-async function nativeBrowse(targetInput, status) {
+// The dialog belongs to the server process, not the browser, and on Windows it
+// can open behind the browser window. Saying so while it is open is what keeps
+// "nothing happened" from being the first impression.
+const BROWSE_WAITING = "A folder window is open. If you can't see it, it may be "
+  + "behind this browser window; check the taskbar or Dock.";
+
+async function nativeBrowse(targetInput, status, purpose = "photos") {
   const initial = targetInput.value.trim() || null;
-  if (status) status.textContent = "Opening Finder dialog…";
+  if (status) status.textContent = BROWSE_WAITING;
   try {
     const res = await fetch("/api/browse-folder", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ initial }),
+      body: JSON.stringify({ initial, purpose }),
     });
     if (!res.ok) {
       if (status) status.textContent = `Browse endpoint failed (${res.status}).`;
       return;
     }
     const result = await res.json();
-    if (result.path) targetInput.value = result.path;
+    if (result.path) {
+      targetInput.value = result.path;
+      targetInput.dispatchEvent(new Event("input", { bubbles: true }));
+    }
     if (status) {
       if (result.error) status.textContent = "Browse failed: " + result.error;
       else status.textContent = "";
@@ -6209,6 +6365,11 @@ function openHelp(key, anchor) {
   if (popRect.right > window.innerWidth - padding) {
     popover.style.left = (window.innerWidth - popRect.width - padding) + "px";
   }
+  // And off the bottom: flip above the anchor, or pin to the top if neither fits.
+  if (popRect.bottom > window.innerHeight - padding) {
+    const above = rect.top - 6 - popRect.height;
+    popover.style.top = Math.max(padding, above) + "px";
+  }
 }
 
 function closeHelp() {
@@ -6245,9 +6406,15 @@ function dismissWelcomeBanner() {
 }
 
 // ---------- new-project wizard ----------
-const wizardState = { step: 1, sceneMode: "folder", subjectPreset: "" };
+// `photoInfo` is the folder check for what is in the photo-folder field now,
+// or null while it is stale; `sceneTouched` stops the suggestion from undoing
+// a grouping the user picked by hand.
+const wizardState = {
+  step: 1, sceneMode: "folder", subjectPreset: "",
+  photoInfo: null, inspectTimer: null, sceneTouched: false,
+};
 
-function openWizard() {
+function openWizard({ first = false } = {}) {
   if (!workspaceState.current) {
     alert("Add a workspace first (a folder to hold your projects).");
     return;
@@ -6255,6 +6422,13 @@ function openWizard() {
   wizardState.step = 1;
   wizardState.sceneMode = "folder";
   wizardState.subjectPreset = "";
+  wizardState.photoInfo = null;
+  wizardState.sceneTouched = false;
+  $("#wizard-title").textContent = first ? "Your first project" : "New project";
+  $("#wiz-photo-dir").placeholder = examplePhotoDir();
+  $("#wiz-photo-info").textContent = "";
+  $("#wiz-photo-info").className = "folder-info";
+  $("#wiz-scene-note").textContent = "";
   $("#wiz-photo-dir").value = "";
   $("#wiz-jpeg-subdir").value = "";
   $("#wiz-raw-subdir").value = "";
@@ -6298,7 +6472,86 @@ function showWizardStep(n) {
 function syncWizardTargetHint() {
   const name = $("#wiz-project-name").value.trim() || "<name>";
   const ws = workspaceState.current || "<workspace>";
-  $("#wiz-target-hint").textContent = `${ws}/${name}/`;
+  $("#wiz-target-hint").textContent = joinPath(ws, name) + (workspaceState.sep || "/");
+}
+
+// A believable path for this machine, built from the home folder the default
+// workspace sits in, so the placeholder shows which way the slashes go.
+function examplePhotoDir() {
+  const home = workspaceState.defaultDir ? dirname(workspaceState.defaultDir) : "";
+  return home ? `e.g. ${joinPath(joinPath(home, "Pictures"), "2026-05-wedding")}` : "/path/to/photos";
+}
+
+function setWizardSceneMode(mode) {
+  wizardState.sceneMode = mode;
+  setOptionCardValue("#wiz-scene-cards", mode);
+  $("#wiz-gap-row").style.display = mode === "time_gap" ? "" : "none";
+}
+
+// Check the photo folder as soon as one is chosen, and say what is in it, so
+// a wrong folder is obvious here rather than after a failed create.
+function showWizPhotoInfo(kind, html) {
+  const box = $("#wiz-photo-info");
+  box.className = "folder-info " + kind;
+  box.innerHTML = (kind === "ok" ? icon("check") : kind ? icon("warning") : "")
+    + `<span>${html}</span>`;
+}
+
+async function inspectWizardPhotoDir() {
+  const path = $("#wiz-photo-dir").value.trim();
+  const box = $("#wiz-photo-info");
+  const show = showWizPhotoInfo;
+  if (!path) { box.textContent = ""; box.className = "folder-info"; wizardState.photoInfo = null; return; }
+  show("", "Looking in the folder…");
+  const info = await inspectFolder(path, workspaceState.current);
+  if ($("#wiz-photo-dir").value.trim() !== path) return;   // typed on since
+  const n = info.photos + info.raws;
+  let usable = false;
+  if (!info.absolute) {
+    show("error", "Enter the full path of the folder, for example "
+      + `<code>${escapeHtml(examplePhotoDir().replace(/^e\.g\. /, ""))}</code>, or use Browse.`);
+  } else if (!info.exists) {
+    show("error", "That folder does not exist.");
+  } else if (info.is_project) {
+    show("error", "That is a project folder, not a photo folder. Choose the folder the photos are in.");
+  } else if (info.contains_workspace) {
+    show("error", "Your projects folder is inside this folder, so the project would end "
+      + "up among your photos. Choose the folder of one shoot instead.");
+  } else if (n === 0) {
+    show("error", "No photos found in this folder or its subfolders (JPEG, PNG or RAW).");
+  } else {
+    usable = true;
+    const kinds = [info.photos && `${plural(info.photos, "JPEG/PNG file")}`,
+                   info.raws && `${plural(info.raws, "RAW file")}`].filter(Boolean).join(" and ");
+    const where = info.subfolders
+      ? `in ${plural(info.subfolders, "subfolder")}`
+        + (info.loose ? `, plus ${info.loose.toLocaleString()} directly in the folder` : "")
+      : "directly in this folder";
+    if (info.truncated) {
+      show("warn", `At least ${kinds} ${where}; counting stopped there. A folder this big `
+        + "takes a long time to score. The folder of a single shoot is usually what you want.");
+    } else {
+      show("ok", `Found <b>${kinds}</b> ${where}.`);
+    }
+  }
+  wizardState.photoInfo = { ...info, usable };
+  suggestSceneMode(info);
+}
+
+// Grouping by folder only makes scenes out of subfolders. With none, every photo
+// would land in one scene, so time gaps are the better default there.
+function suggestSceneMode(info) {
+  const note = $("#wiz-scene-note");
+  if (!wizardState.photoInfo?.usable) { note.textContent = ""; return; }
+  if (info.subfolders === 0) {
+    if (!wizardState.sceneTouched) setWizardSceneMode("time_gap");
+    note.textContent = "Suggested for this folder: the photos are not in subfolders, "
+      + "so grouping by folder would put them all in one scene.";
+  } else {
+    if (!wizardState.sceneTouched) setWizardSceneMode("folder");
+    note.textContent = `This folder has ${plural(info.subfolders, "subfolder")} with photos, `
+      + `so By folder gives ${plural(info.subfolders, "scene")}.`;
+  }
 }
 
 function renderWizardSummary() {
@@ -6361,12 +6614,12 @@ async function createProject() {
 
 async function pickAndOpenProject() {
   const status = $("#landing-status");
-  status.textContent = "Choose a project folder…";
+  status.textContent = BROWSE_WAITING;
   try {
     const res = await fetch("/api/browse-folder", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ initial: null }),
+      body: JSON.stringify({ initial: null, purpose: "project" }),
     });
     if (!res.ok) {
       status.textContent = "Browse failed (" + res.status + ").";

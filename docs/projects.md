@@ -2,7 +2,11 @@
 
 - **Workspaces & projects**: pick a workspace folder, then create projects
   inside it *by name* (DaVinci-Resolve style). The landing page lists the
-  projects in each workspace. Photos are referenced by path; if a photo folder
+  projects in each workspace. On first launch it explains the workspace and
+  offers `PictureClassifier-Projects` in your home folder; choosing a folder
+  that already holds photos gets a warning, since the workspace should be
+  separate from them. The new-project wizard counts the photos in the folder
+  you pick and stops you at a folder with none. Photos are referenced by path; if a photo folder
   moves, the app offers to **re-link** it (matching by folder structure, then by
   file name). **Deleting a project never touches your photos**: it renames the
   project folder to `<name>.deleted-<timestamp>` and hides it from the list —

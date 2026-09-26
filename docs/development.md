@@ -28,6 +28,7 @@ uv run python tests/test_objects.py      # subject detection
 uv run python tests/test_cluster.py      # grouping settings
 uv run python tests/test_userstate.py    # remembered view, presets
 uv run python tests/test_paths.py        # app-data dirs, legacy migration
+uv run python tests/test_folderinfo.py   # what the setup screens say about a folder
 ```
 
 Most suites collect their own `test_*` functions out of `globals()` and call

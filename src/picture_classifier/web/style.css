@@ -1558,3 +1558,174 @@ input[type="range"] { accent-color: var(--accent); }
 .film-stock.film-default { border-color: var(--line-strong);
   color: var(--ink-dim); }
 .film-stock.film-default:hover { color: var(--ink); }
+
+/* =====================================================================
+   First launch
+   Nothing is set up until a workspace exists, and "workspace" means nothing
+   to someone who has just installed the app. So the landing opens on a
+   single card that says what the folder is for, shows how it sits beside
+   the photos, and offers a default that needs one click.
+   ===================================================================== */
+
+.onboard { padding: var(--s5); border-color: var(--line-strong); }
+.onboard.hidden, #onboard-choice.hidden, #workspace-card.hidden,
+#projects-card.hidden { display: none; }
+.onboard-steps { list-style: none; margin: 0 0 var(--s4); padding: 0;
+  display: flex; flex-wrap: wrap; gap: var(--s2) var(--s5);
+  font-size: var(--fs-sm); color: var(--ink-faint); }
+.onboard-steps li { display: flex; align-items: center; gap: var(--s2); }
+.onboard-steps li.active { color: var(--ink); font-weight: 600; }
+.onboard-num { width: 20px; height: 20px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: var(--fs-xs); border: 1px solid var(--line-strong); }
+.onboard-steps li.active .onboard-num { background: var(--accent);
+  border-color: var(--accent); color: var(--accent-ink); }
+.landing-card .onboard-title { margin: 0 0 var(--s2); font-size: 18px;
+  letter-spacing: 0; text-transform: none; color: var(--ink); }
+.onboard-lead { margin: 0 0 var(--s4); font-size: var(--fs-md);
+  line-height: 1.6; color: var(--ink-dim); }
+.onboard-lead b { color: var(--ink); font-weight: 600; }
+
+.onboard-diagram { display: grid; grid-template-columns: 1fr auto 1fr;
+  gap: var(--s2); margin-bottom: var(--s4); }
+.od-box { background: var(--sunken); border: 1px solid var(--line);
+  border-radius: var(--r2); padding: var(--s3); min-width: 0;
+  display: flex; flex-direction: column; gap: var(--s2); }
+.od-box-ws { border-color: var(--accent); }
+.od-head { font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.6px;
+  text-transform: uppercase; color: var(--ink-dim); }
+.od-head span { text-transform: none; letter-spacing: 0; font-weight: 400;
+  color: var(--ink-faint); }
+.od-tree { list-style: none; margin: 0; padding: 0; display: flex;
+  flex-direction: column; gap: 3px; font-family: var(--mono);
+  font-size: var(--fs-xs); color: var(--ink); }
+.od-tree li { display: flex; align-items: center; gap: 5px; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.od-tree li.d1 { padding-left: 14px; }
+.od-tree li.d2 { padding-left: 28px; color: var(--ink-dim); }
+.od-tree .icon { color: var(--ink-faint); }
+.od-tree li.od-mark .icon { color: var(--accent); }
+.od-tree em { font-style: normal; font-family: var(--font); color: var(--accent);
+  margin-left: 2px; }
+.od-foot { margin-top: auto; font-size: var(--fs-xs); color: var(--ink-faint);
+  line-height: 1.5; }
+.od-arrow { display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 5px; font-size: var(--fs-xs);
+  color: var(--ink-faint); white-space: nowrap; }
+/* Points from the project back at its photos: a project refers to them, it
+   does not hold them. */
+.od-arrow-line { width: 48px; height: 1px; background: var(--line-strong);
+  position: relative; }
+.od-arrow-line::before { content: ""; position: absolute; left: -2px; top: -4px;
+  border: 4px solid transparent; border-right: 7px solid var(--line-strong);
+  border-left: 0; }
+
+.onboard-choice { display: flex; flex-direction: column; gap: var(--s2);
+  padding: var(--s3) var(--s4); border: 1px solid var(--line);
+  border-radius: var(--r2); background: var(--raised); }
+.onboard-choice-label { font-size: var(--fs-xs); font-weight: 600;
+  letter-spacing: 0.6px; text-transform: uppercase; color: var(--pick); }
+.onboard-path { display: block; font-family: var(--mono); font-size: var(--fs-sm);
+  background: var(--sunken); color: var(--ink); padding: 6px 8px;
+  border-radius: var(--r1); word-break: break-all; }
+.onboard-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.onboard-actions button { padding: 7px 14px; font-size: var(--fs-md); }
+.onboard-warning { margin-top: var(--s3); padding: var(--s3) var(--s4);
+  border: 1px solid var(--review); border-radius: var(--r2);
+  background: rgba(212, 160, 44, 0.08); display: flex; flex-direction: column;
+  gap: var(--s2); }
+.onboard-warning.hidden { display: none; }
+.onboard-warning p { margin: 0; display: flex; gap: var(--s2);
+  align-items: flex-start; font-size: var(--fs-md); line-height: 1.55; }
+.onboard-warning p .icon { color: var(--review); margin-top: 2px; }
+.onboard-tips { margin: var(--s4) 0 0; padding-left: 18px; font-size: var(--fs-sm);
+  color: var(--ink-dim); line-height: 1.7; }
+.onboard-status { margin-top: var(--s2); font-size: var(--fs-sm);
+  color: var(--ink-dim); }
+.onboard-status:empty { display: none; }
+
+/* An empty workspace says what to do rather than showing a lone "+". */
+.project-empty { grid-column: span 2; align-self: center; margin: 0;
+  font-size: var(--fs-sm); line-height: 1.6; color: var(--ink-dim); }
+
+/* What the chosen photo folder holds, under the path, so a wrong pick shows
+   before anything is created. Indented to line up with the input. */
+.folder-info { margin: -2px 0 10px 120px; min-height: 1.6em; display: flex;
+  gap: 6px; align-items: flex-start; font-size: var(--fs-sm); line-height: 1.6;
+  color: var(--ink-dim); }
+.folder-info:empty { display: none; }
+.folder-info .icon { margin-top: 3px; }
+.folder-info.ok .icon { color: var(--pick); }
+.folder-info.ok b { color: var(--ink); }
+.folder-info.warn { color: var(--review); }
+.folder-info.error { color: var(--reject); }
+.landing-help.wiz-scene-note { padding-left: 0; margin: 6px 0 0; line-height: 1.5; }
+.landing-help.wiz-scene-note:empty { display: none; }
+
+/* =====================================================================
+   Fitting smaller windows
+   A 1080p laptop at 150% scaling leaves about 1280x600 once the browser
+   takes its share, and these are the places that did not fit in it.
+   ===================================================================== */
+
+/* The tip was fixed over the top of the page, so until it was dismissed it
+   sat on the scene title, the paging and half the toolbar. It is part of the
+   main column now and pushes the toolbar down instead. */
+#welcome-banner { position: static; left: auto; right: auto; top: auto;
+  z-index: auto; flex: 0 0 auto; align-items: flex-start;
+  padding: var(--s2) var(--s3); line-height: 1.6; font-size: var(--fs-sm); }
+#welcome-banner kbd { font-family: var(--mono); font-size: var(--fs-xs);
+  padding: 0 5px; border-radius: 3px; border: 1px solid var(--line-strong);
+  background: var(--raised); }
+#welcome-banner .wb-badge { font-size: var(--fs-xs); font-weight: 600;
+  letter-spacing: 0.4px; padding: 1px 5px; border-radius: 3px;
+  background: var(--auto-review); color: #f5dc8c; }
+#welcome-banner-dismiss { flex-shrink: 0; }
+
+/* The rail's panels kept their full height on a short window, so the scene
+   list, which the rail is for, was the one thing squeezed, down to a single
+   row. The list now keeps a usable height and the rail scrolls past it. */
+#sidebar { overflow-y: auto; }
+#sidebar > :not(#scene-list) { flex-shrink: 0; }
+/* The People and Subjects sections carry the padding now, but their heads and
+   bodies kept their own from before, which indented them twice over and cost
+   the rail height it does not have. */
+#people-section-head, #subject-section-head, #people-chips, #people-empty,
+#subject-classes, #subject-groups { padding: 0; }
+#subject-groups:not(:empty) { margin-top: var(--s1); }
+#scene-list { flex: 1 1 0; min-height: min(200px, 38vh); }
+
+/* The scoring formula, one click away rather than a heading with nothing
+   under it. */
+#sidebar-footer > summary { cursor: pointer; font-size: var(--fs-xs);
+  font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase;
+  color: var(--ink-faint); padding: 2px 0; }
+#sidebar-footer > summary:hover { color: var(--ink-dim); }
+#sidebar-footer[open] > summary { margin-bottom: var(--s2); }
+#sidebar-footer .criteria { display: block; }
+
+/* The viewer's bottom bar squeezed the scores into a one-word column when the
+   shortcut list did not fit beside them, and the bar grew to a third of the
+   screen. Pieces wrap onto a second row now. */
+#modal-bottom { flex-wrap: wrap; row-gap: 6px; }
+#modal-scores { flex: 1 1 320px; min-width: 0; }
+#modal-help { flex: 1 1 420px; min-width: 0; }
+#modal-title { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+
+.score-box { min-width: min(460px, 92vw); max-width: min(640px, 92vw); }
+
+@media (max-width: 680px) {
+  #landing { padding: var(--s4) var(--s3); }
+  .onboard { padding: var(--s4); }
+  .onboard-diagram { grid-template-columns: 1fr; }
+  .od-arrow { display: none; }
+  .landing-row > label { width: 100%; }
+  .landing-row input[type="text"] { min-width: 0; }
+  /* The wizard indents its help to line up with the inputs; there is no
+     column to line up with once the label sits above. */
+  .landing-help, .wizard-step .landing-help[style] { padding-left: 0 !important; }
+  .folder-info { margin-left: 0; }
+  .start-cards { grid-template-columns: 1fr; }
+  .project-empty { grid-column: auto; }
+}

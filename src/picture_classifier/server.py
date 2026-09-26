@@ -27,7 +27,7 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel
 
 from . import (
-    cameras, db, editing, exifinfo, film as film_mod, hdr,
+    cameras, db, editing, exifinfo, film as film_mod, folderinfo, hdr,
     presets as presets_mod, raw, relink, scenes, segment as segment_mod,
     userstate, watermark as watermark_mod,
 )
@@ -238,6 +238,14 @@ class RevealPayload(BaseModel):
 
 class BrowsePayload(BaseModel):
     initial: str | None = None
+    # What the folder is for, which picks the dialog's title. A fixed set rather
+    # than free text: the title is spliced into an AppleScript on macOS.
+    purpose: Literal["photos", "workspace", "project", "relink", "export"] = "photos"
+
+
+class InspectPayload(BaseModel):
+    path: str
+    workspace: str | None = None
 
 
 class ForgetPayload(BaseModel):
@@ -1068,20 +1076,29 @@ def _summarize_other_files(
     return "found only " + ", ".join(f"{n} {ext}" for ext, n in top)
 
 
-def _native_pick_folder(initial: str | None = None) -> dict[str, Any]:
+_BROWSE_PROMPTS = {
+    "photos": "Select the folder with your photos",
+    "workspace": "Select a folder to keep your projects in",
+    "project": "Select a project folder",
+    "relink": "Select the new location of the photos",
+    "export": "Select a folder to copy the picks into",
+}
+
+
+def _native_pick_folder(initial: str | None = None, purpose: str = "photos") -> dict[str, Any]:
     """Open a native folder dialog. Returns {path, cancelled, error}.
     macOS uses AppleScript (`osascript`); other platforms fall back to Tk."""
+    prompt = _BROWSE_PROMPTS[purpose]
     if platform.system() == "Darwin":
         # `Finder activate` brings the choose-folder dialog to the foreground
         # reliably without requiring Accessibility/Automation permissions.
-        prompt_safe = "Select photo folder"
         if initial and Path(initial).is_dir():
             choose = (
-                f'choose folder with prompt "{prompt_safe}" '
+                f'choose folder with prompt "{prompt}" '
                 f'default location POSIX file "{initial}"'
             )
         else:
-            choose = f'choose folder with prompt "{prompt_safe}"'
+            choose = f'choose folder with prompt "{prompt}"'
         script = (
             'tell application "Finder" to activate\n'
             f'set f to POSIX path of ({choose})\n'
@@ -1110,7 +1127,11 @@ def _native_pick_folder(initial: str | None = None) -> dict[str, Any]:
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
-        path = filedialog.askdirectory(initialdir=initial or str(Path.home()))
+        # Parented to the topmost root, or on Windows the dialog can open
+        # behind the browser that asked for it.
+        path = filedialog.askdirectory(
+            parent=root, title=prompt, initialdir=initial or str(Path.home()),
+        )
         root.destroy()
         return {"path": path or None, "cancelled": not path, "error": None}
     except Exception as exc:
@@ -1211,8 +1232,16 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
 
     @app.post("/api/browse-folder")
     def browse_folder(payload: BrowsePayload | None = None) -> dict[str, Any]:
-        initial = payload.initial if payload else None
-        return _native_pick_folder(initial)
+        payload = payload or BrowsePayload()
+        return _native_pick_folder(payload.initial, payload.purpose)
+
+    @app.post("/api/folder/inspect")
+    def inspect_folder(payload: InspectPayload) -> dict[str, Any]:
+        """Describe a folder before it is used as photos or as a workspace."""
+        if not payload.path.strip():
+            raise HTTPException(status_code=400, detail="path is required")
+        workspace = Path(payload.workspace) if payload.workspace else None
+        return folderinfo.inspect(Path(payload.path.strip()), workspace=workspace)
 
     @app.get("/api/recents")
     def get_recents() -> dict[str, Any]:
@@ -1498,10 +1527,14 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     def get_workspaces() -> dict[str, Any]:
         ws = userstate.get_workspaces()
         cur = userstate.get_current_workspace()
-        if not ws:  # seed a sensible default (not persisted until used)
+        # Nothing chosen yet: the landing walks through choosing one rather
+        # than quietly using the default.
+        first_run = not ws
+        if first_run:  # seed a sensible default (not persisted until used)
             cur = str(userstate.DEFAULT_WORKSPACE)
             ws = [cur]
-        return {"workspaces": ws, "current": cur}
+        return {"workspaces": ws, "current": cur, "first_run": first_run,
+                "default": str(userstate.DEFAULT_WORKSPACE), "sep": os.sep}
 
     @app.post("/api/workspaces")
     def add_workspace(payload: WorkspacePayload) -> dict[str, Any]:
