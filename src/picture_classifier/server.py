@@ -601,6 +601,7 @@ class AppContext:
         self.raw_cache_root.mkdir(parents=True, exist_ok=True)
         self._rebuild_index()
         self.opening_state["ready"] = True
+        _warm_thumbs(self)
 
     def reload_data(self) -> None:
         assert self.db_path is not None
@@ -1460,6 +1461,14 @@ def _ensure_thumb(src: Path, thumbs_root: Path, rel_path: str,
         if fresh():
             return dst    # another request built it while we waited
         with Image.open(src) as img:
+            # A JPEG is decoded at the smallest DCT scale that still covers the
+            # thumbnail (1/4 of a 33 MP frame), asked for in the thumbnail's own
+            # shape: a square box lets the short side cap it at 1/2. 190 -> 125
+            # ms; the rest is entropy decoding, which no scale avoids. Within 1
+            # level of a full decode on average, 5 on the 99th percentile.
+            w, h = img.size
+            img.draft("RGB", (THUMB_LONG_EDGE, max(1, round(THUMB_LONG_EDGE * h / w))) if w >= h
+                      else (max(1, round(THUMB_LONG_EDGE * w / h)), THUMB_LONG_EDGE))
             img = ImageOps.exif_transpose(img)
             img.thumbnail((THUMB_LONG_EDGE, THUMB_LONG_EDGE), Image.Resampling.LANCZOS)
             img = img.convert("RGB")
@@ -1488,30 +1497,59 @@ def _ensure_thumb(src: Path, thumbs_root: Path, rel_path: str,
 _PREBUILD = ThreadPoolExecutor(max_workers=1, thread_name_prefix="thumb-prebuild")
 
 
+def _build_thumb_for(ctx: "AppContext", rel_path: str, photo: dict[str, Any]) -> None:
+    _ensure_thumb(_thumb_source(ctx, rel_path, photo), ctx.thumbs_root,
+                  rel_path, photo.get("edit"), ctx.photo_meta(rel_path),
+                  auto_fields=lambda r=rel_path, p=photo:
+                      ctx.auto_fields(r, p.get("edit")),
+                  range_src=lambda r=rel_path, p=photo:
+                      ctx.range_src(r, p.get("edit")),
+                  luts=lambda p=photo: _lut_tables(ctx, p.get("edit")),
+                  faces=lambda r=rel_path, p=photo: ctx.portrait_faces(r, p.get("edit")))
+
+
+def _report(fut: "Future[None]") -> None:
+    # An executor keeps a worker's exception inside the Future, where it
+    # would be lost. Nothing here can be recovered from, so print the trace
+    # and let the request path hit the same failure out loud.
+    exc = fut.exception()
+    if exc is not None:
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+
+
 def _prebuild_thumbs(ctx: "AppContext", rel_paths: "list[str]") -> None:
     def build() -> None:
         for rel_path in rel_paths:
             photo = ctx.photo_index.get(rel_path)
             if photo is None or ctx.thumbs_root is None:
                 continue
-            _ensure_thumb(_thumb_source(ctx, rel_path, photo), ctx.thumbs_root,
-                          rel_path, photo.get("edit"), ctx.photo_meta(rel_path),
-                          auto_fields=lambda r=rel_path, p=photo:
-                              ctx.auto_fields(r, p.get("edit")),
-                          range_src=lambda r=rel_path, p=photo:
-                              ctx.range_src(r, p.get("edit")),
-                          luts=lambda p=photo: _lut_tables(ctx, p.get("edit")),
-                          faces=lambda r=rel_path, p=photo: ctx.portrait_faces(r, p.get("edit")))
+            _build_thumb_for(ctx, rel_path, photo)
 
-    def report(fut: "Future[None]") -> None:
-        # An executor keeps a worker's exception inside the Future, where it
-        # would be lost. Nothing here can be recovered from, so print the trace
-        # and let the request path hit the same failure out loud.
-        exc = fut.exception()
-        if exc is not None:
-            traceback.print_exception(type(exc), exc, exc.__traceback__)
+    _PREBUILD.submit(build).add_done_callback(_report)
 
-    _PREBUILD.submit(build).add_done_callback(report)
+
+# A project just opened has its thumbnails made ahead of the grid asking, in
+# scene order: a fresh 33 MP shoot showed black tiles while each one took an
+# eighth of a second. Three workers; a request for a tile they are building
+# waits on `_ensure_thumb`'s lock instead of repeating it, and one they have
+# not reached is simply built by the request. Opening another project ends
+# the round: every queued photo checks it is still the project's.
+_WARM = ThreadPoolExecutor(max_workers=3, thread_name_prefix="thumb-warm")
+_warm_round = [0]
+
+
+def _warm_thumbs(ctx: "AppContext") -> None:
+    _warm_round[0] += 1
+    round_, thumbs_root = _warm_round[0], ctx.thumbs_root
+    photos = sorted(ctx.data["photos"], key=lambda p: (str(p.get("scene") or ""), p["rel_path"]))
+
+    def one(photo: dict[str, Any]) -> None:
+        if _warm_round[0] != round_ or ctx.thumbs_root != thumbs_root:
+            return
+        _build_thumb_for(ctx, photo["rel_path"], photo)
+
+    for photo in photos:
+        _WARM.submit(one, photo).add_done_callback(_report)
 
 
 def _ensure_face_crop(
