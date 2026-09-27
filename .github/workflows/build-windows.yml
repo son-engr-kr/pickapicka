@@ -86,6 +86,19 @@ jobs:
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
           if (-not $ok) { throw "the app never answered on /api/state (exited: $($p.HasExited))" }
 
+      - name: Smoke-test scoring on Korean paths
+        shell: pwsh
+        run: |
+          # Starting is not opening photos: 0.7.1 started fine and then could
+          # not score any folder with Korean in its path. This creates and
+          # scores a project the way the UI does, with the home folder, the
+          # workspace and the photos all on such paths.
+          uv run python packaging/smoke_score.py "dist\picture-classifier\picture-classifier.exe"
+          $code = $LASTEXITCODE
+          $log = Join-Path $env:LOCALAPPDATA "picture-classifier\app.log"
+          if (Test-Path $log) { Write-Host "--- app.log"; Get-Content $log -Tail 200 }
+          if ($code -ne 0) { throw "the scoring smoke test failed ($code)" }
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 

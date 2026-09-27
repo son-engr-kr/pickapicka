@@ -1,0 +1,35 @@
+name: Tests
+
+# The suite on both platforms the app ships for. Every Windows-only bug so far
+# (no stdout in a windowed exe, backslash paths, OpenCV unable to open a Korean
+# path) passed on macOS, where development happens, and reached users.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install Python and project deps
+        run: uv sync --frozen
+
+      - name: Run the suite
+        run: uv run pytest tests/ -q

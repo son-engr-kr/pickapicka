@@ -33,6 +33,8 @@ uv run python tests/test_metadata.py     # EXIF and colour profile on export
 uv run python tests/test_exporting.py    # export names, sizes, formats, copying
 uv run python tests/test_portrait.py     # skin smoothing
 uv run python tests/test_app_entry.py    # the bundled app starting with no console
+uv run pytest tests/test_imfile.py      # image files on Korean and other non-ASCII paths
+uv run pytest tests/test_scenes.py      # folder and time-gap scene grouping
 ```
 
 Most suites collect their own `test_*` functions out of `globals()` and call
@@ -50,6 +52,28 @@ They lean on properties rather than golden images: that a window of a render
 matches the same part of the whole render, that a neutral setting is a genuine
 no-op, that grain does not change size with the render resolution. Those are the
 things that broke in practice.
+
+## Windows
+
+Development happens on macOS, and every Windows-only bug so far passed there:
+a windowed exe starting with no stdout, paths split on `/` where Windows uses
+`\`, and OpenCV unable to open a path with Korean in it. Three things now
+catch that class of bug before a user does:
+
+- **Tests** (`.github/workflows/tests.yml`) runs the whole suite on Windows and
+  macOS on every push and pull request.
+- The **Build Windows app** and **Build macOS app** workflows start the built
+  app, then run `packaging/smoke_score.py` against it: it creates and scores a
+  project the way the UI does, with the home folder, the workspace and the
+  photos all on Korean paths with spaces, and reads every thumbnail and image
+  back.
+- `cv2.imread` / `cv2.imwrite` hand the path to the C runtime as a narrow
+  string, which Windows reads in the ANSI code page. Use `imfile.imread` /
+  `imfile.imwrite`, which open the file in Python and pass OpenCV the bytes;
+  `tests/test_imfile.py` fails on any direct call left in the package.
+
+Text files are always opened with an explicit `encoding="utf-8"`: the Windows
+default is the ANSI code page too (cp949 on a Korean system).
 
 ## Cutting a release
 

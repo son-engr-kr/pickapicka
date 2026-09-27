@@ -68,6 +68,12 @@ jobs:
           kill "$PID" 2>/dev/null || true
           test "$OK" = 1 || { echo "the app never answered on /api/state"; exit 1; }
 
+      - name: Smoke-test scoring on Korean paths
+        run: |
+          # Creates and scores a project the way the UI does, with the home
+          # folder, the workspace and the photos on Korean paths with spaces.
+          uv run python packaging/smoke_score.py "dist/Picture Classifier.app/Contents/MacOS/picture-classifier"
+
       - name: Create .pkg installer
         run: |
           PKG="dist/Picture-Classifier-${{ steps.ver.outputs.tag }}-macos-arm64.pkg"
