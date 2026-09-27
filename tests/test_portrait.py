@@ -28,8 +28,17 @@ def _face() -> dict:
     rng = np.random.default_rng(1)
     for idx, (cx, cy) in groups.items():
         lm[list(idx)] = [cx, cy] + rng.uniform(-0.03, 0.03, (len(idx), 2))
-    return {"box": [0.25, 0.22, 0.50, 0.56], "crop": [0.05, 0.05, 0.9, 0.9],
-            "landmarks": lm.tolist(), "skin": np.ones((96, 96), np.float32),
+    # Skin as an oval inside the face box, over the crop, the shape the
+    # segmenter gives a face.
+    import cv2
+    skin = np.zeros((96, 96), np.float32)
+    box, crop = [0.25, 0.22, 0.50, 0.56], [0.05, 0.05, 0.9, 0.9]
+    cx = (box[0] + box[2] / 2 - crop[0]) / crop[2] * 96
+    cy = (box[1] + box[3] / 2 - crop[1]) / crop[3] * 96
+    cv2.ellipse(skin, (int(cx), int(cy)), (int(box[2] / crop[2] * 48), int(box[3] / crop[3] * 48)),
+                0, 0, 360, 1.0, -1)
+    return {"box": box, "crop": crop,
+            "landmarks": lm.tolist(), "skin": cv2.GaussianBlur(skin, (0, 0), 1.5),
             "skin_luma": 0.58,
             "ramps": {"teeth": [55.0, 80.0], "eyes": [60.0, 88.0]}}
 
@@ -152,6 +161,41 @@ def test_whitening_in_a_window_matches_the_whole_render() -> None:
     win = portrait.apply_portrait(img[py0:y1 + pad, px0:x1 + pad], params, [face],
                                   roi=(px0 / N, py0 / N, (x1 - x0 + 2 * pad) / N, (y1 - y0 + 2 * pad) / N))
     assert np.abs(win[pad:pad + y1 - y0, pad:pad + x1 - x0] - whole[y0:y1, x0:x1]).max() < 1e-4
+
+
+def _with_spots(spots) -> np.ndarray:
+    """The test skin, uint8, with spots planted as (x, y, dL, da) in CIELAB
+    units, each 1% of the face width across."""
+    import cv2
+    img = _skin()
+    lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
+    face_px = _face()["box"][2] * N
+    yy, xx = np.mgrid[0:N, 0:N]
+    for x, y, dl, da in spots:
+        g = np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * (0.01 * face_px) ** 2)).astype(np.float32)
+        lab[..., 0] += dl * g
+        lab[..., 1] += da * g
+    return np.rint(np.clip(cv2.cvtColor(lab, cv2.COLOR_LAB2RGB), 0, 1) * 255).astype(np.uint8)
+
+
+def test_blemishes_are_found_where_they_are_and_nowhere_else() -> None:
+    """A dark spot and a red one of a visible contrast (8 L, 12 a*) are found;
+    the skin's own pores and blotches, at a real cheek's amplitude, are not."""
+    face = _face()
+    assert portrait.find_blemishes(_with_spots([]), [face]) == []
+    planted = [(215, 330, -8.0, 0.0), (385, 345, 0.0, 12.0)]
+    ops = portrait.find_blemishes(_with_spots(planted), [face])
+    assert len(ops) == 2, ops
+    for x, y, _, _ in planted:
+        assert any(abs(o["points"][0][0] * N - x) < 4 and abs(o["points"][0][1] * N - y) < 4 for o in ops)
+    assert all(o["kind"] == "spot" and 0 < o["radius"] < 0.05 for o in ops)
+
+
+def test_a_spot_on_a_feature_is_not_a_blemish() -> None:
+    """Dark and round, but in an eye: a pupil, not a blemish."""
+    face = _face()
+    eye = np.asarray(face["landmarks"])[list(portrait.EYE_L)].mean(axis=0) * N
+    assert portrait.find_blemishes(_with_spots([(eye[0], eye[1], -20.0, 0.0)]), [face]) == []
 
 
 def test_render_needs_the_faces_and_smooths_with_them() -> None:

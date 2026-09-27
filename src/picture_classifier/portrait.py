@@ -72,6 +72,27 @@ in line with the dental shade guides (VITA A2 is about L 77, a 1.5, b 20). For
 eyes a chroma limit is the right test: the whites are near-neutral, while
 eyelid skin and the coloured reflections in glasses are not.
 
+Blemishes
+---------
+`find_blemishes` does not retouch anything itself. It returns spot heals for
+the healing module, which the editor adds to the photo's list, so every one is
+visible and can be removed. A blemish is a spot that is darker or redder than
+the skin around it, at a size between 0.6% and 1.6% of the face width, found as
+a peak of the difference of Gaussians in L and in a*. Its strength is measured
+against the robust spread of the same band over that face's skin, so pores and
+noise set the floor. The first cut found folds, glasses rims, nostrils, eye
+bags and the edge of the jaw on two real, clear-skinned faces. Three changes
+took that down to two small dark spots on the cheeks, which look real, and one
+blue reflection of a light in a lens, which is not. The changes: the spot must
+be round (both Hessian eigenvalues of one sign, the smaller over 0.4 of the
+larger, which a crease or a rim is not); the nose and a wide zone round the
+eyes are left out; the skin is eroded by 3% of the face width; and a spot
+bluer than the skin (b* more than 6 below its median) is a reflection, since
+skin gone wrong goes darker or redder. The threshold of 6 is where the last
+false one on clear skin went. What is not measured is recall on real acne,
+since neither face had any; the tests show it finds planted spots of a
+visible contrast.
+
 Everything is local to a box around each face, so the cost follows the faces
 and not the megapixels, and a window render gets identical pixels given
 `padding` around it.
@@ -396,3 +417,107 @@ def _smooth_face(out: np.ndarray, face: dict[str, Any], region: tuple[int, int, 
     even = _guided(low, guide, max(1, int(round(_EVEN_RADIUS * face_px))), eps)
     smoothed = reg + (amount * (even - low))
     out[y0:y1, x0:x1] = reg + (smoothed - reg) * alpha[..., None]
+
+
+# ----- blemishes ----------------------------------------------------------
+
+_BLEMISH_SCALES = (0.006, 0.010, 0.016)   # DoG sigmas, fractions of the face width
+_BLEMISH_Z = 6.0          # strength against the skin's own spread in that band
+_BLEMISH_ROUND = 0.4      # smaller over larger Hessian eigenvalue, at least
+_BLEMISH_ERODE = 0.03     # how far inside the skin's edge to look, of the face width
+_BLEMISH_MAX = 40         # per face
+# Left out besides the features: the nose (nostrils and the creases of its
+# wings are dark and round enough to pass) and a wide zone round each eye (the
+# lid crease and the shadow of a bag under it).
+_BLEMISH_SKIP = ((tuple(range(76, 86)), 1.6), (EYE_L, 1.9), (EYE_R, 1.9))
+_HEAL_OVER = 2.5          # a spot heal's radius, in DoG sigmas: the blob and its rim
+_BLEMISH_BLUE = -6.0      # b* below the skin's median past which a spot is not skin
+
+
+def _roundness(ch: np.ndarray, sigma: float, sign: float) -> np.ndarray:
+    """0 unless both Hessian eigenvalues have the sign of a spot (`sign` +1
+    for a minimum, -1 for a maximum); then their ratio, smaller over larger."""
+    g = cv2.GaussianBlur(ch, (0, 0), sigma)
+    xx = cv2.Sobel(g, cv2.CV_32F, 2, 0, ksize=3)
+    yy = cv2.Sobel(g, cv2.CV_32F, 0, 2, ksize=3)
+    xy = cv2.Sobel(g, cv2.CV_32F, 1, 1, ksize=3)
+    tr, det = (xx + yy) * sign, xx * yy - xy * xy
+    disc = np.sqrt(np.maximum(tr * tr / 4.0 - det, 0.0))
+    l1, l2 = tr / 2.0 + disc, tr / 2.0 - disc
+    return np.where((l1 > 0) & (l2 > 0), l2 / np.maximum(l1, 1e-9), 0.0)
+
+
+def find_blemishes(rgb: np.ndarray, faces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Spot heals for the blemishes on every face, on a WHOLE uint8 frame.
+
+    Returned in the healing module's op format, positions and radius as
+    fractions of the frame (the radius of its width), strongest first.
+    """
+    assert rgb.dtype == np.uint8 and rgb.ndim == 3, "find_blemishes wants the uint8 frame"
+    H, W = rgb.shape[:2]
+    ops: list[dict[str, Any]] = []
+    for face in faces:
+        fw = face["box"][2] * W
+        if fw < 60:
+            continue            # too small for a blemish to be more than a pixel
+        # The context crop rather than the face box, so every filter has real
+        # pixels round the skin rather than a reflected border.
+        cx, cy, cw, ch = face["crop"]
+        x, y = max(0, int(cx * W)), max(0, int(cy * H))
+        x1, y1 = min(W, int(math.ceil((cx + cw) * W))), min(H, int(math.ceil((cy + ch) * H)))
+        alpha = _skin_alpha(face, (x, y, x1, y1), W, H, 0.0, 0.0, fw)
+        inner = (alpha > 0.85).astype(np.uint8)
+        lm = np.asarray(face["landmarks"], np.float32) * [W, H] - [x, y]
+        for idx, grow in _BLEMISH_SKIP:
+            pts = lm[list(idx)]
+            c = pts.mean(axis=0)
+            cv2.fillConvexPoly(inner, cv2.convexHull(((pts - c) * grow + c).round().astype(np.int32)), 0)
+        r = max(1, int(round(_BLEMISH_ERODE * fw)))
+        # Outside the crop counts as not skin; erode's default treats it as skin.
+        inner = cv2.erode(inner, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1)),
+                          borderType=cv2.BORDER_CONSTANT, borderValue=0)
+        # Found inside the face box only: the crop's margin is context for the
+        # filters, not a place to look (neck, shoulders and hairline).
+        box = np.zeros_like(inner)
+        bx0, by0 = int(face["box"][0] * W) - x, int(face["box"][1] * H) - y
+        box[max(0, by0):by0 + int(face["box"][3] * H), max(0, bx0):bx0 + int(fw)] = 1
+        sel = (inner > 0) & (box > 0)
+        if int(sel.sum()) < 50:
+            continue
+        lab = cv2.cvtColor(rgb[y:y1, x:x1].astype(np.float32) / 255.0, cv2.COLOR_RGB2LAB)
+        L, A, B = lab[..., 0], lab[..., 1], lab[..., 2]
+        b_med = float(np.median(B[sel]))
+        found = []
+        for frac in _BLEMISH_SCALES:
+            s = frac * fw
+            dl = cv2.GaussianBlur(L, (0, 0), s) - cv2.GaussianBlur(L, (0, 0), 2.5 * s)
+            da = cv2.GaussianBlur(A, (0, 0), s) - cv2.GaussianBlur(A, (0, 0), 2.5 * s)
+            zs = []
+            for band, sign in ((dl, -1.0), (da, 1.0)):
+                med = float(np.median(band[sel]))
+                spread = 1.4826 * float(np.median(np.abs(band[sel] - med))) + 1e-6
+                zs.append(sign * (band - med) / spread)
+            z = np.maximum(*zs)
+            z[~sel] = 0.0
+            round_ = np.maximum(_roundness(L, s, 1.0), _roundness(A, s, -1.0))
+            peak = (z == cv2.dilate(z, np.ones((3, 3), np.uint8))) & (z > _BLEMISH_Z) \
+                & (round_ > _BLEMISH_ROUND)
+            # A blemish is skin gone darker or redder, never bluer: a spot well
+            # below the skin's b* is a reflection in glasses or a light.
+            bs = cv2.GaussianBlur(B, (0, 0), s)
+            for py, px in zip(*np.nonzero(peak)):
+                if bs[py, px] - b_med < _BLEMISH_BLUE:
+                    continue
+                found.append((float(z[py, px]), float(px + x), float(py + y), s))
+        # Strongest first, one per place: a larger spot absorbs the smaller
+        # detections inside it.
+        found.sort(reverse=True)
+        kept: list[tuple[float, float, float, float]] = []
+        for z_, px, py, s in found:
+            if all(math.hypot(px - qx, py - qy) > _HEAL_OVER * max(s, qs) for _, qx, qy, qs in kept):
+                kept.append((z_, px, py, s))
+        for _, px, py, s in kept[:_BLEMISH_MAX]:
+            ops.append({"kind": "spot", "points": [[px / W, py / H]],
+                        "radius": _HEAL_OVER * s / W, "feather": 50, "opacity": 100,
+                        "method": "ns", "enabled": True})
+    return ops

@@ -112,6 +112,14 @@ Two stages that fix the captured image rather than interpret it, and they run
 - **Whiten eyes** clears redness from the whites of the eyes and lifts them,
   inside the eye outlines. Coloured reflections in glasses and the eyelid skin
   are not near-neutral, so they are left out.
+- **Remove blemishes** finds spots on every face, at full resolution, and heals
+  each with a spot heal in the **Heal & red eye** list, where any of them can be
+  switched off or removed. A blemish is a round spot, darker or redder than the
+  skin round it and never bluer. It is found at sizes from 0.6% to 1.6% of the
+  face width and judged against that skin's own pores. The eyes, the nose and a
+  wide zone round the eyes are left out, as is the edge of the skin. On two
+  real, clear-skinned faces it found the one small dark spot each had and
+  nothing else. It has not been measured on real acne.
 - Faces are found once per photo when the panel is opened, and marked on the
   photo while it is open. A face under about 4% of the frame is left alone.
 

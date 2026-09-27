@@ -225,7 +225,10 @@ Skin — the frequency-separation family, all as sliders on a skin mask:
   editor's Portrait panel (`portrait.py`): face-scaled frequency separation
   with a guided filter, on a per-face-crop skin segmentation with the
   features cut out by 106-point landmarks (`landmark_2d_106` from buffalo_l,
-  already downloaded, so no new model). AI Blemish Remover to follow.
+  already downloaded, so no new model). ~~AI Blemish Remover~~ `done` as
+  **Remove blemishes**, which finds round dark or red spots on the skin and
+  adds them to the photo as spot heals (`portrait.find_blemishes`). Precision
+  checked on clear skin, recall only on planted spots.
 - AI Frequency Separation, AI Dodge and Burn (skin contouring)
 - Facial Wrinkle Remover, AI Frown Lines Remover, Remove Marionette Lines,
   Remove Dark Circles, Freckles Filter

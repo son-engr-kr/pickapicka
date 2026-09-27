@@ -3086,6 +3086,31 @@ function renderPortraitPanel() {
   }
 }
 
+async function removeBlemishes() {
+  const status = $("#portrait-faces");
+  status.textContent = "looking for blemishes at full resolution…";
+  const res = await fetch("/api/edit/blemishes", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rel_path: editSession.relPath, edit: opticsPayload() }),
+  });
+  if (!res.ok) { status.textContent = `blemish search failed: ${res.status}`; return; }
+  const { ops, faces } = await res.json();
+  // Skip any already covered by a spot, so pressing it twice does not stack.
+  const have = healOps();
+  const fresh = ops.filter((o) => !have.some((h) => h.kind === "spot"
+    && Math.hypot(h.points[0][0] - o.points[0][0], h.points[0][1] - o.points[0][1]) < Math.max(h.radius, o.radius)));
+  if (fresh.length) {
+    setHealOps([...have, ...fresh]);
+    repairChanged();
+    // Open the list they went into, so each one can be seen and taken out.
+    $("#edit-repair-group").open = true;
+  }
+  status.textContent = !faces ? "No faces found."
+    : fresh.length === 1 ? "removed 1 blemish; it is a spot in Heal & red eye"
+    : fresh.length ? `removed ${fresh.length} blemishes; they are spots in Heal & red eye`
+    : ops.length ? "those are already removed" : "No blemishes found.";
+}
+
 function drawPortraitFaces(ctx, mr) {
   if (!$("#edit-portrait-group").open || !portraitState.faces) return;
   ctx.save();
@@ -3104,6 +3129,7 @@ function bindPortraitPanel() {
     if ($("#edit-portrait-group").open && editSession.relPath) loadPortraitFaces();
     drawOverlay();
   });
+  $("#portrait-blemishes").addEventListener("click", removeBlemishes);
   for (const k of PORTRAIT_KEYS) {
     $(`#portrait-${k}`).addEventListener("input", (e) => {
       const v = parseInt(e.target.value, 10);

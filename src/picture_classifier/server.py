@@ -2275,6 +2275,18 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         faces = ctx.faces_for(payload.rel_path, payload.edit)
         return {"faces": [{"box": f["box"]} for f in faces]}
 
+    @app.post("/api/edit/blemishes")
+    def portrait_blemishes(payload: FacesPayload) -> dict[str, Any]:
+        """Spot heals for the blemishes on every face, found at full resolution
+        (on the preview a blemish is a pixel or two). Returned, not applied: the
+        editor adds them to the healing list, where each can be removed."""
+        _require_loaded()
+        if ctx.photo_index.get(payload.rel_path) is None:
+            raise HTTPException(status_code=404, detail="photo not found")
+        faces = ctx.faces_for(payload.rel_path, payload.edit)
+        full = ctx.get_corrected_full(payload.rel_path, payload.edit)
+        return {"ops": portrait_mod.find_blemishes(full, faces), "faces": len(faces)}
+
     @app.post("/api/edit/upright")
     def upright(payload: UprightPayload) -> dict[str, Any]:
         """Estimate a perspective from the photo's own lines, once.
