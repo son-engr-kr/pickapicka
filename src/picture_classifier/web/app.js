@@ -705,12 +705,50 @@ function prunePersonFilter() {
     if (!person || person.excluded) state.personFilter.delete(id);
   }
 }
-const pageIdx = () => Math.floor(state.cursorIdx / state.pageSize);
-const pageCount = () => Math.max(1, Math.ceil(state.filteredPhotos.length / state.pageSize));
+// The grid scrolls by row, and a "page" is a screenful: `pageSize` photos,
+// LAYOUTS' rows of its columns. These read where the grid is scrolled to.
+const GRID_PAD = 10, GRID_GAP = 10;
+
+function gridGeom() {
+  const L = LAYOUTS[state.pageSize];
+  const h = $("#grid").clientHeight;
+  const rowH = Math.max(120, (h - 2 * GRID_PAD - GRID_GAP * (L.rows - 1)) / L.rows);
+  const totalRows = Math.ceil(state.filteredPhotos.length / L.cols);
+  return { cols: L.cols, rows: L.rows, rowH, step: rowH + GRID_GAP, totalRows,
+           maxTop: Math.max(0, totalRows - L.rows) };
+}
+
+// The row at the top of the screen.
+function topRow() {
+  const g = gridGeom();
+  return Math.min(g.maxTop, Math.max(0, Math.round($("#grid").scrollTop / g.step)));
+}
+
+const pageIdx = () => Math.floor(topRow() / LAYOUTS[state.pageSize].rows);
+const pageCount = () => Math.max(1, Math.ceil(gridGeom().totalRows / LAYOUTS[state.pageSize].rows));
 const visiblePhotos = () => {
-  const start = pageIdx() * state.pageSize;
-  return state.filteredPhotos.slice(start, start + state.pageSize);
+  const g = gridGeom(), start = topRow() * g.cols;
+  return state.filteredPhotos.slice(start, start + g.rows * g.cols);
 };
+
+// Scroll just enough to have photo `i` wholly on screen.
+function ensureVisible(i) {
+  const grid = $("#grid"), g = gridGeom();
+  const row = Math.floor(i / g.cols);
+  const y0 = row * g.step;
+  if (y0 < grid.scrollTop) grid.scrollTop = y0;
+  else if (y0 + g.rowH + 2 * GRID_PAD > grid.scrollTop + grid.clientHeight) {
+    grid.scrollTop = (row - g.rows + 1) * g.step;
+  }
+}
+
+// After the list or the layout changes: lay the grid out, bring the cursor
+// into view, and draw.
+function showCursor() {
+  renderGrid();
+  if (state.filteredPhotos.length) ensureVisible(state.cursorIdx);
+  renderMain();
+}
 
 // ---------- API ----------
 async function loadDb() {
@@ -1232,7 +1270,8 @@ function selectScene(scene) {
   lastSelIdx = null;
   recomputeFilter();
   renderSidebar();
-  renderMain();
+  $("#grid").scrollTop = 0;
+  showCursor();
 }
 
 function recomputeFilter() {
@@ -1287,8 +1326,9 @@ function renderHeader() {
   $("#scene-stats").textContent = !state.selectedScene ? ""
     : `${sceneTotal - sceneUndecided} of ${plural(sceneTotal, "photo")} decided`
       + (total < sceneTotal ? ` · ${total} shown` : "");
+  const g = gridGeom(), top = topRow();
   $("#page-indicator").textContent = total
-    ? `${pageIdx() + 1} / ${pageCount()}`
+    ? `${top * g.cols + 1}–${Math.min(total, (top + g.rows) * g.cols)} of ${total}`
     : "—";
   // How many each filter would show in this scene, so an empty one is not a
   // click away from finding out.
@@ -1300,8 +1340,8 @@ function renderHeader() {
   $$("#filter-row .filter").forEach((b) => {
     b.querySelector(".n").textContent = state.selectedScene ? n[b.dataset.filter] : "";
   });
-  $("#prev-page").disabled = pageIdx() === 0 || total === 0;
-  $("#next-page").disabled = pageIdx() >= pageCount() - 1 || total === 0;
+  $("#prev-page").disabled = top === 0 || total === 0;
+  $("#next-page").disabled = top >= g.maxTop || total === 0;
   // These three carry both an icon and a changing count. Writing to textContent
   // would delete the injected svg, so the label lives in its own span.
   const rejectBtn = $("#reject-undecided-btn");
@@ -1330,20 +1370,32 @@ const FILTER_EMPTY = {
   edited: "No edited photos in this scene.",
 };
 
+// What a tile shows. A tile whose signature is unchanged is kept as it is, so
+// moving the cursor or scrolling does not rebuild it or reload its thumbnail.
+function tileSig(p, i) {
+  const faces = (p.faces || []).map((f) => {
+    const person = f.person_id ? state.peopleById.get(f.person_id) : null;
+    return person && person.excluded ? "x" : (f.person_id || "-");
+  }).join(",");
+  return [i, p.rel_path, p.decision, p.edited_at, p.auto_suggestion, p.scores?.badness,
+    state.selection.has(p.rel_path), state.showBoxes, state.showPeak, state.peakLevel, faces].join("|");
+}
+
+// The rows on screen and one either side are built, the rest of the list is
+// rows of empty grid, so a scene of thousands of photos costs what a
+// screenful does.
 function renderGrid() {
   const grid = $("#grid");
-  grid.innerHTML = "";
-  const start = pageIdx() * state.pageSize;
-  const visible = visiblePhotos();
   // A filter that matches nothing used to leave a blank grid, which reads as
   // the app having lost the photos.
-  if (!visible.length && state.selectedScene) {
+  if (!state.filteredPhotos.length) {
+    if (!state.selectedScene) { grid.innerHTML = ""; return; }
     const narrowed = state.filter !== "all" || state.personFilter.size
       || state.subjectClassFilter.size || state.subjectGroupFilter.size;
-    grid.innerHTML = `<div class="grid-empty">
+    grid.innerHTML = `<div id="grid-inner" class="empty"><div class="grid-empty">
       <p>${narrowed ? escapeHtml(FILTER_EMPTY[state.filter] || "No photos match these filters.") : "This scene has no photos."}</p>
       ${narrowed ? `<button type="button" class="primary" id="grid-show-all">Show all photos in the scene</button>` : ""}
-    </div>`;
+    </div></div>`;
     $("#grid-show-all")?.addEventListener("click", () => {
       state.personFilter.clear(); state.subjectClassFilter.clear(); state.subjectGroupFilter.clear();
       $$(".filter").forEach((x) => x.classList.toggle("active", x.dataset.filter === "all"));
@@ -1357,86 +1409,115 @@ function renderGrid() {
     });
     return;
   }
-  visible.forEach((p, i) => {
-    const absIdx = start + i;
-    const tile = document.createElement("div");
-    const orientation = (p.width && p.height && p.height > p.width) ? "portrait" : "landscape";
-    tile.className = "tile " + orientation
-      + (p.decision ? " decision-" + p.decision : "")
-      + (absIdx === state.cursorIdx ? " focused" : "")
-      + (state.selection.has(p.rel_path) ? " selected" : "");
-    const auto = p.auto_suggestion || "";
-    const badness = p.scores?.badness != null ? p.scores.badness.toFixed(2) : "—";
-    const fname = basename(p.rel_path);
-    const visibleFaces = (p.faces || [])
-      .map((f, fi) => ({ f, fi, person: f.person_id ? state.peopleById.get(f.person_id) : null }))
-      .filter(({ person }) => !(person && person.excluded))
-      .sort((a, b) => {
-        const pa = a.person ? a.person.priority : Infinity;
-        const pb = b.person ? b.person.priority : Infinity;
-        return pa - pb;
-      });
-    const faceCount = visibleFaces.length;
-    // Faces sit along the bottom of the photo rather than in a strip of their
-    // own, which made tiles with faces shorter than their neighbours and
-    // threw every row out of line.
-    const shownFaces = visibleFaces.slice(0, TILE_FACES);
-    const facesHtml = faceCount
-      ? `<span class="tile-faces">${
-          shownFaces.map(({ fi }) =>
-            `<span class="face-thumb"><img loading="lazy" src="/face/${enc(p.rel_path)}?idx=${fi}" alt="" /></span>`
-          ).join("")
-        }${faceCount > TILE_FACES ? `<span class="face-more">+${faceCount - TILE_FACES}</span>` : ""}</span>`
-      : "";
-    // The frame is the photo's own rectangle inside the letterboxed cell (the
-    // same aspect-ratio trick the box layer uses), so what is drawn on the photo
-    // stays on it whatever its shape.
-    const ar = p.geom ? `${p.geom.w}/${p.geom.h}` : (p.width && p.height ? `${p.width}/${p.height}` : "3/2");
-    const suggestion = auto ? AUTO_LABEL[auto] || auto : "";
-    tile.innerHTML = `
-      <div class="tile-content">
-        <div class="tile-img" data-action="open">
-          <img loading="lazy" src="${thumbUrl(p)}" alt="" />
-          ${peakLayerHtml(p)}
-          ${boxLayerHtml(p)}
-          <span class="tile-frame" style="aspect-ratio:${ar}">
-            ${auto ? `<span class="auto-badge ${auto}" title="The app suggests: ${suggestion.toLowerCase()}">${suggestion}</span>` : ""}
-            ${p.type === "hdr" ? `<span class="hdr-tile-badge">HDR · ${(p.members || []).length}</span>` : ""}
-            ${facesHtml}
-          </span>
-          <input type="checkbox" class="tile-select"${state.selection.has(p.rel_path) ? " checked" : ""} title="Select (X)" />
-          <button class="tile-edit-btn${p.edit ? " edited" : ""}" data-action="edit" title="Edit (E)" aria-label="Edit">${icon("pencil")}</button>
-        </div>
+  let inner = $("#grid-inner");
+  if (!inner || inner.classList.contains("empty")) {
+    grid.innerHTML = `<div id="grid-inner"></div>`;
+    inner = $("#grid-inner");
+  }
+  const list = state.filteredPhotos;
+  const g = gridGeom();
+  inner.style.gridTemplateColumns = `repeat(${g.cols}, minmax(0, 1fr))`;
+  inner.style.gridTemplateRows = `repeat(${Math.max(1, g.totalRows)}, ${g.rowH}px)`;
+  const r0 = Math.max(0, Math.floor(grid.scrollTop / g.step) - 1);
+  const r1 = Math.min(g.totalRows, Math.ceil((grid.scrollTop + grid.clientHeight) / g.step) + 1);
+  const from = r0 * g.cols, to = Math.min(list.length, r1 * g.cols);
+  const kept = new Map();
+  for (const el of [...inner.children]) {
+    const i = Number(el.dataset.idx);
+    if (i >= from && i < to && el.dataset.sig === tileSig(list[i], i)) kept.set(i, el);
+    else el.remove();
+  }
+  for (let i = from; i < to; i++) {
+    let el = kept.get(i);
+    if (!el) {
+      el = makeTile(list[i], i);
+      el.dataset.sig = tileSig(list[i], i);
+      inner.appendChild(el);
+    }
+    el.style.gridRow = String(Math.floor(i / g.cols) + 1);
+    el.style.gridColumn = String((i % g.cols) + 1);
+    el.classList.toggle("focused", i === state.cursorIdx);
+  }
+}
+
+function makeTile(p, absIdx) {
+  const tile = document.createElement("div");
+  const orientation = (p.width && p.height && p.height > p.width) ? "portrait" : "landscape";
+  tile.className = "tile " + orientation
+    + (p.decision ? " decision-" + p.decision : "")
+    + (absIdx === state.cursorIdx ? " focused" : "")
+    + (state.selection.has(p.rel_path) ? " selected" : "");
+  const auto = p.auto_suggestion || "";
+  const badness = p.scores?.badness != null ? p.scores.badness.toFixed(2) : "—";
+  const fname = basename(p.rel_path);
+  const visibleFaces = (p.faces || [])
+    .map((f, fi) => ({ f, fi, person: f.person_id ? state.peopleById.get(f.person_id) : null }))
+    .filter(({ person }) => !(person && person.excluded))
+    .sort((a, b) => {
+      const pa = a.person ? a.person.priority : Infinity;
+      const pb = b.person ? b.person.priority : Infinity;
+      return pa - pb;
+    });
+  const faceCount = visibleFaces.length;
+  // Faces sit along the bottom of the photo rather than in a strip of their
+  // own, which made tiles with faces shorter than their neighbours and
+  // threw every row out of line.
+  const shownFaces = visibleFaces.slice(0, TILE_FACES);
+  const facesHtml = faceCount
+    ? `<span class="tile-faces">${
+        shownFaces.map(({ fi }) =>
+          `<span class="face-thumb"><img loading="lazy" src="/face/${enc(p.rel_path)}?idx=${fi}" alt="" /></span>`
+        ).join("")
+      }${faceCount > TILE_FACES ? `<span class="face-more">+${faceCount - TILE_FACES}</span>` : ""}</span>`
+    : "";
+  // The frame is the photo's own rectangle inside the letterboxed cell (the
+  // same aspect-ratio trick the box layer uses), so what is drawn on the photo
+  // stays on it whatever its shape.
+  const ar = p.geom ? `${p.geom.w}/${p.geom.h}` : (p.width && p.height ? `${p.width}/${p.height}` : "3/2");
+  const suggestion = auto ? AUTO_LABEL[auto] || auto : "";
+  tile.innerHTML = `
+    <div class="tile-content">
+      <div class="tile-img" data-action="open">
+        <img loading="lazy" src="${thumbUrl(p)}" alt="" />
+        ${peakLayerHtml(p)}
+        ${boxLayerHtml(p)}
+        <span class="tile-frame" style="aspect-ratio:${ar}">
+          ${auto ? `<span class="auto-badge ${auto}" title="The app suggests: ${suggestion.toLowerCase()}">${suggestion}</span>` : ""}
+          ${p.type === "hdr" ? `<span class="hdr-tile-badge">HDR · ${(p.members || []).length}</span>` : ""}
+          ${facesHtml}
+        </span>
+        <input type="checkbox" class="tile-select"${state.selection.has(p.rel_path) ? " checked" : ""} title="Select (X)" />
+        <button class="tile-edit-btn${p.edit ? " edited" : ""}" data-action="edit" title="Edit (E)" aria-label="Edit">${icon("pencil")}</button>
       </div>
-      <div class="tile-meta">
-        <span class="tile-name">${escapeHtml(fname)}</span>
-        <span class="badness" title="How bad it looks, from sharpness, exposure and closed eyes: lower is better">badness ${badness}</span>
-      </div>
-      <div class="tile-action-bar">
-        <button class="btn-decision${p.decision === "reject" ? " active" : ""}" data-decision="reject">Reject <span class="kbd">R</span></button>
-        <button class="btn-decision${p.decision === "review" ? " active" : ""}" data-decision="review">Review <span class="kbd">V</span></button>
-        <button class="btn-decision${p.decision === "pick" ? " active" : ""}" data-decision="pick">Pick <span class="kbd">P</span></button>
-      </div>`;
-    tile.querySelector(".tile-img").addEventListener("click", () => openModal(absIdx));
-    tile.querySelector(".tile-edit-btn").addEventListener("click", (e) => {
-      e.stopPropagation();
-      openEditModal(absIdx);
-    });
-    tile.querySelector(".tile-select").addEventListener("click", (e) => {
-      e.stopPropagation();
-      toggleSelect(absIdx, e.shiftKey);
-    });
-    tile.querySelectorAll(".btn-decision").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const wantDecision = btn.dataset.decision;
-        const newDecision = p.decision === wantDecision ? null : wantDecision;
-        decideAt(absIdx, newDecision);
-      });
-    });
-    tile.dataset.idx = absIdx;
-    grid.appendChild(tile);
+    </div>
+    <div class="tile-meta">
+      <span class="tile-name">${escapeHtml(fname)}</span>
+      <span class="badness" title="How bad it looks, from sharpness, exposure and closed eyes: lower is better">badness ${badness}</span>
+    </div>
+    <div class="tile-action-bar">
+      <button class="btn-decision${p.decision === "reject" ? " active" : ""}" data-decision="reject">Reject <span class="kbd">R</span></button>
+      <button class="btn-decision${p.decision === "review" ? " active" : ""}" data-decision="review">Review <span class="kbd">V</span></button>
+      <button class="btn-decision${p.decision === "pick" ? " active" : ""}" data-decision="pick">Pick <span class="kbd">P</span></button>
+    </div>`;
+  tile.querySelector(".tile-img").addEventListener("click", () => openModal(absIdx));
+  tile.querySelector(".tile-edit-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    openEditModal(absIdx);
   });
+  tile.querySelector(".tile-select").addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleSelect(absIdx, e.shiftKey);
+  });
+  tile.querySelectorAll(".btn-decision").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const wantDecision = btn.dataset.decision;
+      const newDecision = p.decision === wantDecision ? null : wantDecision;
+      decideAt(absIdx, newDecision);
+    });
+  });
+  tile.dataset.idx = absIdx;
+  return tile;
 }
 
 // Hovering a tile focuses it, but only when the pointer really moves. A page
@@ -1446,12 +1527,27 @@ function renderGrid() {
 let lastPointer = null;
 
 function bindGridHover() {
-  $("#grid").addEventListener("pointermove", (e) => {
+  const grid = $("#grid");
+  grid.addEventListener("pointermove", (e) => {
     if (lastPointer && lastPointer.x === e.clientX && lastPointer.y === e.clientY) return;
     lastPointer = { x: e.clientX, y: e.clientY };
     const tile = e.target.closest(".tile");
     if (tile && tile.dataset.idx !== undefined) focusAt(Number(tile.dataset.idx), false);
   });
+  // Scrolling builds the rows coming into view, once a frame.
+  let frame = 0;
+  grid.addEventListener("scroll", () => {
+    if (frame) return;
+    frame = requestAnimationFrame(() => { frame = 0; renderGrid(); renderHeader(); });
+  });
+  // A resized window resizes the rows; the cursor stays in view.
+  new ResizeObserver(() => {
+    if (!state.filteredPhotos.length) return;
+    renderGrid();
+    ensureVisible(state.cursorIdx);
+    renderGrid();
+    renderHeader();
+  }).observe(grid);
 }
 
 function renderNextPreview() {
@@ -1471,17 +1567,13 @@ function renderNextPreview() {
 }
 
 // ---------- focus & paging ----------
-function focusAt(absIdx, scroll) {
+// `scroll` is false for the mouse: hovering a tile half off the screen should
+// not scroll the grid out from under it.
+function focusAt(absIdx, scroll = true) {
   if (absIdx < 0 || absIdx >= state.filteredPhotos.length) return;
-  const oldPage = pageIdx();
   state.cursorIdx = absIdx;
-  if (pageIdx() !== oldPage) {
-    renderMain();
-  } else {
-    $$(".tile").forEach((el, i) => el.classList.toggle("focused", i === (absIdx - oldPage * state.pageSize)));
-    if (state.pageSize === 1) renderNextPreview();
-    renderInspector();
-  }
+  if (scroll) ensureVisible(absIdx);
+  renderMain();
 }
 
 // ---------- remembered view ----------
@@ -1561,35 +1653,31 @@ function syncViewControls() {
 
 // Land on a page directly, rather than stepping to it as gotoPage does.
 function gotoPageIndex(page) {
-  const target = Math.max(0, Math.min(page, pageCount() - 1));
-  state.cursorIdx = target * state.pageSize;
+  renderGrid();   // the rows must exist before they can be scrolled to
+  const g = gridGeom();
+  const top = Math.min(g.maxTop, Math.max(0, page * g.rows));
+  $("#grid").scrollTop = top * g.step;
+  state.cursorIdx = Math.min(state.filteredPhotos.length - 1, top * g.cols);
   renderMain();
 }
 
+// A screen on or back: the cursor lands on the first photo of the next
+// screen, or the last of the previous one.
 function gotoPage(delta) {
-  const newPage = pageIdx() + delta;
-  if (newPage < 0 || newPage >= pageCount()) return;
-  const newPageStart = newPage * state.pageSize;
-  if (delta < 0) {
-    // Previous: land on the last tile of the new page.
-    const newPageEnd = Math.min(newPageStart + state.pageSize, state.filteredPhotos.length);
-    state.cursorIdx = Math.max(newPageStart, newPageEnd - 1);
-  } else {
-    state.cursorIdx = newPageStart;
-  }
+  const g = gridGeom(), now = topRow();
+  const top = Math.min(g.maxTop, Math.max(0, now + delta * g.rows));
+  if (top === now) return;
+  $("#grid").scrollTop = top * g.step;
+  const n = state.filteredPhotos.length;
+  state.cursorIdx = delta > 0 ? Math.min(n - 1, top * g.cols) : Math.min(n - 1, (top + g.rows) * g.cols - 1);
   renderMain();
 }
 
 function tryAutoAdvance() {
-  // If every visible photo has a decision, move to the first photo of the next page.
+  // Every photo on screen decided by mouse: on to the next screen.
   const visible = visiblePhotos();
-  if (!visible.length) return;
-  const allDecided = visible.every((p) => p.decision != null);
-  if (!allDecided) return;
-  if (pageIdx() < pageCount() - 1) {
-    state.cursorIdx = (pageIdx() + 1) * state.pageSize;
-    renderMain();
-  }
+  if (!visible.length || !visible.every((p) => p.decision != null)) return;
+  if (topRow() < gridGeom().maxTop) gotoPage(+1);
 }
 
 // ---------- decisions ----------
@@ -1635,7 +1723,7 @@ function decideAt(absIdx, decision, { advance = false } = {}) {
   } else if (advance && decision !== null) {
     state.cursorIdx = Math.min(at + 1, n - 1);
   }
-  renderMain();
+  showCursor();
   if (state.modal.open) {
     if (!n) { closeModal(); return; }
     state.modal.idx = state.cursorIdx;
@@ -6648,8 +6736,6 @@ function bindKeys() {
     const i = state.cursorIdx;
 
     const total = state.filteredPhotos.length;
-    const pageStart = pageIdx() * state.pageSize;
-    const pageEnd = Math.min(pageStart + state.pageSize, total);
 
     if (k === "ArrowRight") {
       if (i + 1 < total) focusAt(i + 1);
@@ -6659,20 +6745,8 @@ function bindKeys() {
       if (i - 1 >= 0) focusAt(i - 1);
       e.preventDefault(); return;
     }
-    if (k === "ArrowDown") {
-      let next = i + cols;
-      // If the column-preserving step crosses to the next page, snap to its first tile.
-      if (next >= pageEnd && pageEnd < total) next = pageEnd;
-      focusAt(Math.min(total - 1, next));
-      e.preventDefault(); return;
-    }
-    if (k === "ArrowUp") {
-      let next = i - cols;
-      // If the column-preserving step crosses to the previous page, snap to its last tile.
-      if (next < pageStart && pageStart > 0) next = pageStart - 1;
-      focusAt(Math.max(0, next));
-      e.preventDefault(); return;
-    }
+    if (k === "ArrowDown") { focusAt(Math.min(total - 1, i + cols)); e.preventDefault(); return; }
+    if (k === "ArrowUp") { focusAt(Math.max(0, i - cols)); e.preventDefault(); return; }
     if (k === "PageDown" || k === "]") { gotoPage(+1); e.preventDefault(); return; }
     if (k === "PageUp" || k === "[") { gotoPage(-1); e.preventDefault(); return; }
     if (k === "Enter") { openModal(i); e.preventDefault(); return; }
@@ -6977,14 +7051,15 @@ function bindUi() {
       state.filter = b.dataset.filter;
       state.cursorIdx = 0;
       recomputeFilter();
-      renderMain();
+      $("#grid").scrollTop = 0;
+      showCursor();
     });
   });
   $$("#cols-toggle .cols").forEach((b) => {
     b.addEventListener("click", () => {
       $$("#cols-toggle .cols").forEach((x) => x.classList.toggle("active", x === b));
       state.pageSize = parseInt(b.dataset.cols, 10);
-      renderMain();
+      showCursor();
     });
   });
   $("#prev-page").addEventListener("click", () => gotoPage(-1));
@@ -9108,7 +9183,7 @@ async function bootMain() {
       ? state.filteredPhotos.findIndex((p) => p.rel_path === view.photo) : -1;
     if (at >= 0) {
       state.cursorIdx = at;
-      renderMain();
+      showCursor();
       if (view.viewer) openModal(at);
     } else if (scene === view.scene && view.page) {
       // The photo is gone from this filter (decided, or removed): its page.

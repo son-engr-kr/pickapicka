@@ -2399,3 +2399,9 @@ body.inspector-off #inspector { display: none; }
 #insp-exif dd { margin: 0; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #insp-edit { width: 100%; justify-content: center; }
 #inspector-btn.active { background: var(--raised); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-strong); }
+
+/* ----- the grid scrolls; rows are sized so a screen holds a page ----- */
+#grid { display: block; overflow-y: auto; overflow-x: hidden; padding: 10px; overscroll-behavior: contain; }
+#grid-inner { display: grid; gap: 10px; }
+#grid-inner.empty { display: flex; height: 100%; }
+#grid-inner.empty .grid-empty { flex: 1; }
