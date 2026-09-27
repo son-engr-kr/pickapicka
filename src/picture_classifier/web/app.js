@@ -2888,7 +2888,9 @@ function fetchEditPreview(immediate, draft) {
       // The render time is for whoever is measuring (the tooltip); on screen
       // it read as a number to worry about. The line is for messages.
       $("#edit-status").title = ms ? `last render ${ms} ms${draft ? " (draft)" : ""}` : "";
-      if ($("#edit-status").textContent === "preview error") $("#edit-status").textContent = "";
+      // Its own words go once the render is up: "rendering…", or a failure the
+      // next render recovered from. Anything else is a message for the user.
+      if (["preview error", "rendering…"].includes($("#edit-status").textContent)) $("#edit-status").textContent = "";
       if (!draft) prefetchNeighbours(rel);
     } catch {
       $("#edit-status").textContent = "preview error";
