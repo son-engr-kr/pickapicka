@@ -2197,3 +2197,35 @@ button.primary:disabled { background: var(--raised); border-color: var(--line); 
   background: rgba(12, 12, 14, 0.8); pointer-events: none; }
 #modal-loading.hidden { display: none; }
 #modal-loading.error { color: #ffb4a8; }
+
+/* ----- editor sections: a chevron says which fold ----- */
+.edit-group > summary { display: flex; align-items: center; gap: 7px; }
+.edit-group > summary::before { content: ""; flex: none; width: 5px; height: 5px; margin: 0 2px 0 1px;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg); transition: transform 0.12s; opacity: 0.7; }
+.edit-group[open] > summary::before { transform: rotate(45deg); }
+.edit-group > summary:hover { color: var(--ink); }
+#edit-mask-group .mask-panel { margin-top: 0; }
+
+/* ----- editor sliders: a quiet track, filled from zero ----- */
+#edit-modal input[type=range] { -webkit-appearance: none; appearance: none; height: 18px;
+  background: transparent; accent-color: auto; cursor: pointer; }
+#edit-modal input[type=range]::-webkit-slider-runnable-track { height: 3px; border-radius: 2px;
+  background: linear-gradient(to right, var(--line-strong) 0 var(--fill-a, 0%),
+    var(--accent) var(--fill-a, 0%) var(--fill-b, 0%), var(--line-strong) var(--fill-b, 0%) 100%); }
+#edit-modal input[type=range]::-moz-range-track { height: 3px; border-radius: 2px;
+  background: linear-gradient(to right, var(--line-strong) 0 var(--fill-a, 0%),
+    var(--accent) var(--fill-a, 0%) var(--fill-b, 0%), var(--line-strong) var(--fill-b, 0%) 100%); }
+#edit-modal input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px;
+  margin-top: -4.5px; border-radius: 50%; background: var(--ink); border: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4); }
+#edit-modal input[type=range]::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%;
+  background: var(--ink); border: none; }
+#edit-modal input[type=range]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+#edit-modal input[type=range]:focus-visible { outline: none; }
+#edit-modal input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px var(--accent-quiet); }
+/* Temperature and Tint show where they go. */
+#edit-modal input[data-edit="temp"]::-webkit-slider-runnable-track {
+  background: linear-gradient(to right, #4f7fd6, #b9b9c0 50%, #e0a93c); }
+#edit-modal input[data-edit="tint"]::-webkit-slider-runnable-track {
+  background: linear-gradient(to right, #4fb35c, #b9b9c0 50%, #c65ac4); }

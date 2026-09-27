@@ -2481,6 +2481,7 @@ function openEditModal(absIdx) {
   renderPortraitPanel();
   loadWatermarkInfo(photo.rel_path);
   selectMask(-1, { silent: true });
+  if (editSession.edit.masks.length) $("#edit-mask-group").open = true;
   setEditTool(null);
   syncEditSliders();
   drawCurve();
@@ -2554,7 +2555,41 @@ function syncEditSliders() {
   // still has to come back looking right when a photo opens with one saved.
   syncCropControls();
 }
+// A slider fills from its zero: from the middle for one that goes both ways,
+// from the left for one that only goes up, and not at all at zero, so a moved
+// slider is told from an untouched one at a glance. The fill was the browser's,
+// from the left edge on every slider, which made all of them look set.
+function paintSlider(sl) {
+  const min = Number(sl.min), max = Number(sl.max), v = Number(sl.value);
+  if (!(max > min)) return;
+  const zero = min < 0 && max > 0 ? 0 : min;
+  const at = (x) => ((x - min) / (max - min)) * 100;
+  sl.style.setProperty("--fill-a", `${Math.min(at(zero), at(v))}%`);
+  sl.style.setProperty("--fill-b", `${Math.max(at(zero), at(v))}%`);
+}
+
+function paintSliders() {
+  $$("#edit-modal input[type=range]").forEach(paintSlider);
+}
+
+function bindSliderLooks() {
+  document.addEventListener("input", (e) => {
+    if (e.target.matches?.("#edit-modal input[type=range]")) paintSlider(e.target);
+  });
+  // Double-click puts an adjustment back to zero, as in Lightroom. Only the
+  // main adjustments: they are all neutral at 0 (EDIT_SCHEMA), which is not
+  // true of every slider in the editor.
+  document.addEventListener("dblclick", (e) => {
+    const sl = e.target.closest?.("#edit-modal input[type=range][data-edit]");
+    if (!sl || Number(sl.value) === 0) return;
+    sl.value = 0;
+    sl.dispatchEvent(new Event("input", { bubbles: true }));
+    sl.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
 function syncEditValues() {
+  paintSliders();
   const target = adjTarget();
   $$("#edit-modal .look-val[data-val]").forEach((el) => {
     const f = fieldByKey(el.dataset.val);
@@ -4119,6 +4154,7 @@ function setEditTool(tool) {
 }
 
 function addMask(kind, group) {
+  $("#edit-mask-group").open = true;
   if (!editSession.relPath) return;
   if (editSession.edit.masks.length >= MASK_MAX) {
     $("#edit-status").textContent = `mask limit reached (${MASK_MAX})`;
@@ -4267,7 +4303,33 @@ function duplicateActiveMask() {
   fetchEditPreview(true);
 }
 
+// The Masks section shows how many masks there are when folded. It opens by
+// itself for a photo that has masks and when one is added, and otherwise stays
+// as it was left: the sliders act on the whole photo when there are none.
+function syncMaskGroup() {
+  const n = (editSession.edit?.masks || []).length;
+  $("#mask-summary-state").textContent = n ? `· ${n}` : "";
+}
+
+// Which editor sections were left open, kept across photos and sessions.
+const EDIT_GROUPS_KEY = "pcls.editGroups";
+
+function restoreEditGroups() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(EDIT_GROUPS_KEY) || "{}"); } catch { saved = {}; }
+  $$("#edit-modal details.edit-group[id]").forEach((d) => {
+    if (d.id in saved) d.open = saved[d.id];
+    d.addEventListener("toggle", () => {
+      let now = {};
+      try { now = JSON.parse(localStorage.getItem(EDIT_GROUPS_KEY) || "{}"); } catch { now = {}; }
+      now[d.id] = d.open;
+      try { localStorage.setItem(EDIT_GROUPS_KEY, JSON.stringify(now)); } catch { /* private */ }
+    });
+  });
+}
+
 function renderMaskList() {
+  syncMaskGroup();
   const list = $("#mask-list");
   if (!list) return;
   const masks = (editSession.edit && editSession.edit.masks) || [];
@@ -6589,6 +6651,8 @@ function closeMenus() {
 
 // ---------- UI bindings ----------
 function bindUi() {
+  restoreEditGroups();
+  bindSliderLooks();
   bindMenu("#more-btn", "#more-menu");
   bindGridHover();
   bindKeysSheet();
@@ -8168,8 +8232,8 @@ const TOURS = {
       body: "Shown as it will export. Scroll to zoom, drag to pan, hold <kbd>C</kbd> to see the original, and <kbd>F</kbd> switches between fit and 100%." },
     { target: ".edit-actionbar", title: "Auto, undo and presets",
       body: "<b>Auto</b> sets a starting tone. <kbd>⌘Z</kbd> / <kbd>Ctrl+Z</kbd> undoes and <kbd>⇧⌘Z</kbd> / <kbd>Ctrl+Y</kbd> redoes. Presets save a look to reuse." },
-    { target: ".mask-panel", title: "Adjust the whole photo or part of it",
-      body: "With <b>Global</b> selected the sliders change everything. Add a radial, gradient or brush, or an automatic Subject, Background or Skin mask, and the same sliders change only that part." },
+    { target: "#edit-mask-group", title: "Adjust the whole photo or part of it",
+      body: "The sliders change the whole photo. Open <b>Masks</b> to add a radial, gradient or brush, or an automatic Subject, Background or Skin mask, and the same sliders change only that part." },
     { target: "#edit-optics-group", title: "Lens & perspective",
       body: "Straighten leaning buildings with <b>Upright</b>, and correct distortion, colour fringes and dark corners." },
     { target: "#edit-portrait-group", title: "Portrait",

@@ -794,6 +794,9 @@
           <div class="keybar" data-context="editor"></div>
         </div>
         <div class="edit-controls">
+          <!-- In the order a photo is usually worked: tone and colour first, then
+               looks, geometry and retouching; saved versions last. Each section
+               remembers whether it was left open. -->
           <div class="edit-actionbar">
             <button id="edit-undo" data-icon="undo" title="Undo" aria-label="Undo" disabled></button>
             <button id="edit-redo" data-icon="undo" class="redo" title="Redo" aria-label="Redo" disabled></button>
@@ -810,154 +813,147 @@
             <button id="edit-preset-save" title="Save current adjustments as a preset">Save preset…</button>
             <button id="edit-preset-delete" data-icon="trash" title="Delete the selected preset" aria-label="Delete the selected preset"></button>
           </div>
-
-          <details class="edit-group" id="edit-slots-group" open>
-            <summary>Slots <span id="slot-summary-state"></span></summary>
-            <div class="edit-group-body">
-              <p class="hsl-note">
-                Versions of this photo, kept on disk. Saving into a slot changes
-                nothing about the photo itself, and loading one only changes
-                what is on screen until you press Save — so Cancel loses the
-                working edit and keeps every slot.
-              </p>
-              <div class="slot-list" id="edit-slots"></div>
-            </div>
-          </details>
-
-          <div class="mask-panel">
-            <div class="mask-head">
-              <span class="mask-head-title">Adjust</span>
-              <label class="mask-show" title="Tint the affected area red (\)">
-                <input type="checkbox" id="mask-show" /> show mask (red)
-              </label>
-            </div>
-            <div class="mask-list" id="mask-list"></div>
-            <div class="mask-add">
-              <span class="mask-add-label">Add local</span>
-              <div class="mask-add-row">
-                <button class="mask-add-btn" data-add-mask="radial"
-                        title="Radial: drag an ellipse on the photo (R)" data-icon="radial">Radial</button>
-                <button class="mask-add-btn" data-add-mask="linear"
-                        title="Gradient: drag a direction on the photo (G)" data-icon="gradient">Gradient</button>
-                <button class="mask-add-btn" data-add-mask="brush"
-                        title="Brush: paint on the photo (B)" data-icon="brush">Brush</button>
-                <button class="mask-add-btn" data-add-mask="range"
-                        title="Range: select by tone rather than by shape" data-icon="palette">Range</button>
-              </div>
-            </div>
-            <div class="mask-add mask-add-auto">
-              <span class="mask-add-label">Add automatic</span>
-              <div class="mask-add-row">
-                <button class="mask-add-btn" data-add-auto="subject"
-                        title="Everything that is not background">Subject</button>
-                <button class="mask-add-btn" data-add-auto="background"
-                        title="Everything behind the subject">Background</button>
-                <button class="mask-add-btn" data-add-auto="skin"
-                        title="Face and body skin">Skin</button>
-                <button class="mask-add-btn" data-add-auto="face"
-                        title="Face skin only">Face</button>
-                <button class="mask-add-btn" data-add-auto="hair">Hair</button>
-                <button class="mask-add-btn" data-add-auto="clothes">Clothes</button>
-              </div>
-            </div>
-            <p class="mask-help">Drag the handles on the photo to reshape · Shift constrains ·
-              <kbd>\</kbd> show mask · <kbd>Del</kbd> remove</p>
-            <div class="mask-detail hidden" id="mask-detail">
-              <label class="mask-name-row">
-                <span class="mask-name-label">Name</span>
-                <input type="text" id="mask-name" maxlength="40" />
-              </label>
-              <div class="mask-detail-bar">
-                <button id="mask-invert" title="Adjust the area inside or outside the shape">Affect: inside</button>
-                <button id="mask-duplicate" title="Copy this mask">Duplicate</button>
-                <button id="mask-delete" data-icon="trash" title="Remove this mask (Delete)">Delete</button>
-              </div>
-              <label class="look-row"><span class="look-name">Feather</span>
-                <input type="range" id="mask-feather" min="0" max="100" step="1" />
-                <span class="look-val" id="mask-feather-val"></span></label>
-              <label class="look-row"><span class="look-name">Amount</span>
-                <input type="range" id="mask-amount" min="0" max="100" step="1" />
-                <span class="look-val" id="mask-amount-val"></span></label>
-              <div id="mask-range-tools" class="hidden">
-                <label class="mask-range-enable">
-                  <input type="checkbox" id="mask-range-on" />
-                  <span>Narrow to a tonal range</span>
+          <details class="edit-group" id="edit-mask-group">
+            <summary>Masks <span id="mask-summary-state"></span></summary>
+            <div class="mask-panel">
+              <div class="mask-head">
+                <span class="mask-head-title">Adjust</span>
+                <label class="mask-show" title="Tint the affected area red (\)">
+                  <input type="checkbox" id="mask-show" /> show mask (red)
                 </label>
-                <div class="mask-range-fields" id="mask-range-fields"></div>
-                <p class="mask-help" id="mask-range-note">Measured on the whole,
-                  ungraded frame, so the selection is the same at every zoom and
-                  does not chase the exposure you set through it.</p>
               </div>
-              <div id="mask-auto-tools" class="hidden">
-                <div class="mask-auto-groups" id="mask-auto-groups"></div>
-                <p class="mask-help">Nothing to drag: what this selects is a
-                  segmentation of the photo. Feather softens its edge.</p>
+              <div class="mask-list" id="mask-list"></div>
+              <div class="mask-add">
+                <span class="mask-add-label">Add local</span>
+                <div class="mask-add-row">
+                  <button class="mask-add-btn" data-add-mask="radial"
+                          title="Radial: drag an ellipse on the photo (R)" data-icon="radial">Radial</button>
+                  <button class="mask-add-btn" data-add-mask="linear"
+                          title="Gradient: drag a direction on the photo (G)" data-icon="gradient">Gradient</button>
+                  <button class="mask-add-btn" data-add-mask="brush"
+                          title="Brush: paint on the photo (B)" data-icon="brush">Brush</button>
+                  <button class="mask-add-btn" data-add-mask="range"
+                          title="Range: select by tone rather than by shape" data-icon="palette">Range</button>
+                </div>
               </div>
-              <div id="mask-brush-tools" class="hidden">
-                <label class="look-row"><span class="look-name">Brush size</span>
-                  <input type="range" id="mask-brush-size" min="5" max="300" step="1" />
-                  <span class="look-val" id="mask-brush-size-val"></span></label>
+              <div class="mask-add mask-add-auto">
+                <span class="mask-add-label">Add automatic</span>
+                <div class="mask-add-row">
+                  <button class="mask-add-btn" data-add-auto="subject"
+                          title="Everything that is not background">Subject</button>
+                  <button class="mask-add-btn" data-add-auto="background"
+                          title="Everything behind the subject">Background</button>
+                  <button class="mask-add-btn" data-add-auto="skin"
+                          title="Face and body skin">Skin</button>
+                  <button class="mask-add-btn" data-add-auto="face"
+                          title="Face skin only">Face</button>
+                  <button class="mask-add-btn" data-add-auto="hair">Hair</button>
+                  <button class="mask-add-btn" data-add-auto="clothes">Clothes</button>
+                </div>
+              </div>
+              <p class="mask-help">Drag the handles on the photo to reshape · Shift constrains ·
+                <kbd>\</kbd> show mask · <kbd>Del</kbd> remove</p>
+              <div class="mask-detail hidden" id="mask-detail">
+                <label class="mask-name-row">
+                  <span class="mask-name-label">Name</span>
+                  <input type="text" id="mask-name" maxlength="40" />
+                </label>
                 <div class="mask-detail-bar">
-                  <button id="mask-brush-paint" class="active">Paint</button>
-                  <button id="mask-brush-erase" title="Or hold Alt while painting">Erase</button>
-                  <button id="mask-brush-undo" data-icon="undo" title="Remove the last stroke">Undo stroke</button>
+                  <button id="mask-invert" title="Adjust the area inside or outside the shape">Affect: inside</button>
+                  <button id="mask-duplicate" title="Copy this mask">Duplicate</button>
+                  <button id="mask-delete" data-icon="trash" title="Remove this mask (Delete)">Delete</button>
+                </div>
+                <label class="look-row"><span class="look-name">Feather</span>
+                  <input type="range" id="mask-feather" min="0" max="100" step="1" />
+                  <span class="look-val" id="mask-feather-val"></span></label>
+                <label class="look-row"><span class="look-name">Amount</span>
+                  <input type="range" id="mask-amount" min="0" max="100" step="1" />
+                  <span class="look-val" id="mask-amount-val"></span></label>
+                <div id="mask-range-tools" class="hidden">
+                  <label class="mask-range-enable">
+                    <input type="checkbox" id="mask-range-on" />
+                    <span>Narrow to a tonal range</span>
+                  </label>
+                  <div class="mask-range-fields" id="mask-range-fields"></div>
+                  <p class="mask-help" id="mask-range-note">Measured on the whole,
+                    ungraded frame, so the selection is the same at every zoom and
+                    does not chase the exposure you set through it.</p>
+                </div>
+                <div id="mask-auto-tools" class="hidden">
+                  <div class="mask-auto-groups" id="mask-auto-groups"></div>
+                  <p class="mask-help">Nothing to drag: what this selects is a
+                    segmentation of the photo. Feather softens its edge.</p>
+                </div>
+                <div id="mask-brush-tools" class="hidden">
+                  <label class="look-row"><span class="look-name">Brush size</span>
+                    <input type="range" id="mask-brush-size" min="5" max="300" step="1" />
+                    <span class="look-val" id="mask-brush-size-val"></span></label>
+                  <div class="mask-detail-bar">
+                    <button id="mask-brush-paint" class="active">Paint</button>
+                    <button id="mask-brush-erase" title="Or hold Alt while painting">Erase</button>
+                    <button id="mask-brush-undo" data-icon="undo" title="Remove the last stroke">Undo stroke</button>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-
-          <details class="edit-group" id="edit-crop-group" open>
-            <summary>Crop &amp; Straighten</summary>
-            <div class="edit-group-body">
-              <div class="crop-row">
-                <button id="crop-tool" class="crop-arm" data-icon="crop">Crop</button>
-                <button id="crop-reset">Reset</button>
-              </div>
-              <div class="crop-aspects" id="crop-aspects">
-                <button data-aspect="free" class="active">Free</button>
-                <button data-aspect="orig">Original</button>
-                <button data-aspect="1:1">1:1</button>
-                <button data-aspect="4:5">4:5</button>
-                <button data-aspect="5:4">5:4</button>
-                <button data-aspect="2:3">2:3</button>
-                <button data-aspect="3:2">3:2</button>
-                <button data-aspect="16:9">16:9</button>
-              </div>
-              <label class="look-row" data-field="tilt">
-                <span class="look-name">Straighten</span>
-                <input type="range" id="crop-tilt" min="-45" max="45" step="0.1" />
-                <span class="look-val" id="crop-tilt-val"></span>
-              </label>
-              <div class="crop-size" id="crop-size"></div>
-            </div>
           </details>
-
-          <details class="edit-group" id="edit-optics-group">
-            <summary>Lens &amp; perspective <span id="optics-summary-state"></span></summary>
+          <div class="mask-context" id="mask-context">Global adjustments</div>
+          <details class="edit-group" id="edit-light-group" open>
+            <summary>Light</summary>
+            <div class="edit-group-body" data-group="light"></div>
+          </details>
+          <details class="edit-group" id="edit-color-group" open>
+            <summary>Color</summary>
+            <div class="wb-row">
+              <button id="wb-pick" data-icon="pipette">White balance</button>
+              <button id="wb-reset">Neutral</button>
+            </div>
+            <div class="edit-group-body" data-group="color"></div>
+          </details>
+          <details class="edit-group" id="edit-curve-group">
+            <summary>Tone curve <span id="curve-summary-state"></span></summary>
+            <div class="curve-channels" id="curve-channels"></div>
+            <div class="edit-curve-wrap">
+              <canvas id="edit-curve" width="256" height="256"></canvas>
+            </div>
+            <button id="edit-curve-reset" class="linkish">Reset curve</button>
+          </details>
+          <details class="edit-group" id="edit-hsl-group">
+            <summary>Color Mixer <span id="hsl-summary-state"></span></summary>
             <div class="edit-group-body">
               <p class="hsl-note">
-                Corrections for what the lens and the camera angle did, applied
-                before everything else. Masks and repairs are placed on the
-                corrected picture, so set these first.
+                Eight hue bands, blended into each other rather than windowed, so
+                there is no seam between orange and yellow. Near-greys are left
+                alone: their hue is numerical noise, and pushing it would speckle
+                a flat wall.
               </p>
-              <div class="optics-sub">Upright</div>
-              <div class="optics-upright" id="optics-upright">
-                <button type="button" data-upright="level" title="Level the horizon (sets Straighten)">Level</button>
-                <button type="button" data-upright="vertical" title="Level, then make leaning verticals vertical">Vertical</button>
-                <button type="button" data-upright="full" title="Level, and straighten both verticals and horizontals">Full</button>
-                <button type="button" data-upright="auto" title="Full, held back so the result does not look staged">Auto</button>
-              </div>
-              <div id="optics-transform-fields"></div>
-              <div class="optics-sub">Lens</div>
-              <label class="optics-check" title="Estimate the colour fringing from the photo itself">
-                <input type="checkbox" id="lens-ca-auto" /> Remove colour fringing automatically
-              </label>
-              <div id="optics-lens-fields"></div>
-              <button class="hsl-reset" id="optics-reset" type="button">Reset lens &amp; perspective</button>
-              <p class="hsl-note" id="optics-status"></p>
+              <div class="hsl-bands" id="hsl-bands"></div>
+              <div class="hsl-fields" id="hsl-fields"></div>
+              <button class="hsl-reset" id="hsl-reset" type="button">Reset band</button>
             </div>
           </details>
-
+          <details class="edit-group" id="edit-grade-group">
+            <summary>Color Grading <span id="grade-summary-state"></span></summary>
+            <div class="edit-group-body">
+              <p class="hsl-note">
+                A hue and a strength per tonal region. Adding colour never moves
+                brightness: every tint is a vector with zero luma, so the
+                exposure you set stays the exposure you get.
+              </p>
+              <div class="grade-zones" id="grade-zones"></div>
+              <div class="grade-fields" id="grade-fields"></div>
+              <div class="grade-globals" id="grade-globals"></div>
+              <button class="hsl-reset" id="grade-reset" type="button">Reset zone</button>
+            </div>
+          </details>
+          <details class="edit-group" id="edit-detail-group">
+            <summary>Detail &amp; Effects</summary>
+            <div class="edit-group-body" data-group="detail"></div>
+          </details>
+          <details class="edit-group" id="edit-creative-group">
+            <summary>Creative</summary>
+            <div class="edit-group-body" data-group="creative"></div>
+          </details>
           <details class="edit-group" id="edit-look-group">
             <summary>Look <span id="look-summary-state"></span></summary>
             <div class="edit-group-body">
@@ -991,7 +987,97 @@
               <p class="hsl-note" id="look-status"></p>
             </div>
           </details>
-
+          <details class="edit-group" id="edit-film-group">
+            <summary>Film <span id="film-summary-state"></span></summary>
+            <div class="edit-group-body">
+              <label class="film-enable">
+                <input type="checkbox" id="film-enabled" />
+                <span>Emulate film</span>
+              </label>
+              <p class="film-note">
+                A response curve applied to log exposure, a dye-crosstalk matrix
+                in density space, highlight scatter that bleeds warm, and grain
+                whose size is fixed against the frame rather than the render.
+              </p>
+              <div class="film-stocks" id="film-stocks"></div>
+              <div class="film-fields" id="film-fields"></div>
+            </div>
+          </details>
+          <details class="edit-group" id="edit-crop-group">
+            <summary>Crop &amp; Straighten</summary>
+            <div class="edit-group-body">
+              <div class="crop-row">
+                <button id="crop-tool" class="crop-arm" data-icon="crop">Crop</button>
+                <button id="crop-reset">Reset</button>
+              </div>
+              <div class="crop-aspects" id="crop-aspects">
+                <button data-aspect="free" class="active">Free</button>
+                <button data-aspect="orig">Original</button>
+                <button data-aspect="1:1">1:1</button>
+                <button data-aspect="4:5">4:5</button>
+                <button data-aspect="5:4">5:4</button>
+                <button data-aspect="2:3">2:3</button>
+                <button data-aspect="3:2">3:2</button>
+                <button data-aspect="16:9">16:9</button>
+              </div>
+              <label class="look-row" data-field="tilt">
+                <span class="look-name">Straighten</span>
+                <input type="range" id="crop-tilt" min="-45" max="45" step="0.1" />
+                <span class="look-val" id="crop-tilt-val"></span>
+              </label>
+              <div class="crop-size" id="crop-size"></div>
+            </div>
+          </details>
+          <details class="edit-group" id="edit-optics-group">
+            <summary>Lens &amp; perspective <span id="optics-summary-state"></span></summary>
+            <div class="edit-group-body">
+              <p class="hsl-note">
+                Corrections for what the lens and the camera angle did, applied
+                before everything else. Masks and repairs are placed on the
+                corrected picture, so set these first.
+              </p>
+              <div class="optics-sub">Upright</div>
+              <div class="optics-upright" id="optics-upright">
+                <button type="button" data-upright="level" title="Level the horizon (sets Straighten)">Level</button>
+                <button type="button" data-upright="vertical" title="Level, then make leaning verticals vertical">Vertical</button>
+                <button type="button" data-upright="full" title="Level, and straighten both verticals and horizontals">Full</button>
+                <button type="button" data-upright="auto" title="Full, held back so the result does not look staged">Auto</button>
+              </div>
+              <div id="optics-transform-fields"></div>
+              <div class="optics-sub">Lens</div>
+              <label class="optics-check" title="Estimate the colour fringing from the photo itself">
+                <input type="checkbox" id="lens-ca-auto" /> Remove colour fringing automatically
+              </label>
+              <div id="optics-lens-fields"></div>
+              <button class="hsl-reset" id="optics-reset" type="button">Reset lens &amp; perspective</button>
+              <p class="hsl-note" id="optics-status"></p>
+            </div>
+          </details>
+          <details class="edit-group" id="edit-portrait-group">
+            <summary>Portrait <span id="portrait-summary-state"></span></summary>
+            <div class="edit-group-body">
+              <p class="hsl-note">
+                Applied to every face found, and sized to each, so a headshot and
+                a group photo get the same look. Smoothing keeps the pores and
+                leaves the eyes, brows and mouth alone.
+              </p>
+              <label class="look-row" title="Even out blotches and fine lines; the texture stays">
+                <span class="look-name">Smooth skin</span>
+                <input type="range" id="portrait-smooth" min="0" max="100" step="1" />
+                <span class="look-val" id="portrait-smooth-val"></span></label>
+              <label class="look-row" title="Takes the yellow out of the teeth and brightens them; lips and gums are left alone">
+                <span class="look-name">Whiten teeth</span>
+                <input type="range" id="portrait-teeth" min="0" max="100" step="1" />
+                <span class="look-val" id="portrait-teeth-val"></span></label>
+              <label class="look-row" title="Clears redness from the whites of the eyes and brightens them">
+                <span class="look-name">Whiten eyes</span>
+                <input type="range" id="portrait-eyes" min="0" max="100" step="1" />
+                <span class="look-val" id="portrait-eyes-val"></span></label>
+              <button type="button" id="portrait-blemishes"
+                      title="Find spots and blemishes and heal them; each one lands in Heal &amp; red eye">Remove blemishes</button>
+              <p class="hsl-note" id="portrait-faces"></p>
+            </div>
+          </details>
           <details class="edit-group" id="edit-repair-group">
             <summary>Heal &amp; red eye <span id="repair-summary-state"></span></summary>
             <div class="edit-group-body">
@@ -1020,99 +1106,6 @@
               <p class="hsl-note" id="repair-status"></p>
             </div>
           </details>
-
-          <details class="edit-group" id="edit-portrait-group">
-            <summary>Portrait <span id="portrait-summary-state"></span></summary>
-            <div class="edit-group-body">
-              <p class="hsl-note">
-                Applied to every face found, and sized to each, so a headshot and
-                a group photo get the same look. Smoothing keeps the pores and
-                leaves the eyes, brows and mouth alone.
-              </p>
-              <label class="look-row" title="Even out blotches and fine lines; the texture stays">
-                <span class="look-name">Smooth skin</span>
-                <input type="range" id="portrait-smooth" min="0" max="100" step="1" />
-                <span class="look-val" id="portrait-smooth-val"></span></label>
-              <label class="look-row" title="Takes the yellow out of the teeth and brightens them; lips and gums are left alone">
-                <span class="look-name">Whiten teeth</span>
-                <input type="range" id="portrait-teeth" min="0" max="100" step="1" />
-                <span class="look-val" id="portrait-teeth-val"></span></label>
-              <label class="look-row" title="Clears redness from the whites of the eyes and brightens them">
-                <span class="look-name">Whiten eyes</span>
-                <input type="range" id="portrait-eyes" min="0" max="100" step="1" />
-                <span class="look-val" id="portrait-eyes-val"></span></label>
-              <button type="button" id="portrait-blemishes"
-                      title="Find spots and blemishes and heal them; each one lands in Heal &amp; red eye">Remove blemishes</button>
-              <p class="hsl-note" id="portrait-faces"></p>
-            </div>
-          </details>
-
-          <div class="mask-context" id="mask-context">Global adjustments</div>
-          <details class="edit-group" open>
-            <summary>Light</summary>
-            <div class="edit-group-body" data-group="light"></div>
-          </details>
-          <details class="edit-group" open>
-            <summary>Color</summary>
-            <div class="wb-row">
-              <button id="wb-pick" data-icon="pipette">White balance</button>
-              <button id="wb-reset">Neutral</button>
-            </div>
-            <div class="edit-group-body" data-group="color"></div>
-          </details>
-          <details class="edit-group" id="edit-hsl-group">
-            <summary>Color Mixer <span id="hsl-summary-state"></span></summary>
-            <div class="edit-group-body">
-              <p class="hsl-note">
-                Eight hue bands, blended into each other rather than windowed, so
-                there is no seam between orange and yellow. Near-greys are left
-                alone: their hue is numerical noise, and pushing it would speckle
-                a flat wall.
-              </p>
-              <div class="hsl-bands" id="hsl-bands"></div>
-              <div class="hsl-fields" id="hsl-fields"></div>
-              <button class="hsl-reset" id="hsl-reset" type="button">Reset band</button>
-            </div>
-          </details>
-          <details class="edit-group" id="edit-grade-group">
-            <summary>Color Grading <span id="grade-summary-state"></span></summary>
-            <div class="edit-group-body">
-              <p class="hsl-note">
-                A hue and a strength per tonal region. Adding colour never moves
-                brightness: every tint is a vector with zero luma, so the
-                exposure you set stays the exposure you get.
-              </p>
-              <div class="grade-zones" id="grade-zones"></div>
-              <div class="grade-fields" id="grade-fields"></div>
-              <div class="grade-globals" id="grade-globals"></div>
-              <button class="hsl-reset" id="grade-reset" type="button">Reset zone</button>
-            </div>
-          </details>
-          <details class="edit-group" open>
-            <summary>Detail &amp; Effects</summary>
-            <div class="edit-group-body" data-group="detail"></div>
-          </details>
-          <details class="edit-group">
-            <summary>Creative</summary>
-            <div class="edit-group-body" data-group="creative"></div>
-          </details>
-          <details class="edit-group" id="edit-film-group">
-            <summary>Film <span id="film-summary-state"></span></summary>
-            <div class="edit-group-body">
-              <label class="film-enable">
-                <input type="checkbox" id="film-enabled" />
-                <span>Emulate film</span>
-              </label>
-              <p class="film-note">
-                A response curve applied to log exposure, a dye-crosstalk matrix
-                in density space, highlight scatter that bleeds warm, and grain
-                whose size is fixed against the frame rather than the render.
-              </p>
-              <div class="film-stocks" id="film-stocks"></div>
-              <div class="film-fields" id="film-fields"></div>
-            </div>
-          </details>
-
           <details class="edit-group" id="edit-wm-group">
             <summary>Watermark <span id="wm-summary-state"></span></summary>
             <div class="wm-body">
@@ -1168,13 +1161,17 @@
               </p>
             </div>
           </details>
-          <details class="edit-group" open id="edit-curve-group">
-            <summary>Tone curve <span id="curve-summary-state"></span></summary>
-            <div class="curve-channels" id="curve-channels"></div>
-            <div class="edit-curve-wrap">
-              <canvas id="edit-curve" width="256" height="256"></canvas>
+          <details class="edit-group" id="edit-slots-group">
+            <summary>Slots <span id="slot-summary-state"></span></summary>
+            <div class="edit-group-body">
+              <p class="hsl-note">
+                Versions of this photo, kept on disk. Saving into a slot changes
+                nothing about the photo itself, and loading one only changes
+                what is on screen until you press Save — so Cancel loses the
+                working edit and keeps every slot.
+              </p>
+              <div class="slot-list" id="edit-slots"></div>
             </div>
-            <button id="edit-curve-reset" class="linkish">Reset curve</button>
           </details>
         </div>
       </div>
