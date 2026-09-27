@@ -1205,6 +1205,25 @@ def test_a_refinement_on_an_automatic_mask() -> None:
     assert abs(float(out[:, 72:].mean()) - 225.0) < 2.0, "the bright part moved"
 
 
+def test_a_refinement_after_another_mask_selects_from_the_frame() -> None:
+    """A range is measured on the whole ungraded frame whatever masks come
+    before it. The mask loop once reused that frame's name for the crop it had
+    just graded, so a refined mask after any active mask selected its tones out
+    of the previous mask's crop: in the preview, the thumbnails and the export.
+    """
+    img = _bands_frame()
+    # A small shape over the bright band, well away from the dark one.
+    first = editing.normalize_mask({"type": "radial", "cx": 0.9, "cy": 0.2, "rx": 0.06,
+                                    "ry": 0.1, "feather": 0, "adj": {"exposure": 0.5}})
+    ranged = editing.normalize_mask({"type": "range", "range_luma": {"lo": 0, "hi": 35},
+                                     "adj": {"exposure": 1.0}})
+    alone = editing.render(img, {"masks": [ranged]}, src=img)
+    both = editing.render(img, {"masks": [first, ranged]}, src=img)
+    # Outside the first mask's box only the range mask acts, so the two agree.
+    assert np.array_equal(both[:, :64], alone[:, :64])
+    assert both[:, :24].mean() > 45, "the dark band was not selected"
+
+
 # ----- repairs: healing and red-eye (operators tested in their own suites) --
 
 def _spot_op(cx: float = 0.5, cy: float = 0.5, r: float = 0.06) -> dict:

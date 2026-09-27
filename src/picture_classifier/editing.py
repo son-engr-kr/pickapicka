@@ -1635,12 +1635,13 @@ def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
         # lookup instead of an interpolation over every float in the crop —
         # about five times faster, and the crop is on its way to an 8-bit
         # result anyway. Only worth the conversion when there is a tone stage
-        # to accelerate.
+        # to accelerate. Not named `src`: that is the whole ungraded frame every
+        # later mask's range refinement selects from.
         if _wb_tone_lut(adj) is not None:
-            src = cv2.convertScaleAbs(sub, alpha=255.0)
+            crop = cv2.convertScaleAbs(sub, alpha=255.0)
         else:
-            src = sub.copy()
-        graded = np.clip(_grade(src, adj, sub_roi), 0.0, 1.0)
+            crop = sub.copy()
+        graded = np.clip(_grade(crop, adj, sub_roi), 0.0, 1.0)
         img[y0:y1, x0:x1] = sub + (graded - sub) * alpha[..., None]
     return img
 
