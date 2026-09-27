@@ -404,6 +404,7 @@
                   data-peak-level="loose">loose</button>
         </span>
         <button id="boxes-btn" class="hidden" title="Show detected subject boxes (B)" data-icon="boxes">Boxes</button>
+        <button id="inspector-btn" type="button" title="Photo info (I)" data-icon="info">Info</button>
         <div class="menu-wrap">
           <button id="more-btn" type="button" data-icon="more" aria-haspopup="menu" aria-expanded="false">More</button>
           <div id="more-menu" class="menu hidden" role="menu">
@@ -426,7 +427,41 @@
         <button data-filter="edited" class="filter" role="tab">Edited <span class="n"></span></button>
       </div>
     </div>
-    <div id="grid"></div>
+    <div class="cull-body">
+      <div id="grid"></div>
+      <!-- The highlighted photo in detail: what it looks like in numbers, why
+           it was suggested, and what is in it. -->
+      <aside id="inspector" aria-label="Photo info">
+        <div class="insp-section">
+          <canvas id="insp-histogram" width="256" height="80" aria-label="Histogram"></canvas>
+        </div>
+        <div class="insp-section">
+          <div id="insp-name"></div>
+          <div id="insp-when"></div>
+        </div>
+        <div class="insp-section">
+          <div class="insp-label">Suggestion</div>
+          <div id="insp-suggestion"></div>
+          <ul id="insp-reasons"></ul>
+          <div id="insp-decide" role="group" aria-label="Decision">
+            <button type="button" class="btn-decision" data-decision="reject">Reject <span class="kbd">R</span></button>
+            <button type="button" class="btn-decision" data-decision="review">Review <span class="kbd">V</span></button>
+            <button type="button" class="btn-decision" data-decision="pick">Pick <span class="kbd">P</span></button>
+          </div>
+        </div>
+        <div class="insp-section" id="insp-faces-section">
+          <div class="insp-label">Faces</div>
+          <div id="insp-faces"></div>
+        </div>
+        <div class="insp-section">
+          <div class="insp-label">Camera</div>
+          <dl id="insp-exif"></dl>
+        </div>
+        <div class="insp-section">
+          <button type="button" id="insp-edit" data-icon="pencil">Edit</button>
+        </div>
+      </aside>
+    </div>
     <div class="keybar" data-context="grid"></div>
     <div id="next-preview" class="hidden">
       <span class="label">NEXT</span>

@@ -421,6 +421,7 @@ const ICONS = {
   power: "M12 2v10M18.36 6.64a9 9 0 1 1-12.73 0",
   trash: "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5",
   more: "M12 6.5h.01M12 12h.01M12 17.5h.01",
+  info: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v5.5M12 7.5h.01",
   left: "M15 18 9 12l6-6",
   right: "M9 6l6 6-6 6",
   person: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
@@ -1263,6 +1264,7 @@ function renderMain() {
   // individually. Debounced, so a burst of arrow keys still writes once.
   scheduleViewSave();
   syncTopbar();   // Edit needs a photo to open
+  renderInspector();
 }
 
 function applyLayoutCSS() {
@@ -1478,6 +1480,7 @@ function focusAt(absIdx, scroll) {
   } else {
     $$(".tile").forEach((el, i) => el.classList.toggle("focused", i === (absIdx - oldPage * state.pageSize)));
     if (state.pageSize === 1) renderNextPreview();
+    renderInspector();
   }
 }
 
@@ -6627,6 +6630,7 @@ function bindKeys() {
     if (k === "e" || k === "E") { openEditModal(state.cursorIdx); e.preventDefault(); return; }
     if (k === "b" || k === "B") { toggleBoxes(); e.preventDefault(); return; }
     if (k === "k" || k === "K") { togglePeak(); e.preventDefault(); return; }
+    if (k === "i" || k === "I") { toggleInspector(); e.preventDefault(); return; }
     if (k === "x" || k === "X") { toggleSelect(state.cursorIdx, e.shiftKey); e.preventDefault(); return; }
     if ((k === "d" || k === "D") && state.selection.size) {
       downloadSelection(); e.preventDefault(); return;
@@ -6669,6 +6673,109 @@ async function leaveProject(next) {
   if (!res.ok) { alert("Could not close the project: " + res.status); return; }
   if (next) sessionStorage.setItem("pcls.openNext", next);
   location.reload();
+}
+
+// ---------- inspector ----------
+// The highlighted photo in detail, beside the grid. The histogram is worked
+// out here from the thumbnail the grid already loaded: a 256-bin count of the
+// three channels, drawn as three overlapping areas.
+const histCache = new Map();   // thumb URL -> {r, g, b} bins
+
+function inspectorOn() {
+  try { return localStorage.getItem("pcls.inspector") !== "0"; } catch { return true; }
+}
+
+function toggleInspector() {
+  const on = !inspectorOn();
+  try { localStorage.setItem("pcls.inspector", on ? "1" : "0"); } catch { /* private */ }
+  document.body.classList.toggle("inspector-off", !on);
+  $("#inspector-btn").classList.toggle("active", on);
+  renderInspector();
+}
+
+function histogramOf(url) {
+  if (histCache.has(url)) return Promise.resolve(histCache.get(url));
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const w = 256, h = Math.max(1, Math.round(256 * img.naturalHeight / img.naturalWidth));
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      const g = c.getContext("2d", { willReadFrequently: true });
+      g.drawImage(img, 0, 0, w, h);
+      const px = g.getImageData(0, 0, w, h).data;
+      const bins = { r: new Uint32Array(256), g: new Uint32Array(256), b: new Uint32Array(256) };
+      for (let i = 0; i < px.length; i += 4) { bins.r[px[i]]++; bins.g[px[i + 1]]++; bins.b[px[i + 2]]++; }
+      if (histCache.size > 400) histCache.clear();
+      histCache.set(url, bins);
+      resolve(bins);
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
+function drawHistogram(bins) {
+  const cv = $("#insp-histogram"), g = cv.getContext("2d");
+  g.clearRect(0, 0, cv.width, cv.height);
+  if (!bins) return;
+  // Scaled to the tallest bin short of the extremes, so a clipped white sky
+  // does not flatten everything else into the floor.
+  let top = 1;
+  for (const ch of ["r", "g", "b"]) for (let i = 1; i < 255; i++) top = Math.max(top, bins[ch][i]);
+  g.globalCompositeOperation = "lighter";
+  for (const [ch, col] of [["r", "rgba(230,80,80,0.7)"], ["g", "rgba(80,200,110,0.7)"], ["b", "rgba(90,140,240,0.7)"]]) {
+    g.fillStyle = col;
+    g.beginPath();
+    g.moveTo(0, cv.height);
+    for (let i = 0; i < 256; i++) g.lineTo(i, cv.height - Math.min(1, bins[ch][i] / top) * cv.height);
+    g.lineTo(255, cv.height);
+    g.closePath();
+    g.fill();
+  }
+  g.globalCompositeOperation = "source-over";
+}
+
+function renderInspector() {
+  if (!inspectorOn() || !$("#inspector").offsetParent) return;
+  const p = state.filteredPhotos[state.cursorIdx];
+  $("#inspector").classList.toggle("empty", !p);
+  if (!p) return;
+  const url = thumbUrl(p);
+  histogramOf(url).then((bins) => {
+    if (state.filteredPhotos[state.cursorIdx] === p) drawHistogram(bins);
+  });
+  $("#insp-name").textContent = basename(p.rel_path);
+  $("#insp-name").title = p.rel_path;
+  const ex = p.exif || {};
+  $("#insp-when").textContent = [ex.captured_at ? ex.captured_at.replace(/^(\d{4}):(\d\d):(\d\d)/, "$1-$2-$3") : "",
+    p.edit ? "Edited" : ""].filter(Boolean).join("  ·  ");
+  $("#insp-suggestion").innerHTML = p.auto_suggestion
+    ? `<span class="auto-badge ${p.auto_suggestion}">${AUTO_LABEL[p.auto_suggestion]}</span>`
+      + `<span class="insp-badness" title="How bad it looks: lower is better">badness ${(p.scores?.badness ?? 0).toFixed(2)}</span>`
+    : "—";
+  $("#insp-reasons").innerHTML = explainScores(p).map((r) => `<li>${escapeHtml(r)}</li>`).join("");
+  $$("#insp-decide .btn-decision").forEach((b) => b.classList.toggle("active", b.dataset.decision === p.decision));
+  const faces = (p.faces || []).map((f, fi) => ({ f, fi, person: f.person_id ? state.peopleById.get(f.person_id) : null }))
+    .filter(({ person }) => !(person && person.excluded));
+  $("#insp-faces-section").classList.toggle("hidden", !faces.length);
+  $("#insp-faces").innerHTML = faces.map(({ fi, person }) =>
+    `<figure><img loading="lazy" alt="" src="/face/${enc(p.rel_path)}?idx=${fi}" />`
+    + `<figcaption>${person ? escapeHtml(person.label) : ""}</figcaption></figure>`).join("");
+  const rows = [["Camera", ex.camera], ["Lens", ex.lens], ["Focal", ex.focal], ["Aperture", ex.aperture],
+    ["Shutter", ex.shutter], ["ISO", ex.iso_text], ["Size", p.width && p.height ? `${p.width} × ${p.height}` : ""]];
+  $("#insp-exif").innerHTML = rows.filter(([, v]) => v).map(([k, v]) => `<dt>${k}</dt><dd>${escapeHtml(v)}</dd>`).join("");
+}
+
+function bindInspector() {
+  document.body.classList.toggle("inspector-off", !inspectorOn());
+  $("#inspector-btn").classList.toggle("active", inspectorOn());
+  $("#inspector-btn").addEventListener("click", toggleInspector);
+  $$("#insp-decide .btn-decision").forEach((b) => b.addEventListener("click", () => {
+    const p = state.filteredPhotos[state.cursorIdx];
+    if (p) decideAt(state.cursorIdx, p.decision === b.dataset.decision ? null : b.dataset.decision);
+  }));
+  $("#insp-edit").addEventListener("click", () => openEditModal(state.cursorIdx));
 }
 
 // ---------- filmstrip ----------
@@ -6801,6 +6908,7 @@ function closeMenus() {
 
 // ---------- UI bindings ----------
 function bindUi() {
+  bindInspector();
   bindTopbar();
   bindMenu("#workspace-btn", "#workspace-menu");
   $("#landing-new-project").addEventListener("click", () => openWizard());
@@ -8247,6 +8355,7 @@ const KEYMAP = {
       { k: ["Esc"], label: "Clear the selection" },
     ]},
     { group: "Show", keys: [
+      { k: ["I"], label: "Photo info panel" },
       { k: ["K"], label: "Focus peaking" },
       { k: ["B"], label: "Subject boxes" },
     ]},
