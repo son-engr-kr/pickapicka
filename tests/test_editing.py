@@ -1368,6 +1368,37 @@ def test_to_u8_is_rint_of_the_clipped_value() -> None:
     assert np.array_equal(editing._to_u8(img[5:50, 7:90]), want[5:50, 7:90])
 
 
+def test_the_frame_before_the_grade_is_kept_between_renders() -> None:
+    """A slider drag re-renders one photo over and over; what comes before the
+    grade (repairs, skin smoothing, the look) does not move with the slider."""
+    real = editing._repair
+    calls = []
+    editing._repair = lambda *a, **k: calls.append(1) or real(*a, **k)
+    try:
+        _check_the_pregrade_cache(calls)
+    finally:
+        editing._repair = real
+
+
+def _check_the_pregrade_cache(calls: list) -> None:
+    img = _sample()
+    spot = {"healing": {"ops": [_spot_op()]}}
+    first = editing.render(img, {**spot, "exposure": 0.3}, cache_key="p.jpg|corrected")
+    second = editing.render(img, {**spot, "exposure": 0.6}, cache_key="p.jpg|corrected")
+    assert len(calls) == 1, "the repairs ran again for a slider that cannot change them"
+    assert np.array_equal(first, editing.render(img, {**spot, "exposure": 0.3}))
+    assert np.array_equal(second, editing.render(img, {**spot, "exposure": 0.6}))
+    calls.clear()
+
+    # The same name on a different array (the photo decoded afresh) is a miss.
+    editing.render(img.copy(), {**spot, "exposure": 0.6}, cache_key="p.jpg|corrected")
+    assert len(calls) == 1
+    # So is a change to what the stages themselves read.
+    moved = {"healing": {"ops": [_spot_op(cx=0.3)]}}
+    got = editing.render(img, {**moved, "exposure": 0.6}, cache_key="p.jpg|corrected")
+    assert np.array_equal(got, editing.render(img, {**moved, "exposure": 0.6}))
+
+
 def _main() -> None:
     import re
     from pathlib import Path

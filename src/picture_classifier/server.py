@@ -2246,13 +2246,15 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             if payload.max_edge and payload.max_edge < max(base.shape[:2]):
                 base = ctx.get_draft_base(payload.rel_path, payload.max_edge)
                 corrected = False
+            which = "corrected" if corrected else f"draft@{payload.max_edge}"
             out = editing.render(base, fit_edit,
                                  meta=ctx.photo_meta(payload.rel_path),
                                  auto=ctx.auto_fields(payload.rel_path, fit_edit),
                                  src=ctx.range_src(payload.rel_path, fit_edit),
                                  luts=_lut_tables(ctx, fit_edit),
                                  optics=not corrected,
-                                 faces=ctx.portrait_faces(payload.rel_path, fit_edit))
+                                 faces=ctx.portrait_faces(payload.rel_path, fit_edit),
+                                 cache_key=f"{payload.rel_path}|{which}")
         else:
             out = _render_roi(ctx, payload)
         buf = io.BytesIO()

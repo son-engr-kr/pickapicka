@@ -1811,6 +1811,63 @@ def _repair(rgb: np.ndarray, e: dict[str, Any],
     return _to_u8(work)
 
 
+# The frame as it enters the grade: repaired, retouched and with its look.
+# None of that moves when a slider does, and on a 2048 px preview it is 60 ms
+# for a look, 50 for skin smoothing, 15 for a few heals, paid on every frame of
+# a drag. Kept for the caller's key (the photo and which of its arrays), plus
+# everything else those stages read. A hit also needs the very same input array
+# and face list, so a photo decoded afresh after a re-score cannot be answered
+# with the old pixels.
+_PREGRADE_CACHE: "OrderedDict[tuple, tuple[np.ndarray, Any, np.ndarray]]" = OrderedDict()
+_PREGRADE_CACHE_MAX = 4
+_PREGRADE_LOCK = threading.Lock()
+
+
+def _pregrade_stages_active(e: dict[str, Any]) -> bool:
+    return any(e[k] is not None for k in ("redeye", "healing", "portrait", "lut"))
+
+
+def _pregrade(rgb: np.ndarray, e: dict[str, Any], roi: tuple[float, float, float, float],
+              faces: list[dict[str, Any]] | None,
+              luts: dict[str, dict[str, Any]] | None,
+              cache_key: str | None, given: np.ndarray) -> np.ndarray:
+    """Repairs, then skin smoothing, then the look, on the uint8 frame.
+
+    `given` is the array the caller handed `render`, before the optics made
+    `rgb` out of it: the one a cached result is checked against. The optics
+    are in the key, and are a function of it.
+    """
+    if not _pregrade_stages_active(e):
+        return rgb
+    key = None
+    if cache_key is not None:
+        stages = json.dumps({k: e[k] for k in ("redeye", "healing", "portrait", "lut")},
+                            sort_keys=True, separators=(",", ":"))
+        key = (cache_key, rgb.shape, tuple(roi), stages)
+        with _PREGRADE_LOCK:
+            hit = _PREGRADE_CACHE.get(key)
+            if hit is not None and hit[0] is given and hit[1] is faces:
+                _PREGRADE_CACHE.move_to_end(key)
+                return hit[2]
+    img = _repair(rgb, e, roi)
+    # Retouching before the look and the grade, as a retoucher works on the
+    # capture before any colour: and after the repairs, so a healed spot is
+    # not smoothed into its surroundings before it has gone.
+    if e["portrait"] is not None:
+        assert faces is not None, "smoothing skin needs the caller's portrait.analyze faces"
+        img = _to_u8(portrait_mod.apply_portrait(img.astype(np.float32) / 255.0,
+                                                 e["portrait"], faces, roi))
+    if e["lut"] is not None:
+        img = _apply_look(img, e["lut"], luts)
+    if key is not None:
+        img.flags.writeable = False     # shared with later renders
+        with _PREGRADE_LOCK:
+            _PREGRADE_CACHE[key] = (given, faces, img)
+            while len(_PREGRADE_CACHE) > _PREGRADE_CACHE_MAX:
+                _PREGRADE_CACHE.popitem(last=False)
+    return img
+
+
 def _grade(img: np.ndarray, e: dict[str, Any],
            roi: tuple[float, float, float, float] = FULL_ROI,
            seed: int = 0) -> np.ndarray:
@@ -1958,7 +2015,8 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
            src: np.ndarray | None = None,
            luts: dict[str, dict[str, Any]] | None = None,
            optics: bool = True,
-           faces: list[dict[str, Any]] | None = None) -> np.ndarray:
+           faces: list[dict[str, Any]] | None = None,
+           cache_key: str | None = None) -> np.ndarray:
     """Apply `edit` to an RGB uint8 image and return a new RGB uint8 image.
     A neutral edit returns the input array unchanged (no copy).
 
@@ -2009,6 +2067,12 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     to render a window: those corrections move pixels across the frame, so they
     cannot be applied to a piece of it.
 
+    `cache_key` names `rgb` (the photo, and which of the caller's arrays of it)
+    for a caller that renders the same array over and over, as the live editor
+    does: what comes before the grade (repairs, skin smoothing, the look) is
+    then kept between renders. It is only a name; a hit also needs the same
+    array object and face list.
+
     `meta` is the photo's shooting info (see `exifinfo`), used to fill the
     watermark's tokens. `with_watermark=False` grades without stamping, for
     callers that measure the result rather than show it — focus peaking would
@@ -2017,6 +2081,7 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     e = normalize(edit)
     if is_neutral(e):
         return rgb
+    given = rgb
     if optics and not optics_is_neutral(e):
         assert roi == FULL_ROI, \
             "lens and perspective corrections need the whole frame; apply_optics " \
@@ -2044,16 +2109,8 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         # Grain must be the same grain every time this photo is rendered, so it
         # is seeded from the photo rather than from chance.
         seed = film_mod.seed_for(str((meta or {}).get("file") or ""))
-        img = _repair(rgb, e, roi)
-        # Retouching before the look and the grade, as a retoucher works on the
-        # capture before any colour: and after the repairs, so a healed spot is
-        # not smoothed into its surroundings before it has gone.
-        if e["portrait"] is not None:
-            assert faces is not None, "smoothing skin needs the caller's portrait.analyze faces"
-            img = _to_u8(portrait_mod.apply_portrait(img.astype(np.float32) / 255.0,
-                                                     e["portrait"], faces, roi))
-        if e["lut"] is not None:
-            img = _apply_look(img, e["lut"], luts)
+        img = _pregrade(rgb, e, roi, faces, luts,
+                        None if cache_key is None else f"{cache_key}|{optics_key(e)}", given)
         img = _grade(img, e, roi, seed)
         img = np.clip(img, 0.0, 1.0)
         if e["masks"]:
