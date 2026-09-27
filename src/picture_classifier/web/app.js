@@ -716,6 +716,7 @@ async function loadDb() {
   const res = await fetch("/api/db");
   if (!res.ok) throw new Error(`db load failed: ${res.status}`);
   const data = await res.json();
+  state.projectDir = data.project_dir;
   $("#project-name").textContent = data.project_name || "";
   $("#project-name").title = data.project_name || "";
   state.photos = data.photos;
@@ -728,6 +729,12 @@ async function loadDb() {
     }
     state.byScene.get(p.scene).push(p);
   }
+  // In name order, numbers read as numbers, so time-gap scenes run Scene 01,
+  // 02, 03 (they came in the order their first photo was filed, which put 02
+  // first). Photos in no scene of their own go last.
+  const loose = (name) => name.startsWith("(");
+  state.sceneOrder.sort((a, b) => (loose(a) - loose(b))
+    || a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
   state.people = data.people || [];
   state.peopleById = new Map(state.people.map((p) => [p.id, p]));
   state.brackets = data.brackets || [];
@@ -1255,6 +1262,7 @@ function renderMain() {
   // any future way of moving around are remembered without being wired up
   // individually. Debounced, so a burst of arrow keys still writes once.
   scheduleViewSave();
+  syncTopbar();   // Edit needs a photo to open
 }
 
 function applyLayoutCSS() {
@@ -2976,7 +2984,7 @@ async function editNav(delta) {
 // the button said: Cancel means discard, so only that is confirmed; closing
 // offers to save.
 async function leaveEditor(how) {
-  if (!editIsDirty()) { closeEditModal(); return; }
+  if (!editIsDirty()) { closeEditModal(); return true; }
   const name = basename(editSession.relPath);
   const answer = how === "cancel"
     ? await askChoice("Discard your changes?", `The edit to ${name} has not been saved.`, [
@@ -2984,8 +2992,9 @@ async function leaveEditor(how) {
     : await askChoice(`Save your changes to ${name}?`, "They are lost if you close without saving.", [
         { id: "discard", label: "Discard", danger: true }, { id: "keep", label: "Keep editing" },
         { id: "save", label: "Save", primary: true }]);
-  if (answer === "save") saveEdit();
+  if (answer === "save") await saveEdit();
   else if (answer === "discard") closeEditModal();
+  return $("#edit-modal").classList.contains("hidden");
 }
 
 // ---------- asking with more than OK and Cancel ----------
@@ -6626,6 +6635,108 @@ function bindKeys() {
   });
 }
 
+// Back to the projects, or on to another one (`next`, a project folder). The
+// page reloads between the two, so nothing of this project is carried into
+// the next; the one to open is handed over in sessionStorage.
+async function leaveProject(next) {
+  if (document.body.classList.contains("landing-mode")) {
+    if (next) openProjectByDir(next);
+    return;
+  }
+  if (!$("#edit-modal").classList.contains("hidden") && !(await leaveEditor("close"))) return;
+  await decisionSaves;
+  await flushViewSave();
+  const res = await fetch("/api/close", { method: "POST" });
+  if (res.status === 409) {
+    const err = await res.json();
+    const what = err.detail.charAt(0).toUpperCase() + err.detail.slice(1);
+    alert(`${what}. Let it finish, or stop it, before leaving this project.`);
+    return;
+  }
+  if (!res.ok) { alert("Could not close the project: " + res.status); return; }
+  if (next) sessionStorage.setItem("pcls.openNext", next);
+  location.reload();
+}
+
+// ---------- the top bar ----------
+// Which tab is lit follows what is on screen, watched rather than set from
+// every place that opens or closes a view.
+function currentModule() {
+  if (document.body.classList.contains("landing-mode")) return "projects";
+  return $("#edit-modal").classList.contains("hidden") ? "cull" : "edit";
+}
+
+function syncTopbar() {
+  const mod = currentModule();
+  const open = mod !== "projects";
+  $$("#topbar .tb-tabs button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.module === mod);
+    b.setAttribute("aria-selected", b.dataset.module === mod ? "true" : "false");
+  });
+  $("#tab-cull").disabled = !open;
+  $("#tab-edit").disabled = !open || !state.filteredPhotos.length;
+  $("#project-switcher").classList.toggle("hidden", !open);
+  $("#export-picks-btn").classList.toggle("hidden", !open);
+  $("#tour-main-btn").classList.toggle("hidden", !open);
+}
+
+async function goToModule(mod) {
+  const now = currentModule();
+  if (mod === now) return;
+  if (mod === "projects") { leaveProject(null); return; }
+  if (mod === "cull") {
+    if (now === "edit") await leaveEditor("close");
+    return;
+  }
+  // Edit: the photo in the viewer, else the highlighted one in the grid.
+  const i = state.modal.open ? state.modal.idx : state.cursorIdx;
+  if (state.modal.open) closeModal();
+  openEditModal(i);
+}
+
+async function renderProjectMenu() {
+  const menu = $("#project-menu");
+  const res = await fetch("/api/recents");
+  const recents = res.ok ? (await res.json()).recents || [] : [];
+  const here = state.projectDir;
+  const others = recents.filter((r) => r.project_dir && r.project_dir !== here).slice(0, 8);
+  menu.innerHTML = (others.length ? `<div class="menu-label">Recent projects</div>` : "")
+    + others.map((r) => `<button type="button" role="menuitem" data-dir="${escapeAttr(r.project_dir)}" title="${escapeAttr(r.project_dir)}">${icon("folder")}<span>${escapeHtml(r.name || basename(r.project_dir))}</span></button>`).join("")
+    + (others.length ? "<hr />" : "")
+    + `<button type="button" role="menuitem" data-all="1">${icon("left")}<span>All projects</span></button>`;
+  menu.querySelectorAll("button[data-dir]").forEach((b) =>
+    b.addEventListener("click", () => leaveProject(b.dataset.dir)));
+  menu.querySelector("button[data-all]").addEventListener("click", () => leaveProject(null));
+}
+
+// Background work, said in the bar: an export, a re-score or face grouping.
+const TASK_WORDS = { export: "Exporting", scoring: "Scoring", grouping: "Grouping faces" };
+let activityTimer = null;
+
+async function pollActivity() {
+  if (document.body.classList.contains("landing-mode")) { $("#activity").classList.add("hidden"); return; }
+  const res = await fetch("/api/state", { cache: "no-store" }).catch(() => null);
+  if (!res || !res.ok) return;
+  const tasks = (await res.json()).tasks || {};
+  const running = Object.entries(tasks).filter(([, t]) => t && t.running);
+  $("#activity").classList.toggle("hidden", !running.length);
+  $("#activity-text").textContent = running.map(([name, t]) =>
+    `${TASK_WORDS[name] || name}${t.total ? ` ${t.idx}/${t.total}` : "…"}`).join(" · ");
+}
+
+function bindTopbar() {
+  $("#tab-cull").addEventListener("click", () => goToModule("cull"));
+  $("#tab-edit").addEventListener("click", () => goToModule("edit"));
+  bindMenu("#project-btn", "#project-menu");
+  $("#project-btn").addEventListener("click", renderProjectMenu);
+  const watch = new MutationObserver(syncTopbar);
+  for (const el of [document.body, $("#edit-modal"), $("#modal")]) {
+    watch.observe(el, { attributes: true, attributeFilter: ["class"] });
+  }
+  syncTopbar();
+  activityTimer = setInterval(pollActivity, 2000);
+}
+
 // ---------- menus ----------
 // A button that drops a list of actions. Opens on click, closes on a choice,
 // a click elsewhere or Esc.
@@ -6651,6 +6762,7 @@ function closeMenus() {
 
 // ---------- UI bindings ----------
 function bindUi() {
+  bindTopbar();
   bindMenu("#workspace-btn", "#workspace-menu");
   $("#landing-new-project").addEventListener("click", () => openWizard());
   $("#projects-sort").addEventListener("change", () => {
@@ -6816,19 +6928,7 @@ function bindUi() {
   // No "are you sure": every decision is saved the moment it is made, so going
   // back to the projects loses nothing. What can stop it is a task still
   // running, and then it says which.
-  $("#switch-project-btn").addEventListener("click", async () => {
-    await decisionSaves;
-    await flushViewSave();
-    const res = await fetch("/api/close", { method: "POST" });
-    if (res.status === 409) {
-      const err = await res.json();
-      const what = err.detail.charAt(0).toUpperCase() + err.detail.slice(1);
-      alert(`${what}. Let it finish, or stop it, before leaving this project.`);
-      return;
-    }
-    if (!res.ok) { alert("Could not close the project: " + res.status); return; }
-    location.reload();
-  });
+  $("#switch-project-btn").addEventListener("click", () => leaveProject(null));
   $$("#scene-mode-cards .option-card").forEach((card) => {
     card.addEventListener("click", () => {
       setOptionCardValue("#scene-mode-cards", card.dataset.value);
@@ -8258,8 +8358,8 @@ const TOURS = {
       body: "Faces grouped by person. Click one to see only the photos they are in." },
     { target: "#export-picks-btn", title: "Export your picks",
       body: "Writes every photo marked Pick to a folder, edits applied and camera details kept." },
-    { target: ".sidebar-top", title: "Back to your projects, or quit",
-      body: "<b>Projects</b> goes back to the start screen; everything you decided is already saved. The power button quits the app completely, since closing the browser tab leaves it running." },
+    { target: "#topbar .tb-tabs", title: "Projects, Cull and Edit",
+      body: "<b>Projects</b> goes back to the start screen (everything you decided is already saved), <b>Cull</b> is this screen, and <b>Edit</b> opens the highlighted photo in the editor. The project's name, top left, switches to another project; the power button, top right, quits the app, since closing the browser tab leaves it running." },
     { target: "#tour-main-btn", title: "That's it",
       body: "Press <kbd>?</kbd> for every keyboard shortcut and to replay this tour. The editor has its own tour the first time you open it." },
   ],
@@ -8884,7 +8984,14 @@ async function applySceneGrouping() {
     pollOpenStatus();
     return;
   }
-  if (!s.ready) { showLanding(); return; }
+  if (!s.ready) {
+    showLanding();
+    // Switching projects from the top bar closes this one, reloads, and
+    // lands here with the next one to open.
+    const next = sessionStorage.getItem("pcls.openNext");
+    if (next) { sessionStorage.removeItem("pcls.openNext"); openProjectByDir(next); }
+    return;
+  }
   await bootMain();
   // If a long task is already running on the server, attach to it.
   const sr = await fetch("/api/score/status").catch(() => null);

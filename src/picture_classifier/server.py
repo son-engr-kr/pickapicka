@@ -1577,6 +1577,10 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             "db_path": str(ctx.db_path) if ctx.db_path else None,
             "photo_root": str(ctx.photo_root) if ctx.photo_root else None,
             "opening": ctx.opening_state,
+            # What is running in the background, for the top bar's indicator.
+            "tasks": {name: {k: st.get(k) for k in ("running", "phase", "idx", "total")}
+                      for name, st in (("export", ctx.export_state), ("scoring", ctx.scoring_state),
+                                       ("grouping", ctx.cluster_state))},
         }
 
     def _view_key() -> str:
@@ -2076,10 +2080,11 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     def get_db() -> dict[str, Any]:
         _require_loaded()
         return {
-            # What the top of the sidebar calls this project: its folder's name,
-            # or the photo folder's for a legacy picks.json beside the photos.
+            # What the top bar calls this project: its folder's name, or the
+            # photo folder's for a legacy picks.json beside the photos.
             "project_name": (ctx.project_dir.name if ctx.project_dir
                              else Path(ctx.data["photo_root"]).name),
+            "project_dir": str(ctx.project_dir) if ctx.project_dir else None,
             "scored_at": ctx.data["scored_at"],
             "clustered_at": ctx.data.get("clustered_at"),
             "photo_root": ctx.data["photo_root"],

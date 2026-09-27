@@ -7,6 +7,30 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <!-- The bar every screen shares: which project, which part of the work you
+       are in, what is running, and the way out. -->
+  <header id="topbar">
+    <div class="tb-left">
+      <span class="tb-mark" aria-hidden="true"></span>
+      <div class="menu-wrap" id="project-switcher">
+        <button id="project-btn" type="button" aria-haspopup="menu" aria-expanded="false"
+                title="Switch project"><span id="project-name"></span></button>
+        <div id="project-menu" class="menu hidden" role="menu"></div>
+      </div>
+    </div>
+    <nav class="tb-tabs" role="tablist" aria-label="Where you are">
+      <button id="switch-project-btn" type="button" role="tab" data-module="projects"
+              title="All projects (your decisions are already saved)">Projects</button>
+      <button id="tab-cull" type="button" role="tab" data-module="cull" title="Cull: decide which photos to keep">Cull</button>
+      <button id="tab-edit" type="button" role="tab" data-module="edit" title="Edit the highlighted photo (E)">Edit</button>
+    </nav>
+    <div class="tb-right">
+      <span id="activity" class="hidden" role="status"><span class="tb-spinner"></span><span id="activity-text"></span></span>
+      <button id="export-picks-btn" class="primary" title="Copy all PICK photos to a folder" disabled data-icon="folder">Export picks</button>
+      <button id="tour-main-btn" class="tour-btn" type="button" title="Keyboard shortcuts and the guided tour (?)" aria-label="Keyboard shortcuts">?</button>
+      <button type="button" class="quit-btn" data-icon="power" title="Quit Picture Classifier" aria-label="Quit"></button>
+    </div>
+  </header>
   <div id="landing" class="hidden">
     <div class="landing-shell">
       <header class="landing-header">
@@ -35,7 +59,6 @@
             </div>
           </div>
           <button type="button" class="primary" id="landing-new-project" data-icon="plus">New project</button>
-          <button type="button" class="quit-btn quiet" data-icon="power" title="Quit Picture Classifier" aria-label="Quit"></button>
         </div>
       </header>
 
@@ -255,13 +278,6 @@
   </div>
 
   <aside id="sidebar">
-    <!-- Leaving the project is going home, so it sits where "back" does. -->
-    <div class="sidebar-top">
-      <button id="switch-project-btn" type="button" data-icon="left"
-              title="Back to all projects (your decisions are already saved)">Projects</button>
-      <span id="project-name"></span>
-      <button type="button" class="quit-btn" data-icon="power" title="Quit Picture Classifier" aria-label="Quit"></button>
-    </div>
     <!-- The scenes are where you go next, so they come first; the settings
          that shape them follow, folded until wanted. -->
     <section class="side-scenes">
@@ -397,8 +413,6 @@
             <button id="reject-undecided-btn" role="menuitem" class="danger" title="Mark all undecided photos in this scene as reject" disabled data-icon="close">Reject undecided</button>
           </div>
         </div>
-        <button id="export-picks-btn" class="primary" title="Copy all PICK photos to a folder" disabled data-icon="folder">Export picks</button>
-        <button id="tour-main-btn" class="tour-btn" type="button" title="Keyboard shortcuts and the guided tour (?)" aria-label="Keyboard shortcuts">?</button>
       </div>
     </header>
     <!-- Which photos of the scene are shown, with how many each would show. -->
