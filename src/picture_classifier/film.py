@@ -34,6 +34,8 @@ References behind the choices:
 from __future__ import annotations
 
 import hashlib
+import threading
+from collections import OrderedDict
 from typing import Any
 
 import cv2
@@ -77,6 +79,7 @@ _RANGES: dict[str, tuple[float, float]] = {
 }
 
 _EPS = 1e-5
+_LUMA_ROW = np.array([[0.2126, 0.7152, 0.0722]], dtype=np.float32)
 _LUT_N = 256
 
 # Film sees light in stops around a mid grey, not in code values. 18% grey and
@@ -197,7 +200,9 @@ def _apply_tone(img: np.ndarray, f: dict[str, Any]) -> np.ndarray:
     dens = cv2.LUT(src8, table.reshape(256, 1, 3)).astype(np.float32) / 255.0
     m = _crosstalk_matrix(f)
     if not np.allclose(m, np.eye(3, dtype=np.float32), atol=1e-6):
-        dens = dens @ m.T
+        # Per pixel m . rgb, which is `dens @ m.T`: the same to a float32
+        # rounding and thirty times quicker.
+        dens = cv2.transform(dens, m)
     if f["warmth"]:
         # A density offset, so it acts like a filter over the lamp rather than a
         # gain on the code values: it moves the midtones and leaves the ends.
@@ -210,6 +215,14 @@ def _apply_tone(img: np.ndarray, f: dict[str, Any]) -> np.ndarray:
 
 # Red deepest, blue shallowest: the layer order is why the bleed is warm.
 _HALATION_WEIGHT = np.array([1.0, 0.42, 0.16], dtype=np.float32)
+# The widest blur run at the render's own size, in pixels. Wider, the mask is
+# blurred at reduced size with the blur scaled to match: at full size a 27 px
+# blur of a 2048 px preview cost 110 ms, and was most of the film look. Against
+# the full-size blur the finished frame moves by at most 2 levels out of 255
+# (halation at 100; a mean of 0.05), measured over the radius range on real
+# photos. Above a 53 px blur this was already the path taken, the export's
+# included.
+_HALATION_BLUR_CAP = 20.0
 
 
 def _apply_halation(img: np.ndarray, f: dict[str, Any],
@@ -219,7 +232,7 @@ def _apply_halation(img: np.ndarray, f: dict[str, Any],
         return img
     # Radius against the frame, so the preview is the export.
     radius = max(1.0, (f["halation_radius"] / 100.0) * 0.035 * frame_long)
-    lum = img @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    lum = cv2.transform(img, _LUMA_ROW)
     # A soft knee, but a high one. Scatter comes off specular highlights and
     # bright edges, not off every light area: a knee at 0.55 catches a whole sky
     # and washes it to paper white, which is the difference between halation and
@@ -227,7 +240,7 @@ def _apply_halation(img: np.ndarray, f: dict[str, Any],
     hot = np.clip((lum - 0.80) / 0.20, 0.0, 1.0) ** 2.0
     # Blurred at reduced resolution: a wide gaussian over a soft mask does not
     # need full resolution, and this is the expensive part.
-    scale = min(1.0, 320.0 / max(1.0, radius * 6.0))
+    scale = min(1.0, 320.0 / max(1.0, radius * 6.0), _HALATION_BLUR_CAP / radius)
     if scale < 1.0:
         small = cv2.resize(hot, None, fx=scale, fy=scale,
                            interpolation=cv2.INTER_AREA)
@@ -242,9 +255,37 @@ def _apply_halation(img: np.ndarray, f: dict[str, Any],
 
 # ----- 3. grain ------------------------------------------------------------
 
+# Grain fields last asked for. A field depends only on the grain settings, the
+# window and the seed, and a slider drag over anything else asks for the same
+# one on every render: 40 ms of noise and resampling each time on a 2048 px
+# preview. Entries are read-only and shared.
+_GRAIN_CACHE: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
+_GRAIN_CACHE_MAX = 4
+_GRAIN_LOCK = threading.Lock()
+
+
 def _grain_field(f: dict[str, Any], shape: tuple[int, int],
                  roi: tuple[float, float, float, float], frame_w: float,
                  frame_h: float, seed: int) -> np.ndarray:
+    key = (f["grain_size"], f["grain_rough"], tuple(shape), tuple(roi),
+           float(frame_w), float(frame_h), seed)
+    with _GRAIN_LOCK:
+        hit = _GRAIN_CACHE.get(key)
+        if hit is not None:
+            _GRAIN_CACHE.move_to_end(key)
+            return hit
+    field = _build_grain_field(f, shape, roi, frame_w, frame_h, seed)
+    field.flags.writeable = False
+    with _GRAIN_LOCK:
+        _GRAIN_CACHE[key] = field
+        while len(_GRAIN_CACHE) > _GRAIN_CACHE_MAX:
+            _GRAIN_CACHE.popitem(last=False)
+    return field
+
+
+def _build_grain_field(f: dict[str, Any], shape: tuple[int, int],
+                       roi: tuple[float, float, float, float], frame_w: float,
+                       frame_h: float, seed: int) -> np.ndarray:
     """A grain field for one window of the frame.
 
     Built on a lattice defined in *frame* coordinates, then sampled for the
@@ -315,7 +356,7 @@ def _apply_grain(img: np.ndarray, f: dict[str, Any],
     if amount <= 0:
         return img
     field = _grain_field(f, img.shape[:2], roi, frame_w, frame_h, seed)
-    lum = img @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    lum = cv2.transform(img, _LUMA_ROW)
     # Grain lives in the mid-densities: clear film has no crystals to see and
     # fully exposed film is packed solid. Peaks around the middle, and 4L(1-L)
     # is the cheapest curve with that shape.
