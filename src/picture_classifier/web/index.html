@@ -537,10 +537,19 @@
 
   <div id="score-progress" class="hidden">
     <div class="score-box">
+      <ol class="score-steps" aria-label="Steps">
+        <li data-step="scanning">Find photos</li>
+        <li data-step="scoring">Score</li>
+        <li data-step="clustering">Group faces</li>
+        <li data-step="loading">Open</li>
+      </ol>
       <h2 id="score-title">Scoring photos…</h2>
       <div class="score-bar"><div id="score-bar-fill"></div></div>
-      <div id="score-progress-text">starting…</div>
+      <div class="score-line"><span id="score-progress-text">starting…</span><span id="score-eta"></span></div>
       <div id="score-current"></div>
+      <div class="score-actions">
+        <button id="score-stop" type="button" title="Stop at the next photo">Stop</button>
+      </div>
     </div>
   </div>
 

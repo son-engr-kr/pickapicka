@@ -2473,3 +2473,23 @@ body.inspector-off #inspector { display: none; }
 /* The photo takes what the name and the reasons leave, zoomed or not. */
 .cmp-view { flex: 1 1 0; }
 .cmp-pane header, .cmp-why { flex-shrink: 0; }
+
+/* ----- the progress screen ----- */
+#score-progress .score-box { width: min(520px, calc(100vw - 40px)); padding: 26px 28px 22px; text-align: left; }
+#score-progress:not([data-kind]) .score-steps, #score-progress:not([data-kind]) .score-actions { display: none; }
+.score-steps { display: flex; gap: 6px; margin: 0 0 18px; padding: 0; list-style: none; counter-reset: step; }
+.score-steps li { flex: 1; counter-increment: step; font-size: var(--fs-xs); color: var(--ink-faint);
+  padding-top: 8px; border-top: 3px solid var(--line); }
+.score-steps li::before { content: counter(step) ". "; }
+.score-steps li.done { color: var(--ink-dim); border-top-color: var(--pick); }
+.score-steps li.now { color: var(--ink); font-weight: 600; border-top-color: var(--accent); }
+#score-title { margin: 0 0 12px; font-size: var(--fs-lg); }
+.score-line { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; font-size: var(--fs-sm); }
+#score-progress-text { font-family: var(--font); color: var(--ink); font-variant-numeric: tabular-nums; margin: 0; }
+#score-eta { color: var(--ink-dim); }
+#score-current { margin-top: 4px; font-family: var(--font); font-size: var(--fs-xs); color: var(--ink-faint);
+  min-height: 1.4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.score-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+/* Before there is a count, the bar says work is going on rather than sitting empty. */
+.score-bar.busy #score-bar-fill { width: 30% !important; animation: score-busy 1.2s ease-in-out infinite alternate; }
+@keyframes score-busy { from { margin-left: 0; } to { margin-left: 70%; } }

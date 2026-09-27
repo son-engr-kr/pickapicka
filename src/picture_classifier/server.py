@@ -503,7 +503,7 @@ class AppContext:
         # faces nobody has been grouped into.
         return {"running": False, "phase": None, "idx": 0, "total": 0,
                 "current": None, "started_at": None, "ended_at": None,
-                "error": None}
+                "error": None, "cancel": False, "cancelled": False}
 
     @staticmethod
     def _fresh_cluster_state() -> dict[str, Any]:
@@ -523,7 +523,7 @@ class AppContext:
         return {"running": False, "phase": None, "message": None,
                 "idx": 0, "total": 0, "current": None,
                 "started_at": None, "ended_at": None, "error": None,
-                "ready": False, "needs_relink": None}
+                "ready": False, "needs_relink": None, "cancel": False, "cancelled": False}
 
     def is_loaded(self) -> bool:
         return self.db_path is not None
@@ -900,6 +900,15 @@ def _project_cover(project_dir: Path, photos: list[dict[str, Any]]) -> str | Non
         if rel and (thumbs / rel).is_file():
             return rel
     return None
+
+
+class Stopped(Exception):
+    """Raised from a progress callback when the task was asked to stop."""
+
+
+def _stop_if_asked(task: dict[str, Any]) -> None:
+    if task.get("cancel"):
+        raise Stopped()
 
 
 def _lexical(path: Path) -> Path:
@@ -1943,6 +1952,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                 from .scorer import run_scoring
 
                 def score_cb(i: int, total: int, current: str | None) -> None:
+                    _stop_if_asked(ctx.opening_state)
                     ctx.opening_state["idx"] = i
                     ctx.opening_state["total"] = total
                     ctx.opening_state["current"] = current
@@ -1961,6 +1971,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                 from .cluster import run_clustering
 
                 def cluster_cb(phase: str, idx: int, total: int) -> None:
+                    _stop_if_asked(ctx.opening_state)
                     ctx.opening_state["message"] = f"Clustering: {phase}"
                     ctx.opening_state["idx"] = idx
                     ctx.opening_state["total"] = total
@@ -2001,6 +2012,10 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
 
             ctx.opening_state["phase"] = "done"
             ctx.opening_state["message"] = None
+        except Stopped:
+            # Asked for, so not an error: the landing is shown again, and a
+            # project that was being created has no picks.json and is not listed.
+            ctx.opening_state["cancelled"] = True
         except Exception as exc:
             ctx.opening_state["error"] = f"{type(exc).__name__}: {exc}"
         finally:
@@ -2365,6 +2380,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             ctx.scoring_state.update(
                 running=True, phase="scoring", idx=0, total=0, current=None,
                 started_at=datetime.now().isoformat(), ended_at=None, error=None,
+                cancel=False, cancelled=False,
             )
 
         with ctx.save_lock:
@@ -2378,6 +2394,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             subject_classes = objects_mod.resolve_classes(subject_classes)
 
         def progress_cb(i: int, total: int, current: str | None) -> None:
+            _stop_if_asked(ctx.scoring_state)
             ctx.scoring_state["idx"] = i
             ctx.scoring_state["total"] = total
             ctx.scoring_state["current"] = current
@@ -2409,6 +2426,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                 ctx.scoring_state.update(idx=0, total=0, current=None)
 
                 def cluster_cb(phase: str, idx: int, total: int) -> None:
+                    _stop_if_asked(ctx.scoring_state)
                     ctx.scoring_state["current"] = phase
                     ctx.scoring_state["idx"] = idx
                     ctx.scoring_state["total"] = total
@@ -2416,6 +2434,12 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                 _run_clustering(_cluster_settings(), cluster_cb)
                 ctx.reload_data()
                 ctx.wipe_face_cache()
+            except Stopped:
+                # Scoring writes picks.json only at its end, so a stop there
+                # leaves the project as it was; one during grouping leaves the
+                # new scores with their groups to be made again.
+                ctx.scoring_state["cancelled"] = True
+                ctx.reload_data()
             except Exception as exc:
                 ctx.scoring_state["error"] = f"{type(exc).__name__}: {exc}"
             finally:
@@ -2429,6 +2453,20 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     @app.get("/api/score/status")
     def score_status() -> dict[str, Any]:
         return ctx.scoring_state
+
+    @app.post("/api/score/cancel")
+    def score_cancel() -> dict[str, Any]:
+        """Stop a re-score at the next photo."""
+        if ctx.scoring_state["running"]:
+            ctx.scoring_state["cancel"] = True
+        return {"stopping": ctx.scoring_state["running"]}
+
+    @app.post("/api/open/cancel")
+    def open_cancel() -> dict[str, Any]:
+        """Stop opening a project, scoring included, at the next photo."""
+        if ctx.opening_state["running"]:
+            ctx.opening_state["cancel"] = True
+        return {"stopping": ctx.opening_state["running"]}
 
     @app.post("/api/hdr/preview")
     def hdr_preview(payload: HdrPreviewPayload) -> Response:

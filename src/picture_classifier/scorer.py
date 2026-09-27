@@ -552,11 +552,17 @@ def run_scoring(
         raw_keys = sorted(raw_by_key)
         if verbose:
             click.echo(f"Preparing {len(raw_keys)} RAW preview(s)…")
-        with ThreadPoolExecutor(max_workers=RAW_PREVIEW_WORKERS) as pool:
+        pool = ThreadPoolExecutor(max_workers=RAW_PREVIEW_WORKERS)
+        try:
             for n, (key, done) in enumerate(zip(raw_keys, pool.map(_prepare, raw_keys)), 1):
                 prepared[key] = done
                 if progress_cb is not None:
                     progress_cb(0, 0, f"Preparing RAW previews… ({n}/{len(raw_keys)})")
+        finally:
+            # A progress callback may raise to stop the run; the previews
+            # still queued are then dropped, not decoded first. Only those
+            # already being decoded are waited for.
+            pool.shutdown(wait=True, cancel_futures=True)
 
     targets: list[dict[str, Any]] = []
     for key in sorted(set(raw_by_key) | set(jpeg_by_key)):

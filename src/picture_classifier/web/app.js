@@ -1284,7 +1284,7 @@ async function runRescore() {
     return;
   }
   closeRescoreModal();
-  $("#score-progress").classList.remove("hidden");
+  startScoreProgress("rescore");
   $("#score-bar-fill").style.width = "0%";
   $("#score-progress-text").textContent = "starting…";
   $("#score-current").textContent = "";
@@ -7355,6 +7355,7 @@ function closeMenus() {
 
 // ---------- UI bindings ----------
 function bindUi() {
+  bindScoreProgress();
   bindCompare();
   bindInspector();
   bindTopbar();
@@ -7941,6 +7942,65 @@ function pollClusterStatus() {
 // ---------- Scoring trigger ----------
 let scorePollTimer = null;
 
+// The progress screen for opening a project and for re-scoring one: where in
+// the run it is, how far, how long is left, and a way to stop. Other tasks use
+// the same screen without steps or a Stop (they cannot be stopped midway);
+// `data-kind` says which it is, and goes when the screen is hidden.
+// The time left is the pace since this step began, so a slow start (models
+// loading) does not stretch the estimate for the rest.
+const scoreEta = { step: null, t0: 0, i0: 0 };
+
+function showScoreProgress({ step, title, idx, total, current, message }) {
+  // Before the photos are counted the scorer reports what it is doing in the
+  // file's place ("Preparing RAW previews… (3/6)"): that is the status line.
+  if (!total && current) { message = current; current = null; }
+  const steps = ["scanning", "scoring", "clustering", "loading"];
+  const at = steps.indexOf(step);
+  $$("#score-progress .score-steps li").forEach((li, i) => {
+    li.classList.toggle("done", at > i);
+    li.classList.toggle("now", at === i);
+  });
+  $("#score-title").textContent = title;
+  const pct = total ? Math.min(100, 100 * idx / total) : 0;
+  $("#score-bar-fill").style.width = pct.toFixed(1) + "%";
+  $("#score-bar-fill").parentElement.classList.toggle("busy", !total);
+  $("#score-progress-text").textContent = total
+    ? `${idx.toLocaleString()} of ${total.toLocaleString()}` : (message || "Starting…");
+  const now = performance.now();
+  if (scoreEta.step !== step || idx < scoreEta.i0) Object.assign(scoreEta, { step, t0: now, i0: idx });
+  const done = idx - scoreEta.i0, secs = (now - scoreEta.t0) / 1000;
+  let eta = "";
+  if (total && done >= 3 && secs > 2) {
+    const left = (total - idx) * secs / done;
+    eta = left < 60 ? "under a minute left" : `about ${Math.round(left / 60)} min left`;
+  }
+  $("#score-eta").textContent = eta;
+  $("#score-current").textContent = current ? basename(current) : "";
+}
+
+function startScoreProgress(kind) {
+  $("#score-progress").dataset.kind = kind;
+  $("#score-stop").disabled = false;
+  setBtnLabel($("#score-stop"), "Stop");
+  $("#score-eta").textContent = "";
+  scoreEta.step = null;
+  $("#score-progress").classList.remove("hidden");
+}
+
+function bindScoreProgress() {
+  $("#score-stop").addEventListener("click", async () => {
+    const url = $("#score-progress").dataset.kind === "rescore" ? "/api/score/cancel" : "/api/open/cancel";
+    $("#score-stop").disabled = true;
+    setBtnLabel($("#score-stop"), "Stopping…");
+    const res = await fetch(url, { method: "POST" });
+    if (!res.ok) throw new Error(`stop failed: ${res.status}`);
+  });
+  new MutationObserver(() => {
+    const box = $("#score-progress");
+    if (box.classList.contains("hidden")) { delete box.dataset.kind; $("#score-eta").textContent = ""; }
+  }).observe($("#score-progress"), { attributes: true, attributeFilter: ["class"] });
+}
+
 
 function pollScoreStatus() {
   if (scorePollTimer) clearInterval(scorePollTimer);
@@ -7950,19 +8010,27 @@ function pollScoreStatus() {
     const res = await fetch("/api/score/status", { cache: "no-store" });
     if (!res.ok) { console.warn("score status fetch failed", res.status); return; }
     const s = await res.json();
-    const pct = s.total ? Math.min(100, 100 * s.idx / s.total) : 0;
     const grouping = s.phase === "grouping";
-    $("#score-title").textContent = grouping
-      ? "Grouping…" : `Scoring ${state.photos.length} photos…`;
-    $("#score-bar-fill").style.width = pct.toFixed(1) + "%";
-    $("#score-progress-text").textContent = s.total
-      ? `${s.idx}/${s.total} (${pct.toFixed(1)}%)`
-      : "starting…";
-    $("#score-current").textContent = s.current || (s.running ? "" : "finalizing…");
+    showScoreProgress({
+      step: grouping ? "clustering" : "scoring",
+      title: grouping ? "Grouping faces and subjects…" : `Re-scoring ${plural(state.photos.length, "photo")}…`,
+      idx: s.idx, total: s.total, current: grouping ? null : s.current,
+      message: grouping ? s.current : null,
+    });
     if (!s.running) {
       finished = true;
       clearInterval(scorePollTimer);
       scorePollTimer = null;
+      if (s.cancelled) {
+        // Stopped while scoring: the project is as it was. While grouping:
+        // scored, with the groups still to make (the People panel's group).
+        $("#score-progress").classList.add("hidden");
+        await loadDb();
+        renderSidebar();
+        renderPeopleChips();
+        renderMain();
+        return;
+      }
       if (s.error) {
         $("#score-progress").classList.add("hidden");
         alert("Scoring failed: " + s.error);
@@ -7980,6 +8048,8 @@ function pollScoreStatus() {
         `${totalFaces} faces · ${state.people.length} people`
         + (groups ? ` · ${groups} subject groups` : "");
       $("#score-current").textContent = "Click anywhere to dismiss";
+      $("#score-eta").textContent = "";
+      delete $("#score-progress").dataset.kind;   // done: no steps, no Stop
       const dismiss = () => {
         $("#score-progress").classList.add("hidden");
         $("#score-progress").removeEventListener("click", dismiss);
@@ -8638,7 +8708,7 @@ function showOpenProgress(title) {
   hideLanding();
   closeWizard();
   $("#score-title").textContent = title;
-  $("#score-progress").classList.remove("hidden");
+  startScoreProgress("open");
   $("#score-bar-fill").style.width = "0%";
   $("#score-progress-text").textContent = "starting…";
   $("#score-current").textContent = "";
@@ -9486,19 +9556,23 @@ function pollOpenStatus() {
       if (!stateRes.ok) return;
       s = (await stateRes.json()).opening || {};
     } catch { return; }
-    const pct = s.total ? Math.min(100, 100 * s.idx / s.total) : 0;
-    $("#score-title").textContent = (s.phase === "scoring") ? "Scoring photos…"
-      : (s.phase === "clustering") ? "Clustering faces…"
-      : (s.phase === "scanning") ? "Scanning…"
-      : (s.phase === "loading") ? "Loading project…"
-      : "Opening project…";
-    $("#score-bar-fill").style.width = pct.toFixed(1) + "%";
-    $("#score-progress-text").textContent = s.message || (s.total ? `${s.idx}/${s.total}` : "starting…");
-    $("#score-current").textContent = s.current || "";
+    showScoreProgress({
+      step: s.phase === "done" ? "loading" : s.phase,
+      title: (s.phase === "scoring") ? (s.total ? `Scoring ${plural(s.total, "photo")}…` : "Getting ready to score…")
+        : (s.phase === "clustering") ? "Grouping faces…"
+        : (s.phase === "scanning") ? "Finding photos…"
+        : "Opening the project…",
+      idx: s.idx, total: s.total, current: s.current, message: s.message,
+    });
     if (!s.running) {
       finished = true;
       clearInterval(scorePollTimer);
       scorePollTimer = null;
+      if (s.cancelled) {
+        $("#score-progress").classList.add("hidden");
+        showLanding();
+        return;
+      }
       if (s.error) {
         $("#score-progress").classList.add("hidden");
         showLanding();
