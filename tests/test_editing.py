@@ -1483,6 +1483,58 @@ def test_normalized_strokes_are_the_same_whoever_asks() -> None:
     assert first[-1]["points"] == [[2.0, -1.0]] and first[-1]["radius"] == 0.5
 
 
+def _detailed(h: int = 1200, w: int = 1800) -> np.ndarray:
+    """Edges, gradients and highlights at several scales, so every spatial stage
+    has something to act on at the band edges."""
+    rng = np.random.default_rng(4)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    base = 110 + 60 * np.sin(xx / 37.0) * np.cos(yy / 23.0) + 40 * np.sign(np.sin(xx / 5.0 + yy / 9.0))
+    img = np.stack([base, np.roll(base, 7, axis=0) * 0.9, np.roll(base, -11, axis=1) * 1.1], axis=2)
+    img += rng.normal(0, 6, img.shape)
+    img[500:540, 800:900] = 250
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def test_banded_renders_agree_with_the_whole_render() -> None:
+    img = _detailed()
+    basic = {"exposure": 0.3, "contrast": 20, "shadows": 30, "vibrance": 25, "temp": 10}
+    radial = {"type": "radial", "cx": 0.45, "cy": 0.43, "rx": 0.3, "ry": 0.2, "feather": 60,
+              "adj": {"exposure": 0.5, "clarity": 30}}
+    cases = [
+        ("pointwise", basic, 0),
+        ("hsl, grading, vignette, radial", {**basic, "hsl": {"blue": {"hue": -10, "sat": 20}},
+                                            "grading": {"shadows": {"hue": 220, "sat": 20}},
+                                            "vignette": -20, "masks": [radial]}, 3),
+        ("clarity, texture, sharpen", {**basic, "clarity": 30, "texture": 20, "sharpen": 40}, 3),
+        ("film", {**basic, "film": editing.film_mod.stock("Warm portrait")}, 3),
+        ("lens, tilt, crop, watermark", {**basic, "lens": {"distortion": 20},
+                                          "tilt": 2.0, "crop": {"x": 0.1, "y": 0.1, "w": 0.8, "h": 0.8},
+                                          "watermark": {"enabled": True, "name": "Test"}}, 3),
+    ]
+    for name, edit, tol in cases:
+        e = editing.normalize(edit)
+        pad = int(np.ceil(editing.effect_padding(e, float(max(img.shape[:2])))))
+        assert editing._band_count(e, img.shape[0], pad, editing.BAND_WORKERS) >= 2, name
+        whole = editing.render(img, edit, meta={"file": "b"})
+        banded = editing.render_bands(img, edit, meta={"file": "b"})
+        assert banded.shape == whole.shape, name
+        d = np.abs(banded.astype(int) - whole.astype(int))
+        assert d.max() <= tol, (name, d.max())
+        assert d.mean() < 0.05, (name, d.mean())
+
+
+def test_edits_that_would_seam_are_rendered_whole() -> None:
+    img = _detailed(900, 1300)
+    brush = {"type": "brush", "feather": 40, "strokes": _strokes(3, 30), "adj": {"exposure": 0.5}}
+    for edit in ({"dehaze": 30}, {"denoise": 30},
+                 {"masks": [{"type": "linear", "x1": 0.5, "y1": 0, "x2": 0.5, "y2": 0.5,
+                             "adj": {"dehaze": 40}}]},
+                 {"exposure": 0.2, "masks": [brush]}):
+        e = editing.normalize(edit)
+        assert editing._band_count(e, img.shape[0], 10, editing.BAND_WORKERS) == 1, edit
+        assert np.array_equal(editing.render_bands(img, edit), editing.render(img, edit)), edit
+
+
 def _main() -> None:
     import re
     from pathlib import Path

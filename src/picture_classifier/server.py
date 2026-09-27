@@ -1082,12 +1082,12 @@ def _bake_rendered(ctx: "AppContext", photo: dict[str, Any], rel: str,
                    dst: Path | BinaryIO, settings: ExportSettings) -> None:
     """Render one photo and write it to `dst`, a path or an open buffer."""
     edit = photo.get("edit")
-    out = editing.render(ctx.decode_full(rel), edit,
-                         meta=ctx.photo_meta(rel),
-                         auto=ctx.auto_fields(rel, edit),
-                         src=ctx.range_src(rel, edit),
-                         luts=_lut_tables(ctx, edit),
-                         faces=ctx.portrait_faces(rel, edit))
+    out = editing.render_bands(ctx.decode_full(rel), edit,
+                               meta=ctx.photo_meta(rel),
+                               auto=ctx.auto_fields(rel, edit),
+                               src=ctx.range_src(rel, edit),
+                               luts=_lut_tables(ctx, edit),
+                               faces=ctx.portrait_faces(rel, edit))
     out = exporting.resize(out, settings.long_edge)
     src_path, is_raw = _metadata_source(ctx, photo, rel)
     src_exif, icc = metadata_mod.read_source(src_path, is_raw)

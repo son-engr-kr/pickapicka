@@ -32,6 +32,7 @@ import json
 import math
 import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import cv2
@@ -2248,6 +2249,101 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     if stamp is not None:
         # FULL_ROI once cropped: `out` is now the whole of the frame that ships.
         out = watermark_mod.render(out, stamp, meta, FULL_ROI if do_geom else roi)
+    return out
+
+
+BAND_WORKERS = 4        # threads a banded render grades on
+_BANDS_PER_WORKER = 2   # more bands than threads, so fewer bands' floats are alive at once
+_BAND_ROWS_MIN = 256    # thinner than this a band is mostly its own padding
+_BAND_PAD_SHARE = 0.5   # padding may add at most this share of the frame's rows
+
+
+def _band_count(e: dict[str, Any], h: int, pad: int, workers: int) -> int:
+    """How many bands a normalized edit is graded in; under 2 means whole.
+
+    Whole when banding would not be close to the whole render, or not quicker:
+      - dehaze, anywhere: its haze map is estimated on a reduced copy of what it
+        is given, and a band's copy falls on a different grid than the frame's,
+        which put a line of up to 6 levels along every band edge on a 33 MP
+        photo (31 with clarity and a contrasty grade on top);
+      - a brush: a band rasterizes its strokes on its own grid, and the soft
+        edges moved by up to 21 levels;
+      - denoise: OpenCV already runs it on every core, so bands only fought
+        it for them (2.2 times slower with a glow and heals alongside);
+      - a reach so wide that the padding would be most of what is graded (a
+        strong glow or clarity on a small frame): the band count is cut until
+        the padding adds at most `_BAND_PAD_SHARE` of the rows.
+    """
+    tone_neutral = is_neutral({**e, "watermark": None, "crop": None, "tilt": 0.0,
+                               "lens": None, "transform": None})
+    active = [m for m in e["masks"] if mask_is_active(m)]
+    if tone_neutral or workers < 2 or e["dehaze"] or e["denoise"] \
+            or any(m["adj"]["dehaze"] or m["adj"]["denoise"] or m["type"] == "brush"
+                   for m in active):
+        return 1
+    n = min(workers * _BANDS_PER_WORKER, h // _BAND_ROWS_MIN)
+    if pad > 0:
+        n = min(n, 1 + int(_BAND_PAD_SHARE * h / (2 * pad)))
+    return n
+
+
+def render_bands(rgb: np.ndarray, edit: dict[str, Any] | None,
+                 meta: dict[str, Any] | None = None,
+                 with_watermark: bool = True,
+                 auto: dict[str, np.ndarray] | None = None,
+                 src: np.ndarray | None = None,
+                 luts: dict[str, dict[str, Any]] | None = None,
+                 faces: list[dict[str, Any]] | None = None,
+                 workers: int = BAND_WORKERS) -> np.ndarray:
+    """`render` of a whole frame, graded in horizontal bands on `workers` threads.
+
+    For a big render made once, the export: numpy runs a stage on one core, and
+    a 33 MP frame spent one to two seconds on one core while the rest idled.
+    Each band is graded as a window of the frame through the `roi` contract the
+    1:1 view already relies on, padded by `effect_padding` so whatever a stage
+    reaches for past the band's edge is there; NumPy and OpenCV let go of the
+    GIL for the pixel work, so the bands run side by side. With more bands than
+    threads, only a few bands' float temporaries exist at a time rather than
+    the whole frame's. The optics go first and the geometry and the watermark
+    last, on the whole frame, as in `render`.
+
+    Pointwise stages come out byte-identical. Those that reach across pixels
+    are resampled on each band's own grid, as a 1:1 window is, which moves an
+    8-bit value by a few levels where a mask or a blur changes fastest:
+    measured on 33 MP photos at most 3 levels, a mean under 0.025, for a grade
+    with masks, clarity, texture and sharpening, a film look, lens and crop and
+    a watermark, and skin smoothing. Edits that would move more, or gain
+    nothing, are rendered whole (`_band_count`). Time: 3x for a basic grade and
+    skin smoothing, 1.8x to 1.9x for masks, a heavy grade or a film look.
+    """
+    e = normalize(edit)
+    if is_neutral(e):
+        return rgb
+    h, w = rgb.shape[:2]
+    kw = dict(meta=meta, auto=auto, src=src, luts=luts, faces=faces)
+    if not optics_is_neutral(e):
+        rgb = apply_optics(rgb, e)
+    pad = int(math.ceil(effect_padding(e, float(max(h, w)), faces)))
+    n = _band_count(e, h, pad, workers)
+    if n < 2:
+        return render(rgb, e, with_watermark=with_watermark, optics=False, **kw)
+    cuts = np.linspace(0, h, n + 1).astype(int)
+    out = np.empty((h, w, 3), dtype=np.uint8)
+
+    def band(i: int) -> None:
+        y0, y1 = int(cuts[i]), int(cuts[i + 1])
+        py0, py1 = max(0, y0 - pad), min(h, y1 + pad)
+        graded = render(rgb[py0:py1], e, roi=(0.0, py0 / h, 1.0, (py1 - py0) / h),
+                        with_watermark=False, geometry=False, optics=False, **kw)
+        out[y0:y1] = graded[y0 - py0:y1 - py0]
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for done in pool.map(band, range(n)):
+            assert done is None
+    if not geometry_is_neutral(e):
+        out = apply_geometry(out, e)
+    if with_watermark and e["watermark"] is not None:
+        out = watermark_mod.render(out, e["watermark"], meta, FULL_ROI)
     return out
 
 
