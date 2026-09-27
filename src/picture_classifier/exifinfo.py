@@ -67,6 +67,13 @@ def format_iso(iso: int | None) -> str:
     return f"ISO {iso}" if iso else ""
 
 
+def _text(value: Any) -> str:
+    """An EXIF ASCII field as text. The field is NUL-terminated and some
+    bodies pad it to a fixed width with NULs: Fujifilm's LensModel reads
+    "XF18mmF2 R" followed by 43 of them."""
+    return str(value or "").split("\x00", 1)[0].strip()
+
+
 def _from_pil(img: Image.Image) -> dict[str, Any]:
     info = dict(EMPTY)
     exif = img.getexif()
@@ -74,11 +81,11 @@ def _from_pil(img: Image.Image) -> dict[str, Any]:
         return info
     ifd = exif.get_ifd(_EXIF_IFD) or {}
 
-    make = str(exif.get(_TAG["Make"], "") or "").strip()
-    model = str(exif.get(_TAG["Model"], "") or "").strip()
-    lens = str(ifd.get(_TAG.get("LensModel"), "") or "").strip()
+    make = _text(exif.get(_TAG["Make"]))
+    model = _text(exif.get(_TAG["Model"]))
+    lens = _text(ifd.get(_TAG.get("LensModel")))
     if not lens:
-        lens = str(exif.get(0xA434, "") or "").strip()  # LensModel in IFD0 on some bodies
+        lens = _text(exif.get(0xA434))  # LensModel in IFD0 on some bodies
 
     focal = _num(ifd.get(_TAG["FocalLength"]))
     fnum = _num(ifd.get(_TAG["FNumber"]))
@@ -101,7 +108,7 @@ def _from_pil(img: Image.Image) -> dict[str, Any]:
         aperture=format_aperture(fnum),
         shutter=format_shutter(exposure),
         iso_text=format_iso(iso),
-        captured_at=str(ifd.get(_TAG["DateTimeOriginal"], "") or "").strip(),
+        captured_at=_text(ifd.get(_TAG["DateTimeOriginal"])),
     )
     return info
 
@@ -132,10 +139,12 @@ def read_raw(path: Path) -> dict[str, Any]:
             thumb = r.extract_thumb()
         except (rawpy.LibRawNoThumbnailError, rawpy.LibRawUnsupportedThumbnailError):
             thumb = None
-        stamp = raw.capture_time(r)
     if thumb is not None and thumb.format == rawpy.ThumbFormat.JPEG:
         with Image.open(io.BytesIO(thumb.data)) as img:
             info = _from_pil(img)
+    # Only when the preview did not say: libraw's time costs a full unpack
+    # (1.2 s a compressed Fujifilm RAF), the preview's a few milliseconds.
+    stamp = None if info["captured_at"] else raw.read_capture_time(path)
     if not info["captured_at"] and stamp is not None:
         # Written the way EXIF spells it, because that is the one shape the
         # watermark's {date}/{time} split expects from either kind of file.

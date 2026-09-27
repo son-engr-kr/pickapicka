@@ -178,9 +178,9 @@ def shots(
 
     def when(files: dict[str, Path]) -> float | None:
         if "raw" in files:
-            # The TIFF head first: libraw reads the whole file for this, half a
-            # second a frame, and gives the same answer where the head has one.
-            t = raw.head_capture_time(files["raw"]) or raw.read_capture_time(files["raw"])
+            # From the file's head where the format allows (raw.head_capture_time):
+            # libraw unpacks the whole file for it, half a second a frame.
+            t = raw.read_capture_time(files["raw"])
         else:
             t = scenes.read_capture_time(files["jpeg"])
         return _wall_seconds(t) if t is not None else None

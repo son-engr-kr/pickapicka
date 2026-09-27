@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import struct
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -58,12 +59,23 @@ def fit_within(arr: np.ndarray, max_edge: int) -> np.ndarray:
 
 def decode_raw(path: Path, half_size: bool = False) -> np.ndarray:
     """Full (or half) oriented RGB uint8 from a RAW file: camera white balance,
-    8-bit sRGB, no auto-brightness (deterministic base so preview == export)."""
+    8-bit sRGB, no auto-brightness (deterministic base so preview == export).
+
+    Fujifilm's X-Trans sensors (a 6x6 colour pattern) are demosaiced with
+    Markesteijn's 1-pass method rather than libraw's default 3-pass: 0.5 s
+    against 10.7 s on an X100V file and 2.0 s against 17.7 s on an X-T5,
+    with no difference to see at 100% (mean 1-1.6 levels, at fine edges).
+    darktable uses 1-pass by default for X-Trans too. libraw has no name for
+    it: any quality below AHD selects it on an X-Trans sensor, and LINEAR is
+    the one asked for here. Bayer sensors keep the default.
+    """
     import rawpy
     with rawpy.imread(str(path)) as r:
+        xtrans = not half_size and r.raw_pattern is not None and r.raw_pattern.shape == (6, 6)
         rgb = r.postprocess(
             use_camera_wb=True, no_auto_bright=True, output_bps=8,
             output_color=rawpy.ColorSpace.sRGB, half_size=half_size,
+            demosaic_algorithm=rawpy.DemosaicAlgorithm.LINEAR if xtrans else None,
         )
     return np.ascontiguousarray(rgb)
 
@@ -148,25 +160,39 @@ def capture_time(rawpy_handle: Any) -> datetime | None:
 _TIFF_MAGIC = (b"II*\x00", b"MM\x00*")
 _HEAD_BYTES = 512 * 1024
 _DATETIME_ORIGINAL = 0x9003
+# Fujifilm's RAF is not: a header of its own gives the offset and length of a
+# JPEG preview, big-endian at bytes 84 and 88, and that JPEG's EXIF holds the
+# capture time. Its APP1 segment is the first after SOI and at most 64 KB.
+_RAF_MAGIC = b"FUJIFILMCCD-RAW "
+_RAF_JPEG_AT = 84
+_APP1_MAX = 64 * 1024
 
 
 def head_capture_time(path: Path) -> datetime | None:
-    """DateTimeOriginal read from the head of a TIFF-based RAW, or None when
-    the file does not start with a TIFF header or the tag is not in its first
-    512 KB.
+    """DateTimeOriginal read from the head of the file, or None when the
+    format keeps it somewhere this does not look or the tag is absent.
 
-    libraw opens the whole file to answer the same question: 478 ms an ARW
-    against 0.5 ms for this, measured on 118 Sony ARW files, which gave the
-    same time for every one of them. It exists for the new-project wizard, which
-    reads every shot's time before anything is scored; a caller getting None
-    asks `read_capture_time` instead, which knows every format libraw does
-    (CR3 and RAF are not TIFF).
+    Two layouts are read: TIFF-based RAWs (the tag in the first 512 KB) and
+    Fujifilm RAF (the tag in the EXIF of its embedded JPEG). libraw answers
+    the same question only by unpacking the whole file: 478 ms an ARW and
+    1.2 s a compressed RAF, against under 5 ms for this. Measured the same
+    as libraw's time on 118 Sony ARW and on Fujifilm X-T5, X-H2, X-S10
+    (compressed and lossless), X100V and X-A5 files. A caller getting None
+    asks libraw instead (`read_capture_time` does), which knows every format
+    it does (CR3 is neither of these).
     """
     import warnings
     with open(path, "rb") as fh:
         head = fh.read(_HEAD_BYTES)
-    if head[:4] not in _TIFF_MAGIC:
-        return None
+        if head.startswith(_RAF_MAGIC):
+            off, length = struct.unpack_from(">II", head, _RAF_JPEG_AT)
+            fh.seek(off)
+            jpeg = fh.read(min(length, _APP1_MAX + 4))
+            head = _jpeg_exif_block(jpeg)
+            if head is None:
+                return None
+        elif head[:4] not in _TIFF_MAGIC:
+            return None
     exif = Image.Exif()
     # A head cut short of the Exif IFD reads as the tag being absent, with a
     # warning about the truncation; that is the None this returns anyway.
@@ -177,14 +203,34 @@ def head_capture_time(path: Path) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        return datetime.strptime(value.strip(), "%Y:%m:%d %H:%M:%S")
+        return datetime.strptime(value.strip("\x00 "), "%Y:%m:%d %H:%M:%S")
     except ValueError:
         return None      # a malformed stamp; libraw may still read the maker's own
 
 
+def _jpeg_exif_block(jpeg: bytes) -> bytes | None:
+    """The TIFF block of a JPEG's EXIF (APP1) segment, if it opens with one."""
+    if jpeg[:2] != b"\xff\xd8":
+        return None
+    i = 2
+    while i + 4 <= len(jpeg) and jpeg[i] == 0xFF:
+        marker = jpeg[i + 1]
+        size = struct.unpack_from(">H", jpeg, i + 2)[0]
+        if marker == 0xE1 and jpeg[i + 4:i + 10] == b"Exif\x00\x00":
+            return jpeg[i + 10:i + 2 + size]
+        if marker == 0xDA:          # image data begins: no EXIF before it
+            return None
+        i += 2 + size
+    return None
+
+
 def read_capture_time(path: Path) -> datetime | None:
-    """`capture_time` for a path. Opens the RAW for its metadata only — no
-    unpack, no decode, so this is cheap next to a preview."""
+    """Capture time of a RAW file: from its head where the format allows
+    (`head_capture_time`), else from libraw. libraw's metadata is only filled
+    in by unpacking the file, so that path costs as much as decoding it."""
+    t = head_capture_time(path)
+    if t is not None:
+        return t
     import rawpy
     with rawpy.imread(str(path)) as r:
         return capture_time(r)
