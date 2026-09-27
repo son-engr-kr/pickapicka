@@ -2356,6 +2356,8 @@ function openEditModal(absIdx) {
   resizeOverlay();
   fetchEditPreview(true);
   fetchOriginalPreview();
+  // After layout, so the controls it points at have their places.
+  if (!tourSeen("editor")) setTimeout(() => maybeStartTour("editor"), 400);
 }
 
 function closeEditModal() {
@@ -6037,6 +6039,21 @@ function toggleCompare() {
 // ---------- keyboard ----------
 function bindKeys() {
   document.addEventListener("keydown", async (e) => {
+    // A tour owns the keyboard while it is up: arrows and Enter walk it, Esc
+    // leaves, and nothing reaches the photos underneath.
+    if (tourState.name) {
+      if (e.key === "Escape") endTour();
+      else if (e.key === "ArrowRight" || e.key === "Enter") tourStep(1);
+      else if (e.key === "ArrowLeft") tourStep(-1);
+      e.preventDefault();
+      return;
+    }
+    if (e.key === "?" && !(e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName))
+        && document.body.classList.contains("landing-mode") === false) {
+      e.preventDefault();
+      startTour($("#edit-modal").classList.contains("hidden") ? "main" : "editor");
+      return;
+    }
     // In the editor, ⌘Z / Ctrl+Z steps back through the edit and ⇧⌘Z or Ctrl+Y
     // forward. A text field keeps the keys for its own undo.
     if ((e.metaKey || e.ctrlKey) && !e.altKey
@@ -6334,6 +6351,7 @@ function bindUi() {
   bindRepairPanel();
   bindOpticsPanel();
   bindPortraitPanel();
+  bindTour();
   bindMaskUi();
   bindSlots();
   bindWatermarkUi();
@@ -7433,19 +7451,154 @@ async function quitApp() {
   $("#quit-screen").classList.remove("hidden");
 }
 
-// ---------- welcome banner ----------
-const WELCOME_BANNER_KEY = "pcls.welcomeBannerSeen";
 
-function maybeShowWelcomeBanner() {
-  try {
-    if (localStorage.getItem(WELCOME_BANNER_KEY) === "1") return;
-  } catch {}
-  $("#welcome-banner").classList.remove("hidden");
+// ---------- guided tour ----------
+// A walk-through, game-tutorial style: everything but one control is dimmed,
+// and a card beside it says what it is for. It starts by itself the first time
+// each screen is seen, and the ? button or the ? key replays it. A step whose
+// control is not on screen (no photos yet, a panel not in this build) is
+// skipped rather than pointing at nothing.
+const TOURS = {
+  main: [
+    { title: "Welcome to Picture Classifier",
+      body: "A one-minute tour of the culling screen. Replay it any time with the <b>?</b> button or the <kbd>?</kbd> key." },
+    { target: "#scene-list", title: "Scenes",
+      body: "Your photos, grouped into scenes by folder or by time gaps. Work through them one at a time; the bar under each shows how far you are." },
+    { target: () => $(".tile .tile-img"), title: "Every photo has a suggestion",
+      body: "The <b>AUTO</b> badge is the app's guess from sharpness, exposure and closed eyes. The number is how bad it looks: lower is better. Click a photo, or press <kbd>Enter</kbd>, to see it large." },
+    { target: () => $(".tile .tile-action-bar"), title: "Decide",
+      body: "<b>Reject</b> <kbd>R</kbd> · <b>Review</b> <kbd>V</kbd> · <b>Pick</b> <kbd>A</kbd>. The keys act on the highlighted photo and move on to the next; the arrow keys move without deciding, and <kbd>U</kbd> undoes." },
+    { target: () => $(".tile .tile-edit-btn"), title: "Edit",
+      body: "Opens the editor (<kbd>E</kbd>): light and colour, masks, lens and perspective, looks, healing, and portrait retouching." },
+    { target: "#filter-row", title: "Filters",
+      body: "Show only what is left to decide, or only your picks, to check a scene before you leave it." },
+    { target: "#cols-toggle", title: "How many at once",
+      body: "One photo to judge focus, eight to compare a burst. <kbd>[</kbd> and <kbd>]</kbd> turn the page." },
+    { target: "#people-section", title: "People",
+      body: "Faces grouped by person. Click one to see only the photos they are in." },
+    { target: "#export-picks-btn", title: "Export your picks",
+      body: "Writes every photo marked Pick to a folder, edits applied and camera details kept." },
+    { target: ".sidebar-actions", title: "Switch or quit",
+      body: "<b>Quit</b> stops the app completely; closing the browser tab leaves it running." },
+    { target: "#tour-main-btn", title: "That's it",
+      body: "Press <b>?</b> whenever you want this again. The editor has its own tour the first time you open it." },
+  ],
+  editor: [
+    { title: "The editor",
+      body: "Everything here is non-destructive: your original file is never changed. A short tour of what is where." },
+    { target: ".edit-canvas-wrap", title: "The photo",
+      body: "Shown as it will export. Scroll to zoom, drag to pan, hold <kbd>C</kbd> to see the original, and <kbd>F</kbd> switches between fit and 100%." },
+    { target: ".edit-actionbar", title: "Auto, undo and presets",
+      body: "<b>Auto</b> sets a starting tone. <kbd>⌘Z</kbd> / <kbd>Ctrl+Z</kbd> undoes and <kbd>⇧⌘Z</kbd> / <kbd>Ctrl+Y</kbd> redoes. Presets save a look to reuse." },
+    { target: ".mask-panel", title: "Adjust the whole photo or part of it",
+      body: "With <b>Global</b> selected the sliders change everything. Add a radial, gradient or brush, or an automatic Subject, Background or Skin mask, and the same sliders change only that part." },
+    { target: "#edit-optics-group", title: "Lens & perspective",
+      body: "Straighten leaning buildings with <b>Upright</b>, and correct distortion, colour fringes and dark corners." },
+    { target: "#edit-portrait-group", title: "Portrait",
+      body: "Smooth skin, whiten teeth and eyes, and remove blemishes, sized to each face it finds." },
+    { target: "#edit-repair-group", title: "Heal & red eye",
+      body: "Remove dust and small things by hand, and fix red eyes." },
+    { target: "#edit-save", title: "Save",
+      body: "Keeps the edit on this photo. <b>Cancel</b> throws the changes away. <b>Apply to more…</b> copies this edit to other photos." },
+  ],
+};
+const tourState = { name: null, steps: [], i: 0 };
+
+function tourSeen(name) {
+  try { return localStorage.getItem(`pcls.tour.${name}.seen`) === "1"; } catch { return false; }
 }
 
-function dismissWelcomeBanner() {
-  $("#welcome-banner").classList.add("hidden");
-  try { localStorage.setItem(WELCOME_BANNER_KEY, "1"); } catch {}
+function maybeStartTour(name) {
+  if (!tourSeen(name)) startTour(name);
+}
+
+function tourTarget(step) {
+  if (!step.target) return null;
+  const el = typeof step.target === "function" ? step.target() : $(step.target);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0 ? el : null;
+}
+
+function startTour(name) {
+  // Only the steps whose control exists right now.
+  tourState.name = name;
+  tourState.steps = TOURS[name].filter((st) => !st.target || tourTarget(st));
+  tourState.i = 0;
+  $("#tour").classList.remove("hidden");
+  showTourStep();
+}
+
+function endTour() {
+  $("#tour").classList.add("hidden");
+  try { localStorage.setItem(`pcls.tour.${tourState.name}.seen`, "1"); } catch { /* private */ }
+  tourState.name = null;
+}
+
+function tourStep(delta) {
+  const next = tourState.i + delta;
+  if (next < 0) return;
+  if (next >= tourState.steps.length) { endTour(); return; }
+  tourState.i = next;
+  showTourStep();
+}
+
+function showTourStep() {
+  const step = tourState.steps[tourState.i];
+  const n = tourState.steps.length;
+  $("#tour-title").textContent = step.title;
+  $("#tour-body").innerHTML = step.body;
+  $("#tour-count").textContent = `${tourState.i + 1} / ${n}`;
+  $("#tour-dots").innerHTML = tourState.steps.map((_, k) =>
+    `<span class="${k === tourState.i ? "on" : k < tourState.i ? "done" : ""}"></span>`).join("");
+  $("#tour-back").disabled = tourState.i === 0;
+  setBtnLabel($("#tour-next"), tourState.i === n - 1 ? "Done" : "Next");
+  const el = tourTarget(step);
+  // A control inside a scrolling panel (the editor's) is brought into view first.
+  if (el) el.scrollIntoView({ block: "nearest", inline: "nearest" });
+  placeTour(el);
+  $("#tour-next").focus();
+}
+
+// The cutout sits over the control and dims everything else with one huge
+// shadow; the card goes on whichever side has room, and never off screen.
+function placeTour(el) {
+  const spot = $("#tour-spot"), card = $("#tour-card");
+  const vw = window.innerWidth, vh = window.innerHeight, pad = 6, gap = 14, m = 12;
+  if (!el) {
+    spot.classList.add("none");
+    card.style.left = `${Math.max(m, (vw - card.offsetWidth) / 2)}px`;
+    card.style.top = `${Math.max(m, (vh - card.offsetHeight) / 2)}px`;
+    return;
+  }
+  spot.classList.remove("none");
+  const r = el.getBoundingClientRect();
+  const box = { x: Math.max(2, r.left - pad), y: Math.max(2, r.top - pad) };
+  box.w = Math.min(vw - 4, r.right + pad) - box.x;
+  box.h = Math.min(vh - 4, r.bottom + pad) - box.y;
+  Object.assign(spot.style, { left: `${box.x}px`, top: `${box.y}px`,
+                              width: `${box.w}px`, height: `${box.h}px` });
+  const cw = card.offsetWidth, ch = card.offsetHeight;
+  const room = { right: vw - (box.x + box.w), left: box.x, bottom: vh - (box.y + box.h), top: box.y };
+  let x, y;
+  if (room.right >= cw + gap + m) { x = box.x + box.w + gap; y = box.y; }
+  else if (room.left >= cw + gap + m) { x = box.x - gap - cw; y = box.y; }
+  else if (room.bottom >= ch + gap + m) { x = box.x; y = box.y + box.h + gap; }
+  else if (room.top >= ch + gap + m) { x = box.x; y = box.y - gap - ch; }
+  else { x = (vw - cw) / 2; y = vh - ch - m; }     // no side has room: over the bottom
+  card.style.left = `${Math.min(vw - cw - m, Math.max(m, x))}px`;
+  card.style.top = `${Math.min(vh - ch - m, Math.max(m, y))}px`;
+}
+
+function bindTour() {
+  $("#tour-next").addEventListener("click", () => tourStep(1));
+  $("#tour-back").addEventListener("click", () => tourStep(-1));
+  $("#tour-skip").addEventListener("click", endTour);
+  $("#tour-main-btn").addEventListener("click", () => startTour("main"));
+  $("#tour-editor-btn").addEventListener("click", () => startTour("editor"));
+  window.addEventListener("resize", () => {
+    if (tourState.name) placeTour(tourTarget(tourState.steps[tourState.i]));
+  });
 }
 
 // ---------- new-project wizard ----------
@@ -7742,7 +7895,7 @@ async function bootMain() {
     renderMain();
   }
   viewRestored = true;
-  maybeShowWelcomeBanner();
+  maybeStartTour("main");
 }
 
 function setOptionCardValue(containerSelector, value) {
@@ -7793,7 +7946,6 @@ async function applySceneGrouping() {
   hydrateIcons();
   initTooltips();
   loupeInit();
-  $("#welcome-banner-dismiss").addEventListener("click", dismissWelcomeBanner);
   $$(".quit-btn").forEach((b) => b.addEventListener("click", quitApp));
   $("#undo-toast-btn .kbd").textContent = `${MOD_KEY}Z`;
   let s;

@@ -326,17 +326,6 @@
   </aside>
 
   <main id="main">
-    <div id="welcome-banner" class="hidden">
-      <div id="welcome-banner-text">
-        <b>How it works:</b> every photo already has a suggestion (the
-        <span class="wb-badge">AUTO</span> badge). Confirm or change it with
-        <b>Reject</b> <kbd>R</kbd>, <b>Review</b> <kbd>V</kbd> or
-        <b>Pick</b> <kbd>A</kbd>. Click a photo to see it larger, and use
-        <b>export picks</b> when you are done. Scenes are on the left; switch
-        between grouping by folder and by time gap at any time.
-      </div>
-      <button id="welcome-banner-dismiss" type="button">Got it</button>
-    </div>
     <header id="main-header">
       <span id="scene-title">— select a scene —</span>
       <div id="page-nav">
@@ -363,6 +352,7 @@
       <button id="boxes-btn" class="hidden" title="Show detected subject boxes (B)" data-icon="boxes">boxes</button>
       <button id="hdr-btn" title="Review and fix auto-detected HDR brackets" data-icon="hdr">HDR</button>
       <button id="rescore-btn" title="Re-run scoring on all photos (preserves decisions)" data-icon="refresh">rescore</button>
+      <button id="tour-main-btn" class="tour-btn" type="button" title="Guided tour (?)" aria-label="Guided tour">?</button>
     </header>
     <div id="grid"></div>
     <div id="next-preview" class="hidden">
@@ -700,6 +690,7 @@
       <header>
         <h2>Edit</h2>
         <span id="edit-which">—</span>
+        <button id="tour-editor-btn" class="tour-btn" type="button" title="Guided tour of the editor (?)" aria-label="Guided tour of the editor">?</button>
         <button id="edit-modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
       <div class="edit-body">
@@ -1287,6 +1278,25 @@
         <button id="relink-cancel" type="button">Cancel</button>
         <button id="relink-confirm" type="button" class="primary">Re-link &amp; open</button>
       </footer>
+    </div>
+  </div>
+
+  <!-- The guided tour: one cutout over a control, a card beside it. -->
+  <div id="tour" class="hidden" role="dialog" aria-modal="true" aria-labelledby="tour-title">
+    <div id="tour-spot"></div>
+    <div id="tour-card">
+      <div class="tour-progress">
+        <span id="tour-count"></span>
+        <span class="tour-dots" id="tour-dots"></span>
+      </div>
+      <h3 id="tour-title"></h3>
+      <div id="tour-body"></div>
+      <div class="tour-actions">
+        <button id="tour-skip" type="button" class="quiet">Skip tour</button>
+        <span class="spacer"></span>
+        <button id="tour-back" type="button">Back</button>
+        <button id="tour-next" type="button" class="primary">Next</button>
+      </div>
     </div>
   </div>
 

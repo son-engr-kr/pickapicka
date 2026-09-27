@@ -70,13 +70,15 @@ rather than deletes.
 
 `R` reject · `V` review · `A` pick · `U` undo · `E` edit · `X` select ·
 `Enter` viewer · `[` `]` pages · `B` subject boxes · `K` focus peaking ·
-`L` loupe · `D` download the selection
+`L` loupe · `D` download the selection · `?` guided tour
 
 In the editor: `R` `G` `B` add a radial, gradient or brush mask · `\` show the
 mask · `Del` remove it · `C` hold the original · `F` fit ↔ 100% ·
 `⌘Z` / `Ctrl+Z` undo · `⇧⌘Z` / `Ctrl+Y` redo
 
-Hovering any button shows what it does and its shortcut.
+Hovering any button shows what it does and its shortcut. The first time you
+open a project, and the first time you open the editor, a guided tour walks
+through the screen; the **?** button or the `?` key replays it.
 
 ## Built on
 

@@ -392,19 +392,6 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
   font-size: 10px; color: var(--fg-dim); margin-top: 4px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* ---------- Welcome banner ---------- */
-#welcome-banner { position: fixed; top: 0; left: 280px; right: 0;
-  background: #1f3252; color: var(--fg); padding: 8px 14px;
-  border-bottom: 1px solid var(--accent); display: flex; align-items: center;
-  gap: 10px; z-index: 50; font-size: 12px; }
-#welcome-banner.hidden { display: none; }
-#welcome-banner-text { flex: 1; }
-#welcome-banner-dismiss { padding: 3px 12px; font-size: 11px;
-  background: var(--accent); border-color: var(--accent); color: #fff;
-  font-weight: 600; }
-#welcome-banner-dismiss:hover { background: #5aa0f0; }
-body.landing-mode #welcome-banner { display: none !important; }
-
 /* ---------- Help popover ---------- */
 .help-btn { display: inline-flex; align-items: center; justify-content: center;
   width: 14px; height: 14px; padding: 0; margin-left: 4px;
@@ -1668,20 +1655,6 @@ input[type="range"] { accent-color: var(--accent); }
    takes its share, and these are the places that did not fit in it.
    ===================================================================== */
 
-/* The tip was fixed over the top of the page, so until it was dismissed it
-   sat on the scene title, the paging and half the toolbar. It is part of the
-   main column now and pushes the toolbar down instead. */
-#welcome-banner { position: static; left: auto; right: auto; top: auto;
-  z-index: auto; flex: 0 0 auto; align-items: flex-start;
-  padding: var(--s2) var(--s3); line-height: 1.6; font-size: var(--fs-sm); }
-#welcome-banner kbd { font-family: var(--mono); font-size: var(--fs-xs);
-  padding: 0 5px; border-radius: 3px; border: 1px solid var(--line-strong);
-  background: var(--raised); }
-#welcome-banner .wb-badge { font-size: var(--fs-xs); font-weight: 600;
-  letter-spacing: 0.4px; padding: 1px 5px; border-radius: 3px;
-  background: var(--auto-review); color: #f5dc8c; }
-#welcome-banner-dismiss { flex-shrink: 0; }
-
 /* The rail's panels kept their full height on a short window, so the scene
    list, which the rail is for, was the one thing squeezed, down to a single
    row. The list now keeps a usable height and the rail scrolls past it. */
@@ -1831,3 +1804,42 @@ input[type="range"] { accent-color: var(--accent); }
 #portrait-summary-state { color: var(--accent); font-weight: 500;
   text-transform: none; letter-spacing: 0; }
 #portrait-blemishes { margin: var(--s2) 0 var(--s1); }
+
+/* =====================================================================
+   Guided tour
+   A game-tutorial walk-through: one cutout, everything else dimmed, and a
+   card beside it. The cutout's own shadow is the dimming, so there is one
+   element to move per step and the transition carries the eye.
+   ===================================================================== */
+
+#tour { position: fixed; inset: 0; z-index: 900; }
+#tour.hidden { display: none; }
+#tour-spot { position: fixed; border-radius: var(--r2);
+  box-shadow: 0 0 0 9999px rgba(4, 4, 8, 0.66), 0 0 0 2px var(--accent) inset;
+  transition: left 220ms ease, top 220ms ease, width 220ms ease, height 220ms ease;
+  pointer-events: none; }
+/* No control to show: the whole screen dims. */
+#tour-spot.none { left: 50% !important; top: 50% !important; width: 0 !important;
+  height: 0 !important; box-shadow: 0 0 0 9999px rgba(4, 4, 8, 0.66); }
+#tour-card { position: fixed; width: min(340px, calc(100vw - 24px));
+  background: var(--panel); border: 1px solid var(--line-strong);
+  border-radius: var(--r3); padding: var(--s4); box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  transition: left 220ms ease, top 220ms ease; }
+.tour-progress { display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: var(--s2); font-size: var(--fs-xs); color: var(--ink-faint);
+  font-variant-numeric: tabular-nums; }
+.tour-dots { display: flex; gap: 4px; }
+.tour-dots span { width: 6px; height: 6px; border-radius: 999px; background: var(--line-strong); }
+.tour-dots span.done { background: var(--accent-quiet); }
+.tour-dots span.on { background: var(--accent); width: 16px; }
+#tour-title { margin: 0 0 var(--s2); font-size: var(--fs-lg); }
+#tour-body { font-size: var(--fs-md); line-height: 1.6; color: var(--ink-dim); }
+#tour-body b { color: var(--ink); }
+#tour-body kbd { font-family: var(--mono); font-size: var(--fs-xs); padding: 0 5px;
+  border-radius: 3px; border: 1px solid var(--line-strong); background: var(--raised);
+  color: var(--ink); }
+.tour-actions { display: flex; align-items: center; gap: var(--s2); margin-top: var(--s4); }
+.tour-actions .spacer { flex: 1; }
+.tour-btn { width: 26px; height: 26px; padding: 0; border-radius: 999px; font-weight: 700; }
+#tour-editor-btn { margin-left: auto; }
+#tour-editor-btn + #edit-modal-close { margin-left: 0; }
