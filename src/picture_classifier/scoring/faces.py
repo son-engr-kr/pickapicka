@@ -11,6 +11,8 @@ from typing import Any
 import cv2
 import numpy as np
 
+from .. import imfile
+
 DETECT_LONG_EDGE = 1600
 
 _app = None
@@ -38,7 +40,7 @@ def detect(img_path: str) -> tuple[list[dict[str, Any]], int, int]:
         - det_score: detection confidence
         - embedding: numpy float32 array of length 512 (popped before JSON write)
     """
-    img = cv2.imread(img_path)
+    img = imfile.imread(img_path)
     assert img is not None, f"failed to read {img_path}"
     h, w = img.shape[:2]
     longest = max(h, w)

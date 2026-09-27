@@ -12,6 +12,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+from PIL import Image
+
 from picture_classifier import cluster, db
 
 
@@ -154,6 +157,11 @@ def test_min_area_and_score_are_used_not_just_accepted(tmp_path) -> None:
     data["photos"][2]["objects"] = [
         {"cls": "car", "score": 0.10, "bbox_xywh": [0, 0, 300, 200], "vehicle_id": None}]
     path.write_text(json.dumps(data), encoding="utf-8")
+    # Real files, since a photo that cannot be read is an error, not a skip.
+    rng = np.random.default_rng(0)
+    for photo in data["photos"]:
+        Image.fromarray(rng.integers(0, 256, (300, 400, 3), dtype=np.uint8)).save(
+            tmp_path / photo["rel_path"])
 
     seen: list[tuple[int, int]] = []
 
@@ -164,9 +172,8 @@ def test_min_area_and_score_are_used_not_just_accepted(tmp_path) -> None:
         if phase == "describing subjects":
             seen.append((idx, total))
 
-    # Nothing is readable on disk, so describing every candidate fails and no
-    # groups come out — but the *count* of candidates is the filter's decision,
-    # which is what is under test.
+    # The *count* of candidates is the filter's decision, which is what is
+    # under test; whether any groups come out of three noise images is not.
     cluster.run_vehicle_clustering(path, resolve, min_area=0.02, min_score=0.5,
                                    progress_cb=progress)
     strict = seen[-1][1] if seen else 0

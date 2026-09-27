@@ -11,6 +11,8 @@ from typing import Any
 import cv2
 import numpy as np
 
+from .. import imfile
+
 _face_mesh = None
 
 LEFT_EYE = (33, 160, 158, 133, 153, 144)
@@ -39,7 +41,7 @@ def _ear(landmarks, idx) -> float:
 
 
 def detect(img_path: str) -> tuple[list[dict[str, Any]], int, int]:
-    img = cv2.imread(img_path)
+    img = imfile.imread(img_path)
     assert img is not None, f"failed to read {img_path}"
     h, w = img.shape[:2]
     longest = max(h, w)

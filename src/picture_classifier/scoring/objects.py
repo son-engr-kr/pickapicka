@@ -23,7 +23,7 @@ from typing import Any, Callable, Iterable
 import cv2
 import numpy as np
 
-from .. import paths
+from .. import imfile, paths
 
 COCO_CLASSES: tuple[str, ...] = (
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
@@ -222,7 +222,7 @@ def detect(img_path: str, classes: Iterable[str] | None = None,
     `{"cls": name, "score": float, "bbox_xywh": [x, y, w, h]}` in original-image
     pixels. `classes` restricts detection to those COCO names (None = all).
     """
-    img = cv2.imread(img_path)
+    img = imfile.imread(img_path)
     assert img is not None, f"failed to read {img_path}"
     h, w = img.shape[:2]
     keep = None

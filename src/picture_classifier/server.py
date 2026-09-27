@@ -27,7 +27,7 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel
 
 from . import (
-    cameras, db, editing, exifinfo, exporting, film as film_mod, folderinfo, hdr,
+    cameras, db, editing, exifinfo, exporting, film as film_mod, folderinfo, hdr, imfile,
     lut as lut_mod, metadata as metadata_mod, portrait as portrait_mod, presets as presets_mod,
     redeye as redeye_mod, transform as transform_mod, raw, relink, scenes, segment as segment_mod,
     userstate, watermark as watermark_mod,
@@ -800,7 +800,7 @@ def _ensure_peak(thumb: Path, peaks_root: Path, rel_path: str, ehash: str,
 
 
 def _build_peak(thumb: Path, dst: Path, ratio_min: float, grad_floor: float) -> Path:
-    gray = cv2.imread(str(thumb), cv2.IMREAD_GRAYSCALE)
+    gray = imfile.imread(str(thumb), cv2.IMREAD_GRAYSCALE)
     assert gray is not None, f"failed to read {thumb}"
     # A touch of smoothing first: single-pixel sensor noise would otherwise ace
     # the sharpness test, since blurring wipes it out completely.
@@ -825,7 +825,7 @@ def _build_peak(thumb: Path, dst: Path, ratio_min: float, grad_floor: float) -> 
     rgba[..., 2] = 20
     rgba[..., 3] = alpha
     with _atomic_write(dst) as tmp:
-        cv2.imwrite(str(tmp), cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA))
+        imfile.imwrite(str(tmp), cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA))
     return dst
 
 

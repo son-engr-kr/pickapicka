@@ -23,6 +23,8 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from .. import imfile
+
 CROP_SIZE = 96          # crops are normalized to this square before measuring
 CENTRE_KEEP = 0.62      # fraction of the box used for the colour histogram
 HS_BINS = (8, 8)        # hue x saturation bins
@@ -77,8 +79,7 @@ def describe(crop: np.ndarray) -> np.ndarray:
 
 
 def describe_box(img_path: str, bbox_xywh: list[int]) -> np.ndarray | None:
-    img = cv2.imread(img_path)
-    if img is None:
-        return None
+    img = imfile.imread(img_path)
+    assert img is not None, f"failed to read {img_path}"
     crop = crop_of(img, bbox_xywh)
     return None if crop is None else describe(crop)

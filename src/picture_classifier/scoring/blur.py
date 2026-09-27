@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import cv2
 
+from .. import imfile
+
 WORK_EDGE = 1024   # long edge the metric is measured at
 MIN_REGION = 24    # a crop smaller than this (after scaling) is not worth measuring
 
@@ -13,7 +15,7 @@ def _scale_for(h: int, w: int) -> float:
 
 
 def blur_score(img_path: str) -> float:
-    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    img = imfile.imread(img_path, cv2.IMREAD_GRAYSCALE)
     assert img is not None, f"failed to read {img_path}"
     h, w = img.shape
     scale = _scale_for(h, w)
@@ -32,7 +34,7 @@ def region_blur_score(img_path: str, bbox_xywh: list[int]) -> float | None:
     stays comparable with `blur_score`. Returns None when the region is too
     small to say anything.
     """
-    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    img = imfile.imread(img_path, cv2.IMREAD_GRAYSCALE)
     assert img is not None, f"failed to read {img_path}"
     h, w = img.shape
     x, y, bw, bh = bbox_xywh
