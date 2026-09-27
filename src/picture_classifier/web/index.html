@@ -29,28 +29,7 @@
           <b>projects folder</b>, with one subfolder per shoot. The app calls
           this folder a <b>workspace</b>.
         </p>
-        <div class="onboard-diagram" aria-hidden="true">
-          <div class="od-box">
-            <div class="od-head">Your photos</div>
-            <ul class="od-tree">
-              <li><span data-icon="folder"></span>Pictures</li>
-              <li class="d1 od-mark"><span data-icon="folder"></span>2026-05-wedding<em>a shoot</em></li>
-              <li class="d2"><span data-icon="folder"></span>ceremony</li>
-              <li class="d2"><span data-icon="folder"></span>reception</li>
-            </ul>
-            <div class="od-foot">Left exactly as they are</div>
-          </div>
-          <div class="od-arrow"><span>points to</span><span class="od-arrow-line"></span></div>
-          <div class="od-box od-box-ws">
-            <div class="od-head">Projects folder <span>(workspace)</span></div>
-            <ul class="od-tree">
-              <li class="od-mark"><span data-icon="folder"></span>PictureClassifier-Projects<em>this one</em></li>
-              <li class="d1"><span data-icon="folder"></span>2026-05-wedding</li>
-              <li class="d1"><span data-icon="folder"></span>2026-06-trip</li>
-            </ul>
-            <div class="od-foot">Picks, edits and thumbnails, written by the app</div>
-          </div>
-        </div>
+        <div class="explainer-mount" id="onboard-explainer"></div>
         <div class="onboard-choice" id="onboard-choice">
           <div class="onboard-choice-label">Recommended</div>
           <code class="onboard-path" id="onboard-default"></code>
@@ -81,6 +60,7 @@
           A workspace is the folder your projects are kept in, one subfolder per
           project. Keep it apart from your photos: they stay wherever they are,
           and a project only points at them.
+          <button type="button" class="linkish explainer-open">See how it works</button>
         </p>
         <div class="workspace-row">
           <select id="workspace-select" title="Switch workspace"></select>
@@ -156,6 +136,7 @@
           <p class="wizard-hint">
             The project is created inside your current workspace. Just give it a
             name — no need to pick a folder.
+            <button type="button" class="linkish explainer-open">What is a project?</button>
           </p>
           <div class="landing-row">
             <label>Project name</label>
@@ -1278,6 +1259,18 @@
         <button id="relink-cancel" type="button">Cancel</button>
         <button id="relink-confirm" type="button" class="primary">Re-link &amp; open</button>
       </footer>
+    </div>
+  </div>
+
+  <!-- How workspaces and projects work, played out. Opened from the landing
+       page and the new-project wizard; the first launch shows it inline. -->
+  <div id="explainer-modal" class="hidden" role="dialog" aria-modal="true" aria-label="How projects work">
+    <div class="explainer-box">
+      <header>
+        <h2>How workspaces and projects work</h2>
+        <button id="explainer-close" type="button" data-icon="close" aria-label="Close" title="Esc"></button>
+      </header>
+      <div id="modal-explainer"></div>
     </div>
   </div>
 

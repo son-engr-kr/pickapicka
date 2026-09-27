@@ -6095,6 +6095,12 @@ function bindKeys() {
           && !["checkbox", "radio", "range", "button", "submit", "color"].includes(type));
     if (textEntry && k !== "Escape") return;
 
+    // The projects explainer; Esc only.
+    if (!$("#explainer-modal").classList.contains("hidden")) {
+      if (k === "Escape") { closeExplainer(); e.preventDefault(); }
+      return;
+    }
+
     // Export picks; Esc only, or R/V/A would decide photos behind the dialog.
     if (!$("#export-modal").classList.contains("hidden")) {
       if (k === "Escape") { closeExportModal(); e.preventDefault(); }
@@ -6352,6 +6358,7 @@ function bindUi() {
   bindOpticsPanel();
   bindPortraitPanel();
   bindTour();
+  bindExplainer();
   bindMaskUi();
   bindSlots();
   bindWatermarkUi();
@@ -6945,15 +6952,190 @@ function workspaceProblem(info) {
   return null;
 }
 
+// ---------- how projects work: an animated explainer ----------
+// Workspaces and projects are the one idea a new user has to get before the app
+// is usable, and a paragraph did not carry it. This plays it out as a small
+// animated scene: the photo folder, the workspace beside it, a project pointing
+// back at the photos, the work flowing into the project, and what deleting and
+// exporting do. Each element carries the scenes it is shown in (data-from,
+// data-until); CSS transitions do the moving.
+const EXPLAINER_SCENES = [
+  { title: "Your photos stay where they are",
+    text: "In a folder on your computer, a memory card or an external drive. The app reads them and never moves, renames or changes them." },
+  { title: "A workspace is a folder for projects",
+    text: "One folder the app writes its own files into, kept apart from your photos. By default it is PictureClassifier-Projects in your home folder." },
+  { title: "Each shoot is a project",
+    text: "A project points at the folder of one shoot. Nothing is copied: it only remembers where the photos are." },
+  { title: "The project keeps your work",
+    text: "Your picks, edits, thumbnails and the people it found are saved inside the project, so the photo folder stays exactly as it was." },
+  { title: "More shoots, more projects",
+    text: "Every project goes into the same workspace, so the start screen lists all of them. Open one and carry on where you left off." },
+  { title: "Deleting a project is safe",
+    text: "Only the project's folder is set aside (renamed, so it can be brought back). The photos it pointed at are not touched." },
+  { title: "When you are done, export",
+    text: "Export picks copies the photos you chose, with your edits applied, into a folder of your choice. The originals stay as they were." },
+];
+const EXPLAINER_STEP_MS = 5200;
+
+const EXPLAINER_HTML = `
+<div class="explainer" data-scene="0">
+  <div class="ex-stage">
+    <div class="ex-label ex-label-drive" data-from="0">On your drive</div>
+    <div class="ex-label ex-label-ws" data-from="1">Workspace</div>
+
+    <div class="ex-folder ex-photos ex-photos-a" data-from="0">
+      <div class="ex-name">${icon("folder")}<span>2026-05-wedding</span></div>
+      <div class="ex-thumbs">${"<i></i>".repeat(6)}</div>
+      <div class="ex-badge ex-lock" data-from="3">${icon("check")}never changed</div>
+    </div>
+    <div class="ex-folder ex-photos ex-photos-b" data-from="4" data-until="5">
+      <div class="ex-name">${icon("folder")}<span>2026-06-trip</span></div>
+      <div class="ex-thumbs">${"<i></i>".repeat(4)}</div>
+      <div class="ex-badge ex-lock" data-from="5" data-until="5">${icon("check")}untouched</div>
+    </div>
+    <div class="ex-folder ex-exports" data-from="6">
+      <div class="ex-name">${icon("download")}<span>Exports</span></div>
+      <div class="ex-thumbs">${"<i></i>".repeat(3)}</div>
+    </div>
+
+    <div class="ex-ws" data-from="1">
+      <div class="ex-name">${icon("folder")}<span>PictureClassifier-Projects</span></div>
+      <div class="ex-project ex-project-a" data-from="2">
+        <div class="ex-name">${icon("open")}<span>2026-05-wedding</span></div>
+        <div class="ex-chips">
+          <span data-from="3">${icon("check")}picks</span>
+          <span data-from="3">${icon("pencil")}edits</span>
+          <span data-from="3">${icon("boxes")}thumbnails</span>
+          <span data-from="3">${icon("person")}people</span>
+        </div>
+      </div>
+      <div class="ex-project ex-project-b" data-from="4" data-until="5">
+        <div class="ex-name">${icon("open")}<span class="ex-live">2026-06-trip</span><span class="ex-gone">2026-06-trip.deleted</span></div>
+      </div>
+    </div>
+
+    <svg class="ex-links" viewBox="0 0 600 300" preserveAspectRatio="none" aria-hidden="true">
+      <defs><marker id="ex-arrow-@" class="ex-mark" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L8,4 L0,8 z" /></marker>
+        <marker id="ex-arrow-out-@" class="ex-mark-out" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L8,4 L0,8 z" /></marker></defs>
+      <path class="ex-link ex-link-a" data-from="2" d="M352,86 C300,86 290,78 244,78" marker-end="url(#ex-arrow-@)" />
+      <path class="ex-link ex-link-b" data-from="4" data-until="4" d="M352,208 C300,208 290,214 244,214" marker-end="url(#ex-arrow-@)" />
+      <path class="ex-link ex-link-out" data-from="6" d="M352,112 C300,150 290,200 244,214" marker-end="url(#ex-arrow-out-@)" />
+    </svg>
+    <div class="ex-tag ex-tag-a" data-from="2" data-until="3">points to</div>
+    <div class="ex-tag ex-tag-out" data-from="6">copies picks</div>
+  </div>
+  <div class="ex-caption">
+    <div class="ex-step"></div>
+    <h4 class="ex-title"></h4>
+    <p class="ex-text"></p>
+  </div>
+  <div class="ex-controls">
+    <button type="button" class="ex-back" aria-label="Previous">${icon("left")}</button>
+    <span class="ex-dots"></span>
+    <button type="button" class="ex-next" aria-label="Next">${icon("right")}</button>
+    <span class="spacer"></span>
+    <button type="button" class="ex-play quiet"></button>
+  </div>
+</div>`;
+
+let explainerCount = 0;
+
+function mountExplainer(host, { autoplay = true } = {}) {
+  // Marker ids per instance: the landing and the dialog can both hold one, and
+  // a url(#id) that resolves into the hidden one draws no arrowhead at all.
+  host.innerHTML = EXPLAINER_HTML.replaceAll("-@", `-${++explainerCount}`);
+  const root = host.querySelector(".explainer");
+  const items = [...root.querySelectorAll("[data-from]")];
+  const last = EXPLAINER_SCENES.length - 1;
+  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let scene = 0, timer = null;
+  root.querySelector(".ex-dots").innerHTML = EXPLAINER_SCENES.map((_, i) =>
+    `<button type="button" data-scene="${i}" aria-label="Scene ${i + 1}"></button>`).join("");
+
+  const show = (n) => {
+    scene = Math.max(0, Math.min(last, n));
+    root.dataset.scene = scene;
+    for (const el of items) {
+      const from = Number(el.dataset.from), until = el.dataset.until == null ? last : Number(el.dataset.until);
+      el.classList.toggle("on", scene >= from && scene <= until);
+    }
+    root.classList.toggle("deleted", scene === 5);
+    const sc = EXPLAINER_SCENES[scene];
+    root.querySelector(".ex-step").textContent = `${scene + 1} / ${last + 1}`;
+    root.querySelector(".ex-title").textContent = sc.title;
+    root.querySelector(".ex-text").textContent = sc.text;
+    root.querySelectorAll(".ex-dots button").forEach((b, i) => b.classList.toggle("on", i === scene));
+    root.querySelector(".ex-back").disabled = scene === 0;
+    root.querySelector(".ex-next").disabled = scene === last;
+  };
+  const stop = () => {
+    clearInterval(timer);
+    timer = null;
+    root.querySelector(".ex-play").textContent = scene === last ? "Replay" : "Play";
+  };
+  const play = () => {
+    if (scene === last) show(0);
+    clearInterval(timer);
+    timer = setInterval(() => { if (scene >= last) stop(); else show(scene + 1); }, EXPLAINER_STEP_MS);
+    root.querySelector(".ex-play").textContent = "Pause";
+  };
+  root.querySelector(".ex-back").addEventListener("click", () => { stop(); show(scene - 1); });
+  root.querySelector(".ex-next").addEventListener("click", () => { stop(); show(scene + 1); });
+  root.querySelector(".ex-dots").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-scene]");
+    if (b) { stop(); show(Number(b.dataset.scene)); }
+  });
+  root.querySelector(".ex-play").addEventListener("click", () => (timer ? stop() : play()));
+  show(0);
+  // The first frame is drawn with nothing on, then the first scene switches
+  // on, so even scene 1 animates in rather than appearing.
+  items.forEach((el) => el.classList.remove("on"));
+  requestAnimationFrame(() => requestAnimationFrame(() => show(0)));
+  if (autoplay && !still) play(); else stop();
+  return { stop, play, show };
+}
+
+let modalExplainer = null;
+
+function openExplainer() {
+  $("#explainer-modal").classList.remove("hidden");
+  modalExplainer = mountExplainer($("#modal-explainer"));
+}
+
+function closeExplainer() {
+  if (modalExplainer) modalExplainer.stop();
+  modalExplainer = null;
+  $("#explainer-modal").classList.add("hidden");
+}
+
+function bindExplainer() {
+  $$(".explainer-open").forEach((b) => b.addEventListener("click", (e) => {
+    e.preventDefault();
+    openExplainer();
+  }));
+  $("#explainer-close").addEventListener("click", closeExplainer);
+  $("#explainer-modal").addEventListener("click", (e) => {
+    if (e.target.id === "explainer-modal") closeExplainer();
+  });
+}
+
 // ---------- first-launch onboarding ----------
 const onboardState = { pending: null };
+
+let onboardExplainer = null;
 
 function renderOnboarding() {
   const first = workspaceState.firstRun;
   $("#onboard").classList.toggle("hidden", !first);
   $("#workspace-card").classList.toggle("hidden", first);
   $("#projects-card").classList.toggle("hidden", first);
-  if (!first) return;
+  if (!first) {
+    if (onboardExplainer) { onboardExplainer.stop(); onboardExplainer = null; }
+    return;
+  }
+  if (!onboardExplainer) onboardExplainer = mountExplainer($("#onboard-explainer"));
   $("#onboard-default").textContent = workspaceState.defaultDir || "";
   $("#onboard-warning").classList.add("hidden");
   $("#onboard-choice").classList.remove("hidden");
