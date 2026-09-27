@@ -330,6 +330,9 @@ def _time(fn, *args, **kw) -> float:
     return best
 
 
+RATIO_MAX = 3.3
+
+
 def test_cost_is_flat_in_megapixels() -> None:
     """Four times the pixels must not cost four times as much: everything except
     the two resamples happens on the capped working grid."""
@@ -340,7 +343,11 @@ def test_cost_is_flat_in_megapixels() -> None:
     t6 = _time(rangemask.color_alpha, six, params)
     t24 = _time(rangemask.color_alpha, twentyfour, params)
     print(f"colour range: 6 MP {t6 * 1000:.0f} ms, 24 MP {t24 * 1000:.0f} ms")
-    assert t24 < 2.6 * t6, (t6, t24)      # 4x pixels, well under 4x the time
+    # 4x the pixels, well under 4x the time. The ratio is the machine's too:
+    # 1.7 on an M5 Pro, 1.3 on a Windows laptop, 2.75 on a 3-core CI runner,
+    # where reading the 24 MP source weighs more. Work done at full size would
+    # show about 4.
+    assert t24 < RATIO_MAX * t6, (t6, t24)
     assert t24 < 1.5, t24                 # generous: the real figure is ~5x lower
 
     # Asked for the alpha on the mask grid, the tail of O(pixels) work is only
@@ -348,7 +355,7 @@ def test_cost_is_flat_in_megapixels() -> None:
     work = rangemask._work_size(4000, 6000)
     t24_work = _time(rangemask.color_alpha, twentyfour, params, out_hw=work)
     print(f"colour range at work size: 24 MP {t24_work * 1000:.0f} ms")
-    assert t24_work < 2.6 * t6, (t6, t24_work)
+    assert t24_work < RATIO_MAX * t6, (t6, t24_work)
 
 
 if __name__ == "__main__":
