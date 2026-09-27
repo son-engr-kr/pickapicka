@@ -61,6 +61,7 @@ EDIT_VIEW_EDGE = 2560      # long edge the full-size viewer renders edited/RAW p
 EDIT_BASE_CACHE_MAX = 4    # photos whose preview arrays are kept (RAW A/B benefits from >1)
 EDIT_VARIANTS_PER_PHOTO = 6  # the decode, a draft, a fit-sized copy, lens-corrected copies
 PORTRAIT_CACHE_MAX = 64    # photos whose faces are kept analysed
+PREFETCH_MAX = 2           # neighbours decoded ahead: under EDIT_BASE_CACHE_MAX with the current one
 FULL_BASE_CACHE_MAX = 2    # full-res decode LRU: big arrays, so keep very few
 EDIT_ZOOM_MAX_OUT = 3200   # cap on the pixels a 1:1 request may return
 # Per-photo edit slots: a scratchpad for "try this, keep that". Six fits one
@@ -106,6 +107,10 @@ class HdrPreviewPayload(BaseModel):
 class MaskPreviewPayload(BaseModel):
     rel_path: str
     mask: dict[str, Any]
+
+
+class PrefetchPayload(BaseModel):
+    rel_paths: list[str]
 
 
 class EditPreviewPayload(BaseModel):
@@ -477,6 +482,9 @@ class AppContext:
         # preview decode, and the optics of its last settled editor render,
         # whose analysis (faces, segmentation, range source) a drag reuses.
         self.ca_cache: "OrderedDict[str, tuple[float, float]]" = OrderedDict()
+        # One worker decoding the photos the editor may step to next, so a
+        # prefetch never takes more than a core from the photo being edited.
+        self.prefetch_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prefetch")
         self.settled_optics: dict[str, dict[str, Any]] = {}
         self.analysis_lock = threading.Lock()
 
@@ -2312,6 +2320,24 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                         headers={"Cache-Control": "no-store"})
 
     # ----- editing ---------------------------------------------------
+
+    @app.post("/api/edit/prefetch")
+    def edit_prefetch(payload: PrefetchPayload) -> dict[str, Any]:
+        """Decode the preview base of the photos either side of the one being
+        edited, in the background, while it is looked at. Stepping to one then
+        finds its decode done, or waits for the one under way, instead of
+        starting it: 0.1 s of a JPEG's open and 0.4 of a RAW's."""
+        _require_loaded()
+        rels = payload.rel_paths[:PREFETCH_MAX]
+        for rel in rels:
+            if ctx.photo_index.get(rel) is None:
+                raise HTTPException(status_code=404, detail=f"photo not found: {rel}")
+        for rel in rels:
+            # A decode that fails here is logged with its traceback, then
+            # raised again when the photo is opened.
+            ctx.prefetch_pool.submit(ctx.get_decoded_base, rel).add_done_callback(
+                lambda f: f.result())
+        return {"queued": rels}
 
     @app.post("/api/edit/preview")
     def edit_preview(payload: EditPreviewPayload) -> Response:

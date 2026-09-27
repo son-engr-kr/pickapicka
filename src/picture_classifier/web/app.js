@@ -2570,6 +2570,7 @@ function fetchEditPreview(immediate, draft) {
       // Showing the render time makes "the editor feels slow" answerable
       // instead of a guess.
       $("#edit-status").textContent = ms ? `${ms} ms${draft ? " · draft" : ""}` : "";
+      if (!draft) prefetchNeighbours(rel);
     } catch {
       $("#edit-status").textContent = "preview error";
     } finally {
@@ -2583,6 +2584,22 @@ function fetchEditPreview(immediate, draft) {
   };
   if (immediate) go();
   else editSession.timer = setTimeout(go, 130);
+}
+
+// Once a photo is on screen, have the photos either side decoded in the
+// background, once per photo, so stepping to one does not start with a decode.
+let prefetchedFor = null;
+function prefetchNeighbours(rel) {
+  if (prefetchedFor === rel) return;
+  prefetchedFor = rel;
+  const rels = [editSession.idx - 1, editSession.idx + 1]
+    .map((i) => state.filteredPhotos[i]).filter(Boolean).map((p) => p.rel_path);
+  if (!rels.length) return;
+  fetch("/api/edit/prefetch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rel_paths: rels }),
+  }).then((res) => { if (!res.ok) throw new Error(`prefetch failed: ${res.status}`); });
 }
 
 async function fetchOriginalPreview() {
