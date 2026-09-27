@@ -257,7 +257,7 @@ def apply_grading(rgb: np.ndarray, params: dict[str, Any]) -> np.ndarray:
         dst = out[r0:r0 + _TILE_ROWS]
         # The weights read the luminance the pixel arrived with, so a lum slider
         # cannot walk a pixel out of its own zone as it brightens it.
-        y = src @ _LUMA
+        y = cv2.transform(src, _LUMA.reshape(1, 3))    # src @ _LUMA, quicker
         idx = (np.clip(y, 0.0, 1.0) * (_LUT_N - 1)).astype(np.int32)
         np.take(offset, idx, axis=0, out=dst)
         if gain is None:

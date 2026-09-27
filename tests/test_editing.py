@@ -1330,6 +1330,44 @@ def test_repair_hashes_into_the_edit() -> None:
 # of globals(), so anything defined below it would not exist yet and would be
 # silently skipped. It sat mid-file for a while and ran 37 of 97 while printing
 # a pass. `assert_collected` is the guard that makes that impossible to repeat.
+# ----- the quick paths agree with the formulas they replaced ---------------
+
+def _graded_like(h: int = 301, w: int = 457) -> np.ndarray:
+    """Float RGB the way it looks mid-pipeline: mostly in [0,1], a little over
+    and under after a push, with exact half-level steps in it."""
+    rng = np.random.default_rng(5)
+    img = rng.uniform(-0.03, 1.03, (h, w, 3)).astype(np.float32)
+    img[0, :, :] = (np.arange(w) % 511)[:, None].astype(np.float32) / 510.0
+    return img
+
+
+def test_luma_is_the_weighted_sum() -> None:
+    img = _graded_like()
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    for arr in (img, img[20:200, 33:300]):          # a view, as masks hand in
+        assert np.abs(editing._luma(arr) - arr @ weights).max() < 1e-6
+
+
+def test_colour_is_the_per_pixel_formula() -> None:
+    img = _graded_like()
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    for vib, sat in ((20, 5), (-40, 30), (0, -100), (100, 0)):
+        y = (img @ weights)[..., None]
+        proxy = img.max(axis=2, keepdims=True) - img.min(axis=2, keepdims=True)
+        factor = 1.0 + sat / 100.0 + (vib / 100.0) * (1.0 - np.clip(proxy, 0, 1))
+        want = y + factor * (img - y)
+        got = editing._apply_color(img, vib, sat)
+        assert got.shape == img.shape and got.dtype == np.float32
+        assert np.abs(got - want).max() < 1e-5, (vib, sat)
+
+
+def test_to_u8_is_rint_of_the_clipped_value() -> None:
+    img = _graded_like()
+    want = np.rint(np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
+    assert np.array_equal(editing._to_u8(img), want)
+    assert np.array_equal(editing._to_u8(img[5:50, 7:90]), want[5:50, 7:90])
+
+
 def _main() -> None:
     import re
     from pathlib import Path

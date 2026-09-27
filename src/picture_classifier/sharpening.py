@@ -170,8 +170,13 @@ def _sigmas(params: dict[str, Any]) -> tuple[float, float]:
     return sigma_r, max(_FINE_SIGMA_MIN, sigma_r * _FINE_FRAC)
 
 
+_LUMA_ROW = np.array([[0.2126, 0.7152, 0.0722]], dtype=np.float32)
+
+
 def _luma(rgb: np.ndarray) -> np.ndarray:
-    return rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    # cv2.transform, not `rgb @ weights`: the same to a float32 rounding, and
+    # ten times quicker on a whole frame.
+    return cv2.transform(rgb, _LUMA_ROW)
 
 
 def _smoothstep(t: np.ndarray) -> np.ndarray:

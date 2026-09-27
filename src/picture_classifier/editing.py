@@ -882,8 +882,26 @@ def _tone_is_neutral(e: dict[str, Any]) -> bool:
 
 # ----- colour / detail stages ---------------------------------------------
 
+_LUMA_ROW = np.array([[0.2126, 0.7152, 0.0722]], dtype=np.float32)
+
+
 def _luma(rgb: np.ndarray) -> np.ndarray:
-    return rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    """Rec. 709 luma of float RGB. cv2.transform rather than `rgb @ weights`:
+    the same sums to within a float32 rounding, ten times quicker."""
+    return cv2.transform(rgb, _LUMA_ROW)
+
+
+def _to_u8(img: np.ndarray) -> np.ndarray:
+    """Float RGB in [0,1] (clipped here) to uint8, rounded to nearest.
+
+    Byte-identical to `np.rint(np.clip(img, 0, 1) * 255).astype(np.uint8)` and
+    about four times quicker: convertScaleAbs rounds the same way and saturates
+    at 255, so only the floor needs clipping first (it takes the absolute value,
+    which would turn a small negative into a small positive). A scalar 0 is safe
+    as the other operand of cv2.max on a 3-channel image, where a non-zero one
+    would only apply to the first channel.
+    """
+    return cv2.convertScaleAbs(cv2.max(img, 0.0), alpha=255.0)
 
 
 def _lowfreq(chan: np.ndarray, frame_long: float,
@@ -1260,10 +1278,14 @@ def _apply_color(rgb: np.ndarray, vibrance: int, saturation: int) -> np.ndarray:
     """Saturate/desaturate by lerping each pixel toward its luma. Vibrance adds
     extra push weighted by (1 - current saturation), so already-vivid pixels
     (and skin) move less. No HSV round-trip, so no hue shift."""
-    y = _luma(rgb)[..., None]
-    sat_proxy = rgb.max(axis=2, keepdims=True) - rgb.min(axis=2, keepdims=True)
-    factor = 1.0 + saturation / 100.0 + (vibrance / 100.0) * (1.0 - np.clip(sat_proxy, 0, 1))
-    return y + factor * (rgb - y)
+    # Plane by plane with OpenCV: the channel max and min over an (h, w, 3)
+    # array were two thirds of the basic panel's render time.
+    y = _luma(rgb)
+    r, g, b = cv2.split(rgb)
+    sat_proxy = cv2.subtract(cv2.max(cv2.max(r, g), b), cv2.min(cv2.min(r, g), b))
+    np.clip(sat_proxy, 0.0, 1.0, out=sat_proxy)
+    factor = (1.0 + saturation / 100.0) + (vibrance / 100.0) * (1.0 - sat_proxy)
+    return cv2.merge([y + factor * (c - y) for c in (r, g, b)])
 
 
 def _sharpen_params(e: dict[str, Any]) -> dict[str, int]:
@@ -1701,8 +1723,7 @@ def apply_optics(rgb: np.ndarray, edit: dict[str, Any] | None) -> np.ndarray:
     e = normalize(edit)
     out = rgb
     if e["lens"] is not None:
-        f = lens_mod.apply_lens(out.astype(np.float32) / 255.0, e["lens"])
-        out = np.rint(np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8)
+        out = _to_u8(lens_mod.apply_lens(out.astype(np.float32) / 255.0, e["lens"]))
     if e["transform"] is not None:
         out = transform_mod.apply_transform(out, e["transform"])
     return out
@@ -1756,8 +1777,7 @@ def _apply_look(rgb: np.ndarray, ref: dict[str, Any],
         f"the edit names look {ref['key']} ({ref['name'] or 'unnamed'}) "
         "but the caller did not pass its table")
     params = {**luts[ref["key"]], "amount": ref["amount"]}
-    out = lut_mod.apply_lut(rgb.astype(np.float32) / 255.0, params)
-    return np.rint(out * 255.0).astype(np.uint8)
+    return _to_u8(lut_mod.apply_lut(rgb.astype(np.float32) / 255.0, params))
 
 
 def _repair(rgb: np.ndarray, e: dict[str, Any],
@@ -1788,7 +1808,7 @@ def _repair(rgb: np.ndarray, e: dict[str, Any],
         work = redeye_mod.apply_redeye(work, e["redeye"], roi)
     if e["healing"] is not None:
         work = healing_mod.apply_healing(work, e["healing"], roi)
-    return np.rint(np.clip(work, 0.0, 1.0) * 255.0).astype(np.uint8)
+    return _to_u8(work)
 
 
 def _grade(img: np.ndarray, e: dict[str, Any],
@@ -2030,15 +2050,15 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         # not smoothed into its surroundings before it has gone.
         if e["portrait"] is not None:
             assert faces is not None, "smoothing skin needs the caller's portrait.analyze faces"
-            f = portrait_mod.apply_portrait(img.astype(np.float32) / 255.0, e["portrait"], faces, roi)
-            img = np.rint(np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8)
+            img = _to_u8(portrait_mod.apply_portrait(img.astype(np.float32) / 255.0,
+                                                     e["portrait"], faces, roi))
         if e["lut"] is not None:
             img = _apply_look(img, e["lut"], luts)
         img = _grade(img, e, roi, seed)
         img = np.clip(img, 0.0, 1.0)
         if e["masks"]:
             img = _apply_masks(img, e["masks"], roi, auto, src)
-        out = np.rint(np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
+        out = _to_u8(img)
     if do_geom:
         out = apply_geometry(out, e)
     if stamp is not None:
