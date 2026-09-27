@@ -6155,6 +6155,8 @@ function openModal(absIdx) {
 
 function closeModal() {
   state.modal.open = false;
+  modalLoadSeq++;
+  delete $("#modal-image").dataset.full;
   loupe.at = null;
   hideLoupe();
   $("#modal").classList.add("hidden");
@@ -6196,11 +6198,11 @@ function renderModal() {
   const comparing = isHdr && state.modal.compare;
   const shownRel = comparing ? photo.base : photo.rel_path;
   const img = $("#modal-image");
-  img.src = "/img/" + enc(shownRel);
+  showModalImage(photo, shownRel);
   img.className = state.modal.fit ? "fit" : "actual";
-  $("#modal-title").textContent = shownRel;
-  $("#modal-meta").textContent =
-    `${state.modal.idx + 1}/${state.filteredPhotos.length} in ${photo.scene} · auto: ${photo.auto_suggestion || "—"}`;
+  $("#modal-title").textContent = basename(shownRel);
+  $("#modal-title").title = shownRel;
+  $("#modal-meta").textContent = `${state.modal.idx + 1} of ${state.filteredPhotos.length} · ${photo.scene}`;
   const cmp = $("#modal-compare");
   cmp.classList.toggle("hidden", !isHdr);
   cmp.classList.toggle("active", comparing);
@@ -6209,27 +6211,83 @@ function renderModal() {
     // Preload the other version so the toggle is instant.
     new Image().src = "/img/" + enc(comparing ? photo.rel_path : photo.base);
   }
-  const dec = $("#modal-decision");
-  dec.className = photo.decision || "none";
-  dec.textContent = (photo.decision || "—").toUpperCase();
+  $$("#modal-decide .btn-decision").forEach((b) =>
+    b.classList.toggle("active", b.dataset.decision === photo.decision));
   const ex = photo.exif || {};
   $("#modal-exif").textContent = [
     ex.camera, ex.lens, ex.focal, ex.aperture, ex.shutter, ex.iso_text,
   ].filter(Boolean).join("  ·  ");
   const s = photo.scores || {};
   const eye = s.eye_open != null ? s.eye_open.toFixed(3) : "—";
-  const subject = s.subject_area != null
-    ? ` · subject ${(s.subject_area * 100).toFixed(0)}%` +
-      (s.subject_blur != null ? ` sharp ${s.subject_blur.toFixed(0)}` : "")
-    : "";
-  $("#modal-scores").textContent =
-    `blur ${(s.blur ?? 0).toFixed(0)} (pct ${(s.blur_pct ?? 0).toFixed(2)}) · ` +
-    `exp_z ${(s.exposure_zscore ?? 0).toFixed(2)} · eye ${eye}${subject} · ` +
+  const suggestion = photo.auto_suggestion ? `Suggested: ${AUTO_LABEL[photo.auto_suggestion] || photo.auto_suggestion}` : "";
+  $("#modal-scores").textContent = [suggestion, ...explainScores(photo)].filter(Boolean).join("  ·  ");
+  // The numbers the words come from, for whoever wants them.
+  $("#modal-scores").title =
+    `blur ${(s.blur ?? 0).toFixed(0)} (rank ${(s.blur_pct ?? 0).toFixed(2)}) · ` +
+    `exposure |z| ${(s.exposure_zscore ?? 0).toFixed(2)} · eye ${eye} · ` +
     `badness ${(s.badness ?? 0).toFixed(2)}`;
   img.onload = () => { syncModalBoxes(); syncModalPeak(); drawLoupe(); };
   syncModalBoxes();
   syncModalPeak();
   drawLoupe();
+}
+
+// What the scores say, in words. The sharpness rank and exposure distance are
+// within the photo's scene, which is what they are computed against
+// (scorer.compute_scene_badness); the eye cutoff is scorer.EYE_CLOSED_THRESHOLD.
+const EYE_CLOSED_THRESHOLD = 0.18;
+
+function explainScores(photo) {
+  const s = photo.scores || {};
+  const out = [];
+  if (s.blur_pct != null) {
+    const pct = Math.round(s.blur_pct * 100);
+    out.push(pct >= 100 ? "Sharpest in the scene" : pct <= 0 ? "Softest in the scene"
+      : `Sharper than ${pct}% of the scene`);
+  }
+  if (s.exposure_zscore != null) {
+    const scene = state.byScene.get(photo.scene) || [];
+    const b = scene.map((p) => p.scores?.brightness).filter((v) => v != null);
+    const mean = b.length ? b.reduce((x, y) => x + y, 0) / b.length : null;
+    const side = mean != null && s.brightness != null && s.brightness < mean ? "darker" : "brighter";
+    out.push(s.exposure_zscore < 1 ? "Exposure like the rest"
+      : `${s.exposure_zscore < 2 ? "A little" : "Much"} ${side} than the rest`);
+  }
+  if (s.eye_open != null && s.eye_open < EYE_CLOSED_THRESHOLD) out.push("Eyes look closed");
+  if (s.subject_area != null) {
+    out.push(s.subject_area <= 0 ? "No subject found" : `Subject fills ${Math.max(1, Math.round(s.subject_area * 100))}%`);
+  }
+  return out;
+}
+
+// The grid's thumbnail is already in the browser, so it goes up at once and
+// the full image replaces it when it arrives: a RAW used to show black for
+// seconds. A load that fails says so instead of staying black, and only the
+// newest request may put its image up.
+let modalLoadSeq = 0;
+
+function showModalImage(photo, rel) {
+  const img = $("#modal-image");
+  const seq = ++modalLoadSeq;
+  const full = "/img/" + enc(rel);
+  const note = $("#modal-loading");
+  if (img.dataset.full === full) return;
+  img.dataset.full = full;
+  img.src = rel === photo.rel_path ? thumbUrl(photo) : full;
+  note.textContent = "Loading full size…";
+  note.classList.remove("hidden", "error");
+  const loader = new Image();
+  loader.onload = () => {
+    if (seq !== modalLoadSeq) return;
+    img.src = full;
+    note.classList.add("hidden");
+  };
+  loader.onerror = () => {
+    if (seq !== modalLoadSeq) return;
+    note.textContent = "The full-size photo could not be loaded; this is its thumbnail.";
+    note.classList.add("error");
+  };
+  loader.src = full;
 }
 
 function modalNav(delta) {
@@ -6554,6 +6612,12 @@ function bindUi() {
   $("#next-page").addEventListener("click", () => gotoPage(+1));
   $("#modal-close").addEventListener("click", closeModal);
   $("#modal-compare").addEventListener("click", toggleCompare);
+  $$("#modal-decide .btn-decision").forEach((b) => b.addEventListener("click", () => {
+    const photo = state.filteredPhotos[state.modal.idx];
+    if (!photo) return;
+    // Pressing the decision it already has clears it, as on a tile.
+    decideAt(state.modal.idx, photo.decision === b.dataset.decision ? null : b.dataset.decision, { advance: true });
+  }));
   $("#rescore-btn").addEventListener("click", openRescoreModal);
   // Subjects
   $("#subject-settings-btn").addEventListener("click", openSubjectModal);

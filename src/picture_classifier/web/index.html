@@ -729,10 +729,12 @@
     <div id="modal-top">
       <span id="modal-title"></span>
       <span id="modal-meta"></span>
-      <button id="modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
+      <span id="modal-exif"></span>
+      <button id="modal-close" title="Back to the grid (Esc)" data-icon="close" aria-label="Close"></button>
     </div>
     <div id="modal-image-wrap">
       <img id="modal-image" alt="" />
+      <span id="modal-loading" class="hidden">Loading full size…</span>
       <img id="modal-peak" class="hidden" alt="" />
       <div id="modal-boxes" class="hidden"></div>
       <div id="loupe-box" class="hidden"></div>
@@ -742,17 +744,20 @@
       </div>
     </div>
     <div id="modal-bottom">
-      <span id="modal-decision"></span>
+      <div id="modal-decide" role="group" aria-label="Decision">
+        <button type="button" class="btn-decision" data-decision="reject">Reject <span class="kbd">R</span></button>
+        <button type="button" class="btn-decision" data-decision="review">Review <span class="kbd">V</span></button>
+        <button type="button" class="btn-decision" data-decision="pick">Pick <span class="kbd">P</span></button>
+      </div>
+      <span id="modal-scores"></span>
       <button id="modal-compare" class="hidden" title="Toggle HDR merged vs 0 EV original (C)">showing: HDR merged</button>
-      <button id="modal-loupe" data-icon="loupe">loupe</button>
+      <button id="modal-loupe" data-icon="loupe">Loupe</button>
       <span id="loupe-scale" class="hidden">
         <button data-loupe-scale="1">1:1</button><button
                 data-loupe-scale="2">2:1</button><button
                 data-loupe-scale="4">4:1</button>
       </span>
-      <button id="modal-edit" data-icon="pencil" title="Edit this photo (E)">edit</button>
-      <span id="modal-exif"></span>
-      <span id="modal-scores"></span>
+      <button id="modal-edit" data-icon="pencil" title="Edit this photo (E)">Edit</button>
     </div>
     <div class="keybar" data-context="viewer"></div>
   </div>
