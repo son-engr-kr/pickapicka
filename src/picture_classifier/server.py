@@ -57,7 +57,8 @@ WEB_DIR = Path(__file__).parent / "web"
 
 EDIT_PREVIEW_EDGE = 2048   # long edge the live editor previews at (cached, re-graded on drag)
 EDIT_VIEW_EDGE = 2560      # long edge the full-size viewer renders edited/RAW photos at
-EDIT_BASE_CACHE_MAX = 4    # decoded-base LRU size (RAW A/B benefits from >1)
+EDIT_BASE_CACHE_MAX = 4    # photos whose preview arrays are kept (RAW A/B benefits from >1)
+EDIT_VARIANTS_PER_PHOTO = 4  # the decode, a draft, lens-corrected copies
 PORTRAIT_CACHE_MAX = 64    # photos whose faces are kept analysed
 FULL_BASE_CACHE_MAX = 2    # full-res decode LRU: big arrays, so keep very few
 EDIT_ZOOM_MAX_OUT = 3200   # cap on the pixels a 1:1 request may return
@@ -341,6 +342,95 @@ class RelinkPayload(BaseModel):
 
 # ----- app context --------------------------------------------------------
 
+class PhotoArrays:
+    """Decoded arrays of recently edited photos, one entry per photo.
+
+    An entry holds every variant of its photo the editor has asked for (the
+    decode itself, the drag's draft, the lens-corrected frame), so they are kept
+    and dropped together. Keyed one variant at a time, a lens drag's corrected
+    copies pushed out the decode they came from, and going back one photo
+    decoded it again: 1.4 s for a RAW. Photos go least recently used first.
+    Within a photo the oldest derived variant goes once there are more than
+    `per_photo`, so a lens drag does not grow one entry without bound, and
+    `max_arrays` caps the whole cache for the full-resolution one, where each
+    array is a hundred megabytes.
+
+    A variant is built once. A second caller asking for one that is still being
+    built waits for that result: the editor opens a photo with two requests at
+    once (the preview, and the original for hold-to-compare), and each used to
+    decode it.
+    """
+
+    BASE = "base"   # the decode every other variant is derived from; kept longest
+
+    def __init__(self, photos: int, per_photo: int, max_arrays: int | None = None) -> None:
+        assert photos >= 1 and per_photo >= 1 and (max_arrays is None or max_arrays >= 1)
+        self._photos = photos
+        self._per_photo = per_photo
+        self._max_arrays = max_arrays
+        self._entries: "OrderedDict[str, OrderedDict[str, np.ndarray]]" = OrderedDict()
+        self._building: dict[tuple[str, str], Future] = {}
+        self._generation = 0      # bumped by clear(), so a build that straddles it is not kept
+        self._lock = threading.Lock()
+
+    def get(self, rel_path: str, variant: str, build: Callable[[], np.ndarray]) -> np.ndarray:
+        key = (rel_path, variant)
+        with self._lock:
+            entry = self._entries.get(rel_path)
+            if entry is not None and variant in entry:
+                self._entries.move_to_end(rel_path)
+                entry.move_to_end(variant)
+                return entry[variant]
+            waiting = self._building.get(key)
+            if waiting is None:
+                future: Future = Future()
+                self._building[key] = future
+                generation = self._generation
+        if waiting is not None:
+            return waiting.result()
+        try:
+            arr = build()
+        except BaseException as exc:
+            # Handed on to anyone waiting, then raised here as well: a waiter
+            # must not hang on a decode that failed.
+            with self._lock:
+                del self._building[key]
+            future.set_exception(exc)
+            raise
+        with self._lock:
+            del self._building[key]
+            if generation == self._generation:
+                entry = self._entries.setdefault(rel_path, OrderedDict())
+                entry[variant] = arr
+                self._entries.move_to_end(rel_path)
+                self._trim(entry)
+        future.set_result(arr)
+        return arr
+
+    def _derived(self, entry: "OrderedDict[str, np.ndarray]") -> list[str]:
+        return [v for v in entry if v != self.BASE]
+
+    def _trim(self, newest: "OrderedDict[str, np.ndarray]") -> None:
+        while len(newest) > self._per_photo and self._derived(newest):
+            del newest[self._derived(newest)[0]]
+        while len(self._entries) > self._photos:
+            self._entries.popitem(last=False)
+        if self._max_arrays is None:
+            return
+        while sum(len(e) for e in self._entries.values()) > self._max_arrays:
+            rel, oldest = next(iter(self._entries.items()))
+            derived = self._derived(oldest)
+            if derived:
+                del oldest[derived[0]]
+            else:
+                del self._entries[rel]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._generation += 1
+
+
 class AppContext:
     """Holds all per-project mutable state. Swapped on /api/open."""
 
@@ -360,13 +450,13 @@ class AppContext:
         # Single-entry cache of the last previewed bracket's fused array, so
         # dragging the look sliders re-grades instead of re-fusing.
         self.hdr_fuse_cache: tuple[tuple[str, ...], Any] | None = None
-        # LRU of decoded, downscaled *original* RGB arrays keyed by rel_path, so
-        # dragging the editor sliders re-grades instead of re-decoding (RAW
-        # decode is expensive). Holds originals — survives edit saves.
-        self.edit_base_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
+        # Decoded, downscaled *original* RGB arrays per photo, so dragging the
+        # editor sliders re-grades instead of re-decoding (RAW decode is
+        # expensive). Holds originals — survives edit saves.
+        self.edit_base_cache = PhotoArrays(EDIT_BASE_CACHE_MAX, EDIT_VARIANTS_PER_PHOTO)
         # Full-resolution originals for the 1:1 zoom view (see get_full_base).
-        self.full_base_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
-        self.decode_lock = threading.Lock()
+        self.full_base_cache = PhotoArrays(FULL_BASE_CACHE_MAX, FULL_BASE_CACHE_MAX,
+                                           max_arrays=FULL_BASE_CACHE_MAX)
 
         self.save_lock = threading.Lock()
         self.score_lock = threading.Lock()
@@ -553,19 +643,10 @@ class AppContext:
         return self._decode_scaled(rel_path, EDIT_VIEW_EDGE)
 
     def get_decoded_base(self, rel_path: str) -> np.ndarray:
-        """LRU-cached downscaled (~EDIT_PREVIEW_EDGE) original RGB — the array the
+        """Cached downscaled (~EDIT_PREVIEW_EDGE) original RGB — the array the
         live editor re-grades on each slider drag (decode happens once)."""
-        with self.decode_lock:
-            arr = self.edit_base_cache.get(rel_path)
-            if arr is not None:
-                self.edit_base_cache.move_to_end(rel_path)
-                return arr
-        arr = self._decode_scaled(rel_path, EDIT_PREVIEW_EDGE)
-        with self.decode_lock:
-            self.edit_base_cache[rel_path] = arr
-            while len(self.edit_base_cache) > EDIT_BASE_CACHE_MAX:
-                self.edit_base_cache.popitem(last=False)
-        return arr
+        return self.edit_base_cache.get(
+            rel_path, PhotoArrays.BASE, lambda: self._decode_scaled(rel_path, EDIT_PREVIEW_EDGE))
 
     def auto_fields(self, rel_path: str,
                     edit: dict[str, Any] | None) -> dict[str, np.ndarray] | None:
@@ -656,23 +737,14 @@ class AppContext:
         """A downscaled copy of the preview base, cached alongside it. Grading
         a quarter of the pixels is what keeps a mask drag interactive when
         several layers are stacked."""
-        key = f"{rel_path}@{max_edge}"
-        with self.decode_lock:
-            arr = self.edit_base_cache.get(key)
-            if arr is not None:
-                self.edit_base_cache.move_to_end(key)
-                return arr
-        base = self.get_decoded_base(rel_path)
-        h, w = base.shape[:2]
-        scale = max_edge / max(h, w)
-        arr = base if scale >= 1.0 else cv2.resize(
-            base, (max(1, int(w * scale)), max(1, int(h * scale))),
-            interpolation=cv2.INTER_AREA)
-        with self.decode_lock:
-            self.edit_base_cache[key] = arr
-            while len(self.edit_base_cache) > EDIT_BASE_CACHE_MAX * 2:
-                self.edit_base_cache.popitem(last=False)
-        return arr
+        def build() -> np.ndarray:
+            base = self.get_decoded_base(rel_path)
+            h, w = base.shape[:2]
+            scale = max_edge / max(h, w)
+            return base if scale >= 1.0 else cv2.resize(
+                base, (max(1, int(w * scale)), max(1, int(h * scale))),
+                interpolation=cv2.INTER_AREA)
+        return self.edit_base_cache.get(rel_path, f"draft@{max_edge}", build)
 
     def get_corrected_base(self, rel_path: str, edit: dict[str, Any] | None) -> np.ndarray:
         """The preview base with the edit's lens and perspective corrections
@@ -681,18 +753,9 @@ class AppContext:
         okey = editing.optics_key(edit)
         if not okey:
             return self.get_decoded_base(rel_path)
-        key = f"{rel_path}#optics:{okey}"
-        with self.decode_lock:
-            arr = self.edit_base_cache.get(key)
-            if arr is not None:
-                self.edit_base_cache.move_to_end(key)
-                return arr
-        arr = editing.apply_optics(self.get_decoded_base(rel_path), edit)
-        with self.decode_lock:
-            self.edit_base_cache[key] = arr
-            while len(self.edit_base_cache) > EDIT_BASE_CACHE_MAX * 2:
-                self.edit_base_cache.popitem(last=False)
-        return arr
+        return self.edit_base_cache.get(
+            rel_path, f"optics:{okey}",
+            lambda: editing.apply_optics(self.get_decoded_base(rel_path), edit))
 
     def get_corrected_full(self, rel_path: str, edit: dict[str, Any] | None) -> np.ndarray:
         """`get_full_base` with the optics applied, for the 1:1 view: a window
@@ -700,34 +763,16 @@ class AppContext:
         okey = editing.optics_key(edit)
         if not okey:
             return self.get_full_base(rel_path)
-        key = f"{rel_path}#optics:{okey}"
-        with self.decode_lock:
-            arr = self.full_base_cache.get(key)
-            if arr is not None:
-                self.full_base_cache.move_to_end(key)
-                return arr
-        arr = editing.apply_optics(self.get_full_base(rel_path), edit)
-        with self.decode_lock:
-            self.full_base_cache[key] = arr
-            while len(self.full_base_cache) > FULL_BASE_CACHE_MAX:
-                self.full_base_cache.popitem(last=False)
-        return arr
+        return self.full_base_cache.get(
+            rel_path, f"optics:{okey}",
+            lambda: editing.apply_optics(self.get_full_base(rel_path), edit))
 
     def get_full_base(self, rel_path: str) -> np.ndarray:
         """LRU-cached *full-resolution* original — what the 1:1 editor view
         grades. Kept to a couple of entries because a 24 MP frame is ~70 MB, but
         one entry is what makes panning around at 100% feel instant."""
-        with self.decode_lock:
-            arr = self.full_base_cache.get(rel_path)
-            if arr is not None:
-                self.full_base_cache.move_to_end(rel_path)
-                return arr
-        arr = self._decode_scaled(rel_path, None)
-        with self.decode_lock:
-            self.full_base_cache[rel_path] = arr
-            while len(self.full_base_cache) > FULL_BASE_CACHE_MAX:
-                self.full_base_cache.popitem(last=False)
-        return arr
+        return self.full_base_cache.get(
+            rel_path, PhotoArrays.BASE, lambda: self._decode_scaled(rel_path, None))
 
 
 # ----- helpers ------------------------------------------------------------
