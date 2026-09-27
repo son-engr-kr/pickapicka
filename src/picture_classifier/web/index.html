@@ -27,6 +27,7 @@
     <div class="tb-right">
       <span id="activity" class="hidden" role="status"><span class="tb-spinner"></span><span id="activity-text"></span></span>
       <button id="export-picks-btn" class="primary" title="Copy all PICK photos to a folder" disabled data-icon="folder">Export picks</button>
+      <button id="prefs-btn" type="button" data-icon="settings" title="Preferences" aria-label="Preferences"></button>
       <button id="tour-main-btn" class="tour-btn" type="button" title="Keyboard shortcuts and the guided tour (?)" aria-label="Keyboard shortcuts">?</button>
       <button type="button" class="quit-btn" data-icon="power" title="Quit Picture Classifier" aria-label="Quit"></button>
     </div>
@@ -517,6 +518,66 @@
         <button id="keys-tour" type="button" data-icon="refresh">Replay the guided tour</button>
         <span class="keys-foot">Press <kbd>?</kbd> any time to open this.</span>
       </footer>
+    </div>
+  </div>
+
+  <!-- Every setting in one place: the app's own here, and the project's
+       opening the dialogs that already hold them. -->
+  <div id="prefs-modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="prefs-title">
+    <div class="prefs-box">
+      <header>
+        <h2 id="prefs-title">Preferences</h2>
+        <button id="prefs-close" type="button" data-icon="close" title="Close (Esc)" aria-label="Close"></button>
+      </header>
+      <div class="prefs-body">
+        <nav class="prefs-nav" role="tablist" aria-label="Sections">
+          <button type="button" role="tab" data-pane="general">General</button>
+          <button type="button" role="tab" data-pane="workspaces">Workspaces</button>
+          <button type="button" role="tab" data-pane="project">This project</button>
+          <button type="button" role="tab" data-pane="keyboard">Keyboard</button>
+        </nav>
+        <div class="prefs-panes">
+          <section data-pane="general">
+            <label class="prefs-row"><span><b>Key bar</b><small>The keys for each screen, along its bottom.</small></span>
+              <input type="checkbox" id="pref-keybar" /></label>
+            <label class="prefs-row"><span><b>Photo info panel</b><small>Beside the grid: histogram, why a photo was suggested, faces, camera. Also <kbd>I</kbd>.</small></span>
+              <input type="checkbox" id="pref-inspector" /></label>
+            <label class="prefs-row"><span><b>Loupe in the viewer</b><small>A magnified view under the pointer. Also <kbd>L</kbd>.</small></span>
+              <input type="checkbox" id="pref-loupe" /></label>
+            <div class="prefs-row"><span><b>Behind photos</b><small>What the grid, the viewer and the editor show around a photo.</small></span>
+              <div class="prefs-seg" id="pref-photo-bg" role="group">
+                <button type="button" data-bg="black">Black</button><button type="button" data-bg="dark">Dark grey</button><button type="button" data-bg="grey">Medium grey</button>
+              </div></div>
+            <div class="prefs-row"><span><b>Guided tours</b><small>Shown again the next time each screen opens.</small></span>
+              <button type="button" id="pref-tours">Show them again</button></div>
+          </section>
+          <section data-pane="workspaces" hidden>
+            <p class="prefs-lead">The folders your projects are kept in, one subfolder per project.
+              New projects go into the current one. Removing one from this list deletes nothing.</p>
+            <ul id="pref-workspaces"></ul>
+            <button type="button" id="pref-ws-add" data-icon="plus">Add workspace…</button>
+          </section>
+          <section data-pane="project" hidden>
+            <p class="prefs-lead" id="pref-project-none">Open a project to change its settings.</p>
+            <div id="pref-project">
+              <div class="prefs-row"><span><b>Scene grouping</b><small id="pref-grouping-now"></small></span>
+                <button type="button" id="pref-grouping">Change…</button></div>
+              <div class="prefs-row"><span><b>Detection and scoring</b><small>What is looked for (faces, cars, pets…), and a fresh score. Decisions are kept.</small></span>
+                <button type="button" id="pref-rescore">Re-score…</button></div>
+              <div class="prefs-row"><span><b>Grouping faces and subjects</b><small>How alike two faces, or two subjects, must be to count as one.</small></span>
+                <button type="button" id="pref-cluster">Settings…</button></div>
+              <div class="prefs-row"><span><b>HDR look</b><small>How merged brackets are toned.</small></span>
+                <button type="button" id="pref-hdr">Adjust…</button></div>
+            </div>
+          </section>
+          <section data-pane="keyboard" hidden>
+            <p class="prefs-lead">Every screen has its keys along its bottom, and <kbd>?</kbd> lists them all.
+              Decisions are <kbd>P</kbd> <kbd>R</kbd> <kbd>V</kbd>, stars <kbd>1</kbd>–<kbd>5</kbd> and colour labels
+              <kbd>6</kbd>–<kbd>9</kbd>, as in Lightroom.</p>
+            <button type="button" id="pref-keys" data-icon="info">Show all shortcuts</button>
+          </section>
+        </div>
+      </div>
     </div>
   </div>
 

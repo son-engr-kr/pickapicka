@@ -6634,6 +6634,13 @@ function bindKeys() {
       e.preventDefault();
       return;
     }
+    // Preferences: ⌘, or Ctrl+, as everywhere; Esc closes; nothing else gets
+    // through to the photos behind.
+    if ((e.metaKey || e.ctrlKey) && e.key === ",") { e.preventDefault(); openPrefs(); return; }
+    if (prefsOpen()) {
+      if (e.key === "Escape") { closePrefs(); e.preventDefault(); }
+      return;
+    }
     // A question on screen takes Esc (the answer that changes nothing) and
     // Enter (the primary one), and nothing else.
     if (!$("#choice-modal").classList.contains("hidden")) {
@@ -7330,6 +7337,111 @@ function bindTopbar() {
   activityTimer = setInterval(pollActivity, 2000);
 }
 
+// ---------- preferences ----------
+const PHOTO_BGS = ["black", "dark", "grey"];
+
+function photoBg() {
+  try { return localStorage.getItem("pcls.photoBg") || "dark"; } catch { return "dark"; }
+}
+
+function applyPhotoBg(bg) {
+  document.body.dataset.photoBg = bg;
+  $$("#pref-photo-bg button").forEach((b) => b.classList.toggle("active", b.dataset.bg === bg));
+}
+
+function prefsOpen() { return !$("#prefs-modal").classList.contains("hidden"); }
+
+async function openPrefs(pane = "general") {
+  await loadWorkspaces();
+  const open = currentModule() !== "projects";
+  $("#pref-project").classList.toggle("hidden", !open);
+  $("#pref-project-none").classList.toggle("hidden", open);
+  if (open) {
+    const sg = state.sceneGrouping || { mode: "folder", gap_minutes: 30 };
+    $("#pref-grouping-now").textContent = sg.mode === "time_gap"
+      ? `By time gap: a new scene after ${sg.gap_minutes} minutes without a photo.`
+      : "By folder: each subfolder is a scene.";
+  }
+  $("#pref-keybar").checked = !keybarCollapsed();
+  $("#pref-inspector").checked = inspectorOn();
+  $("#pref-loupe").checked = loupe.on;
+  applyPhotoBg(photoBg());
+  renderPrefWorkspaces();
+  showPrefsPane(pane);
+  $("#prefs-modal").classList.remove("hidden");
+}
+
+function closePrefs() { $("#prefs-modal").classList.add("hidden"); }
+
+function showPrefsPane(pane) {
+  $$("#prefs-modal .prefs-nav button").forEach((b) => b.classList.toggle("active", b.dataset.pane === pane));
+  $$("#prefs-modal .prefs-panes > section").forEach((sec) => { sec.hidden = sec.dataset.pane !== pane; });
+}
+
+function renderPrefWorkspaces() {
+  const ul = $("#pref-workspaces");
+  ul.innerHTML = workspaceState.list.map((w) => `<li class="${w === workspaceState.current ? "current" : ""}">
+      <span class="pref-ws-name">${icon("folder")}<span title="${escapeAttr(w)}">${escapeHtml(basename(w) || w)}</span></span>
+      <span class="pref-ws-path">${escapeHtml(w)}</span>
+      ${w === workspaceState.current ? `<span class="pref-ws-now">Current</span>`
+        : `<button type="button" data-use="${escapeAttr(w)}">Use</button>`}
+      ${workspaceState.list.length > 1 ? `<button type="button" data-forget="${escapeAttr(w)}" title="Remove from the list (deletes nothing)" aria-label="Remove from the list">${icon("close")}</button>` : ""}
+    </li>`).join("");
+  ul.querySelectorAll("[data-use]").forEach((b) => b.addEventListener("click", async () => {
+    await switchWorkspace(b.dataset.use);
+    renderWorkspaceSelect();
+    renderPrefWorkspaces();
+  }));
+  ul.querySelectorAll("[data-forget]").forEach((b) => b.addEventListener("click", async () => {
+    const res = await fetch("/api/workspaces/forget", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dir: b.dataset.forget }),
+    });
+    if (!res.ok) throw new Error(`forget failed: ${res.status}`);
+    const d = await res.json();
+    workspaceState.list = d.workspaces || [];
+    workspaceState.current = d.current;
+    renderWorkspaceSelect();
+    renderPrefWorkspaces();
+    if (currentModule() === "projects") loadWorkspaceProjects();
+  }));
+}
+
+function bindPrefs() {
+  applyPhotoBg(photoBg());
+  $("#prefs-btn").addEventListener("click", () => openPrefs());
+  $("#prefs-close").addEventListener("click", closePrefs);
+  $("#prefs-modal").addEventListener("click", (e) => { if (e.target.id === "prefs-modal") closePrefs(); });
+  $$("#prefs-modal .prefs-nav button").forEach((b) => b.addEventListener("click", () => showPrefsPane(b.dataset.pane)));
+  $("#pref-keybar").addEventListener("change", (e) => {
+    try { localStorage.setItem("pcls.keybar", e.target.checked ? "1" : "0"); } catch { /* private */ }
+    renderKeybars();
+  });
+  $("#pref-inspector").addEventListener("change", (e) => { if (e.target.checked !== inspectorOn()) toggleInspector(); });
+  $("#pref-loupe").addEventListener("change", (e) => { if (e.target.checked !== loupe.on) toggleLoupe(); });
+  $$("#pref-photo-bg button").forEach((b) => b.addEventListener("click", () => {
+    try { localStorage.setItem("pcls.photoBg", b.dataset.bg); } catch { /* private */ }
+    applyPhotoBg(b.dataset.bg);
+  }));
+  $("#pref-tours").addEventListener("click", () => {
+    for (const name of Object.keys(TOURS)) {
+      try { localStorage.removeItem(`pcls.tour.${name}.seen`); } catch { /* private */ }
+    }
+    setBtnLabel($("#pref-tours"), "They will show again");
+    $("#pref-tours").disabled = true;
+  });
+  $("#pref-ws-add").addEventListener("click", async () => { await addWorkspace(); renderPrefWorkspaces(); });
+  $("#pref-grouping").addEventListener("click", () => {
+    closePrefs();
+    $("#scene-grouping-section").open = true;
+    $("#scene-grouping-section").scrollIntoView({ block: "nearest" });
+  });
+  $("#pref-rescore").addEventListener("click", () => { closePrefs(); openRescoreModal(); });
+  $("#pref-cluster").addEventListener("click", () => { closePrefs(); openClusterModal(); });
+  $("#pref-hdr").addEventListener("click", () => { closePrefs(); openLookModal(); });
+  $("#pref-keys").addEventListener("click", () => { closePrefs(); openKeysSheet(keyContext()); });
+}
+
 // ---------- menus ----------
 // A button that drops a list of actions. Opens on click, closes on a choice,
 // a click elsewhere or Esc.
@@ -7355,6 +7467,7 @@ function closeMenus() {
 
 // ---------- UI bindings ----------
 function bindUi() {
+  bindPrefs();
   bindScoreProgress();
   bindCompare();
   bindInspector();
