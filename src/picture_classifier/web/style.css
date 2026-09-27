@@ -2229,3 +2229,62 @@ button.primary:disabled { background: var(--raised); border-color: var(--line); 
   background: linear-gradient(to right, #4f7fd6, #b9b9c0 50%, #e0a93c); }
 #edit-modal input[data-edit="tint"]::-webkit-slider-runnable-track {
   background: linear-gradient(to right, #4fb35c, #b9b9c0 50%, #c65ac4); }
+
+/* =====================================================================
+   Start screen: the projects, big, with where they are kept in a menu
+   ===================================================================== */
+.landing-shell { max-width: 1200px; padding: 28px 32px 40px; }
+.landing-header { display: flex; align-items: flex-start; gap: 24px; margin-bottom: 26px; }
+.landing-brand { flex: 1 1 auto; min-width: 0; }
+.landing-brand h1 { margin: 0; font-size: 22px; }
+.landing-brand .landing-tagline { margin: 4px 0 0; }
+.landing-actions-bar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.landing-actions-bar > button, .landing-actions-bar .menu-wrap > button { height: 32px; }
+#workspace-btn { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-menu { width: 380px; padding: 14px; gap: 10px; }
+.workspace-menu .landing-hint { margin: 0; font-size: var(--fs-sm); line-height: 1.5; color: var(--ink-dim); }
+.workspace-menu .workspace-row { display: flex; gap: 6px; }
+.workspace-menu .workspace-row select { flex: 1; min-width: 0; }
+.workspace-menu .workspace-path { font-size: var(--fs-xs); color: var(--ink-faint); word-break: break-all; }
+.workspace-menu button#workspace-add { justify-content: center; background: var(--raised);
+  border: 1px solid var(--line); }
+.workspace-menu .linkish { width: auto; height: auto !important; padding: 0; display: inline; color: var(--accent); }
+#workspace-forget { width: 32px !important; justify-content: center; padding: 0 !important;
+  border: 1px solid var(--line) !important; }
+
+#projects-card { margin-bottom: 22px; }
+.projects-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.projects-head h2 { margin: 0; flex: 1; font-size: var(--fs-lg); text-transform: none; letter-spacing: 0; color: var(--ink); }
+.projects-sort { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--ink-faint); }
+.project-grid { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 16px; }
+.project-card { padding: 0; overflow: hidden; border-radius: var(--r3); background: var(--panel);
+  border: 1px solid var(--line); cursor: pointer; transition: border-color 0.12s, transform 0.12s; }
+.project-card:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+.project-cover { display: block; aspect-ratio: 3 / 2; background: var(--sunken); overflow: hidden; }
+.project-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.project-cover-empty { display: flex; width: 100%; height: 100%; align-items: center; justify-content: center;
+  color: var(--ink-faint); }
+.project-cover-empty .icon { width: 28px; height: 28px; }
+.project-body { display: flex; flex-direction: column; gap: 5px; padding: 10px 12px 12px; min-width: 0; }
+.project-card .project-name { font-size: var(--fs-md); font-weight: 600; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-card .project-meta { font-size: var(--fs-sm); color: var(--ink-dim); }
+.project-progress { display: block; height: 4px; border-radius: 999px; background: var(--raised); overflow: hidden; }
+.project-progress i { display: block; height: 100%; background: var(--pick); border-radius: 999px; }
+.project-foot { display: flex; justify-content: space-between; gap: 8px; font-size: var(--fs-xs); color: var(--ink-faint); }
+.project-card .project-path { display: flex; align-items: center; gap: 5px; font-family: var(--font);
+  font-size: var(--fs-xs); color: var(--ink-faint); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  word-break: normal; }
+.project-card .project-path .icon { width: 12px; height: 12px; flex: none; }
+.project-card .project-del { position: absolute; top: 8px; right: 8px; background: rgba(12, 12, 14, 0.75); }
+.project-empty { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: flex-start; gap: 12px;
+  padding: 28px; border: 1px dashed var(--line-strong); border-radius: var(--r3); color: var(--ink-dim); }
+.project-empty p { margin: 0; max-width: 520px; line-height: 1.5; }
+/* Recent rows kept to the card: their open button no longer forces the row wider. */
+.recent-open { min-width: 0; white-space: normal; }
+.recent-item { min-width: 0; }
+.landing-header .quit-btn { position: static; width: 32px; justify-content: center; padding: 0; }
+.project-card { align-items: stretch; min-height: 0; }
+.project-card:hover { background: var(--panel); }
+.project-body { align-items: stretch; text-align: left; }
+.project-card .project-path { justify-content: flex-start; }

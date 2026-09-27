@@ -10,9 +10,33 @@
   <div id="landing" class="hidden">
     <div class="landing-shell">
       <header class="landing-header">
-        <button type="button" class="quit-btn quiet" data-icon="power" title="Quit Picture Classifier">quit</button>
-        <h1>Picture Classifier</h1>
-        <p class="landing-tagline">Score your photos for blur, exposure, and faces — then cull &amp; edit fast.</p>
+        <div class="landing-brand">
+          <h1>Picture Classifier</h1>
+          <p class="landing-tagline">Score your photos for blur, exposure, and faces — then cull &amp; edit fast.</p>
+        </div>
+        <div class="landing-actions-bar">
+          <!-- Where the projects are kept: set once, switched rarely, so it is
+               a menu rather than the first thing on the page. -->
+          <div class="menu-wrap" id="workspace-card">
+            <button type="button" id="workspace-btn" data-icon="folder" aria-haspopup="menu" aria-expanded="false">Workspace</button>
+            <div id="workspace-menu" class="menu workspace-menu hidden">
+              <p class="landing-hint">
+                A workspace is the folder your projects are kept in, one subfolder per
+                project. Keep it apart from your photos: they stay wherever they are,
+                and a project only points at them.
+                <button type="button" class="linkish explainer-open">See how it works</button>
+              </p>
+              <div class="workspace-row">
+                <select id="workspace-select" title="Switch workspace"></select>
+                <button id="workspace-forget" type="button" title="Remove this workspace from the list" data-icon="close" aria-label="Remove from the list"></button>
+              </div>
+              <div class="workspace-path" id="workspace-path"></div>
+              <button id="workspace-add" class="browse-btn" type="button" data-icon="plus">Add workspace…</button>
+            </div>
+          </div>
+          <button type="button" class="primary" id="landing-new-project" data-icon="plus">New project</button>
+          <button type="button" class="quit-btn quiet" data-icon="power" title="Quit Picture Classifier" aria-label="Quit"></button>
+        </div>
       </header>
 
       <!-- First launch only: nothing is set up until a workspace is chosen, so
@@ -54,24 +78,17 @@
         <div class="onboard-status" id="onboard-status"></div>
       </section>
 
-      <section class="landing-card" id="workspace-card">
-        <h2>Workspace</h2>
-        <p class="landing-hint">
-          A workspace is the folder your projects are kept in, one subfolder per
-          project. Keep it apart from your photos: they stay wherever they are,
-          and a project only points at them.
-          <button type="button" class="linkish explainer-open">See how it works</button>
-        </p>
-        <div class="workspace-row">
-          <select id="workspace-select" title="Switch workspace"></select>
-          <button id="workspace-add" class="browse-btn" type="button">Add workspace…</button>
-          <button id="workspace-forget" type="button" title="Remove this workspace from the list" data-icon="close" aria-label="Close"></button>
+      <section id="projects-card">
+        <div class="projects-head">
+          <h2>Projects <span class="count-pill" id="workspace-proj-count"></span></h2>
+          <label class="projects-sort">Sort
+            <select id="projects-sort">
+              <option value="opened">Last opened</option>
+              <option value="name">Name</option>
+              <option value="photos">Most photos</option>
+            </select>
+          </label>
         </div>
-        <div class="workspace-path" id="workspace-path"></div>
-      </section>
-
-      <section class="landing-card" id="projects-card">
-        <h2>Projects <span class="count-pill" id="workspace-proj-count"></span></h2>
         <div id="workspace-projects" class="project-grid"></div>
       </section>
 

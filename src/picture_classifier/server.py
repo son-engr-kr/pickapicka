@@ -732,6 +732,19 @@ class AppContext:
 
 # ----- helpers ------------------------------------------------------------
 
+def _project_cover(project_dir: Path, photos: list[dict[str, Any]]) -> str | None:
+    """A project card's picture: the thumbnail of its first pick, else of its
+    first photo, as a path under the project's thumbnail cache. None until a
+    thumbnail has been made (the grid makes them as it shows photos)."""
+    thumbs = project_dir / ".cache" / "thumbs"
+    ordered = [p for p in photos if p.get("decision") == "pick"] + photos[:1]
+    for p in ordered:
+        rel = p.get("rel_path")
+        if rel and (thumbs / rel).is_file():
+            return rel
+    return None
+
+
 def _lexical(path: Path) -> Path:
     """`path` made absolute with `..` and `.` taken out, symlinks left alone."""
     return Path(os.path.normpath(path.absolute()))
@@ -1964,6 +1977,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         target = workspace or userstate.get_current_workspace() or str(userstate.DEFAULT_WORKSPACE)
         wdir = Path(target).expanduser()
         projects: list[dict[str, Any]] = []
+        opened = {r.get("project_dir"): r.get("opened_at") for r in userstate.get_recents()}
         if wdir.is_dir():
             for child in sorted(wdir.iterdir(), key=lambda c: c.name.lower()):
                 if userstate.is_deleted_project(child.name):
@@ -1985,10 +1999,27 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                     "jpeg_subdir": data.get("jpeg_subdir", ""),
                     "photos": len(photos),
                     "decided": decided,
+                    "picks": sum(1 for p in photos if p.get("decision") == "pick"),
                     "scored_at": data.get("scored_at"),
+                    "opened_at": opened.get(str(child)),
+                    "cover": _project_cover(child, photos),
                     "photos_exist": bool(photo_root and Path(photo_root).is_dir()),
                 })
         return {"workspace": str(wdir), "projects": projects}
+
+    @app.get("/api/projects/cover")
+    def project_cover(project_dir: str, rel: str) -> Response:
+        """The thumbnail a project card shows. Only from a project folder in a
+        workspace this app knows, and only from that project's thumbnail cache."""
+        pdir = _lexical(Path(project_dir).expanduser())
+        known = [_lexical(Path(w)) for w in userstate.get_workspaces()]
+        if pdir.parent not in known or not (pdir / "picks.json").is_file():
+            raise HTTPException(status_code=403, detail="not a project in a known workspace")
+        thumbs = pdir / ".cache" / "thumbs"
+        f = _lexical(thumbs / rel)
+        if thumbs not in f.parents or not f.is_file():
+            raise HTTPException(status_code=404, detail="no cover")
+        return _cached_image(f, "image/jpeg")
 
     @app.post("/api/projects/delete")
     def delete_project(payload: DeleteProjectPayload) -> dict[str, Any]:

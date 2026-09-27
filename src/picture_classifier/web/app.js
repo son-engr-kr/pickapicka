@@ -6651,6 +6651,13 @@ function closeMenus() {
 
 // ---------- UI bindings ----------
 function bindUi() {
+  bindMenu("#workspace-btn", "#workspace-menu");
+  $("#landing-new-project").addEventListener("click", () => openWizard());
+  $("#projects-sort").addEventListener("change", () => {
+    try { localStorage.setItem("pcls.projectsSort", $("#projects-sort").value); } catch { /* private */ }
+    renderProjectGrid(lastProjects);
+  });
+  try { $("#projects-sort").value = localStorage.getItem("pcls.projectsSort") || "opened"; } catch { /* private */ }
   restoreEditGroups();
   bindSliderLooks();
   bindMenu("#more-btn", "#more-menu");
@@ -7535,6 +7542,7 @@ function renderOnboarding() {
   $("#onboard").classList.toggle("hidden", !first);
   $("#workspace-card").classList.toggle("hidden", first);
   $("#projects-card").classList.toggle("hidden", first);
+  $("#landing-new-project").classList.toggle("hidden", first);
   if (!first) {
     if (onboardExplainer) { onboardExplainer.stop(); onboardExplainer = null; }
     return;
@@ -7598,6 +7606,8 @@ function renderWorkspaceSelect() {
     .join("");
   if (workspaceState.current) sel.value = workspaceState.current;
   $("#workspace-path").textContent = workspaceState.current || "";
+  setBtnLabel($("#workspace-btn"), workspaceState.current ? basename(workspaceState.current) : "Workspace");
+  $("#workspace-btn").title = `Workspace: ${workspaceState.current || "none"}`;
   $("#workspace-forget").style.display = workspaceState.list.length > 1 ? "" : "none";
 }
 
@@ -7609,6 +7619,8 @@ async function switchWorkspace(dir) {
   }).catch(() => {});
   workspaceState.current = dir;
   $("#workspace-path").textContent = dir;
+  setBtnLabel($("#workspace-btn"), basename(dir));
+  $("#workspace-btn").title = `Workspace: ${dir}`;
   loadWorkspaceProjects();
 }
 
@@ -7668,35 +7680,61 @@ async function loadWorkspaceProjects() {
   renderProjectGrid(projects);
 }
 
+// "3 days ago", for when a project was last opened.
+function sinceText(iso) {
+  if (!iso) return "Not opened yet";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 90) return "Opened just now";
+  const m = s / 60, h = m / 60, d = h / 24;
+  if (m < 60) return `Opened ${Math.round(m)} min ago`;
+  if (h < 24) return `Opened ${plural(Math.round(h), "hour")} ago`;
+  if (d < 2) return "Opened yesterday";
+  if (d < 30) return `Opened ${Math.round(d)} days ago`;
+  return `Opened ${new Date(iso).toLocaleDateString()}`;
+}
+
+let lastProjects = [];
+
 function renderProjectGrid(projects) {
+  lastProjects = projects;
   const wrap = $("#workspace-projects");
   wrap.innerHTML = "";
-  $("#workspace-proj-count").textContent = projects.length;
-
-  const add = document.createElement("button");
-  add.className = "project-card project-new";
-  add.type = "button";
-  add.innerHTML = `<span class="project-new-icon">${icon("plus")}</span>`
-    + `<span class="project-new-label">New project</span>`;
-  add.addEventListener("click", () => openWizard());
-  wrap.appendChild(add);
+  $("#workspace-proj-count").textContent = projects.length || "";
   if (!projects.length) {
-    const empty = document.createElement("p");
-    empty.className = "project-empty";
-    empty.textContent = "No projects here yet. Make one per shoot: choose the "
-      + "folder its photos are in, and scoring starts straight away.";
-    wrap.appendChild(empty);
+    wrap.innerHTML = `<div class="project-empty">
+      <p>No projects here yet. Make one per shoot: choose the folder its photos
+      are in, and scoring starts straight away.</p>
+      <button type="button" class="primary" id="project-empty-new">${icon("plus")} New project</button>
+    </div>`;
+    $("#project-empty-new").addEventListener("click", () => openWizard());
+    return;
   }
+  const by = $("#projects-sort").value;
+  const sorted = projects.slice().sort((a, b) =>
+    by === "name" ? a.name.localeCompare(b.name)
+    : by === "photos" ? b.photos - a.photos
+    : (b.opened_at || "").localeCompare(a.opened_at || "") || a.name.localeCompare(b.name));
 
-  for (const p of projects) {
+  for (const p of sorted) {
     const card = document.createElement("div");
     card.className = "project-card" + (p.photos_exist ? "" : " missing");
-    const decided = p.scored_at ? `${p.decided}/${p.photos} decided` : "not scored";
+    const pct = p.photos ? (100 * p.decided / p.photos) : 0;
+    const counts = p.scored_at
+      ? `${plural(p.photos, "photo")}${p.picks ? ` · ${plural(p.picks, "pick")}` : ""}`
+      : "Not scored yet";
+    const cover = p.cover
+      ? `<img loading="lazy" alt="" src="/api/projects/cover?project_dir=${encodeURIComponent(p.project_dir)}&rel=${encodeURIComponent(p.cover)}" />`
+      : `<span class="project-cover-empty">${icon("folder")}</span>`;
     card.innerHTML = `
-      <span class="project-name">${escapeHtml(p.name)}</span>
-      <span class="project-meta">${p.photos} photo${p.photos === 1 ? "" : "s"} · ${decided}</span>
-      <span class="project-path">${escapeHtml(p.photo_dir || "")}</span>
-      ${p.photos_exist ? "" : `<span class="project-missing">${icon("warning")} photos not found — click to re-link</span>`}
+      <span class="project-cover">${cover}</span>
+      <span class="project-body">
+        <span class="project-name">${escapeHtml(p.name)}</span>
+        <span class="project-meta">${counts}</span>
+        <span class="project-progress" title="${p.decided} of ${p.photos} decided"><i style="width:${pct.toFixed(1)}%"></i></span>
+        <span class="project-foot"><span>${p.decided} of ${p.photos} decided</span><span>${sinceText(p.opened_at)}</span></span>
+        <span class="project-path" title="${escapeHtml(p.photo_dir || "")}">${icon("folder")} ${escapeHtml(basename(p.photo_dir || ""))}</span>
+        ${p.photos_exist ? "" : `<span class="project-missing">${icon("warning")} Photos not found. Click to re-link.</span>`}
+      </span>
       <button class="project-del" type="button" aria-label="Delete this project"
         title="Delete this project (photos are kept)">${icon("trash")}</button>`;
     card.addEventListener("click", () => openProjectByDir(p.project_dir));
