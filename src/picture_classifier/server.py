@@ -161,6 +161,8 @@ class ViewPayload(BaseModel):
     page_size: Literal[1, 2, 4, 8]
     page: int
     scene: str | None = None
+    photo: str | None = None     # the focused photo, which a page number drifts off
+    viewer: bool = False         # whether it was open full-screen
 
 
 class PresetSavePayload(BaseModel):
@@ -307,6 +309,12 @@ class BrowsePayload(BaseModel):
 class InspectPayload(BaseModel):
     path: str
     workspace: str | None = None
+
+
+class ShotsPayload(BaseModel):
+    path: str
+    jpeg_subdir: str = ""
+    raw_subdir: str = ""
 
 
 class ForgetPayload(BaseModel):
@@ -1516,8 +1524,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
 
     @app.get("/api/view")
     def get_view() -> dict[str, Any]:
-        """The filter, layout and page this project was last left on. Empty the
-        first time it is opened, which the client reads as "use the defaults"."""
+        """The filter, layout, page and photo this project was last left on.
+        Empty the first time it is opened, which the client reads as "use the
+        defaults"."""
         _require_loaded()
         return userstate.get_view(_view_key())
 
@@ -1527,7 +1536,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         if payload.page < 0:
             raise HTTPException(status_code=400, detail="page must not be negative")
         view = {"filter": payload.filter, "page_size": payload.page_size,
-                "page": payload.page, "scene": payload.scene}
+                "page": payload.page, "scene": payload.scene,
+                "photo": payload.photo, "viewer": payload.viewer}
         userstate.set_view(_view_key(), view)
         return view
 
@@ -1550,9 +1560,12 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
 
     @app.post("/api/close")
     def close_project() -> dict[str, Any]:
-        if (ctx.scoring_state["running"] or ctx.cluster_state["running"]
-                or ctx.opening_state["running"] or ctx.export_state["running"]):
-            raise HTTPException(status_code=409, detail="another task is running")
+        busy = [what for what, st in (
+            ("an export", ctx.export_state), ("scoring", ctx.scoring_state),
+            ("grouping", ctx.cluster_state), ("opening a project", ctx.opening_state),
+        ) if st["running"]]
+        if busy:
+            raise HTTPException(status_code=409, detail=" and ".join(busy) + " is still running")
         ctx.close()
         return {"ready": False}
 
@@ -1568,6 +1581,18 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="path is required")
         workspace = Path(payload.workspace) if payload.workspace else None
         return folderinfo.inspect(Path(payload.path.strip()), workspace=workspace)
+
+    @app.post("/api/folder/shots")
+    def folder_shots(payload: ShotsPayload) -> dict[str, Any]:
+        """Capture times of the shots in a photo folder, for the wizard to show
+        how its scenes would split before anything is scored."""
+        photo_dir = Path(payload.path.strip()).expanduser()
+        root = photo_dir / payload.jpeg_subdir.strip() if payload.jpeg_subdir.strip() else photo_dir
+        if not root.is_absolute() or not root.is_dir():
+            raise HTTPException(status_code=400, detail=f"not a folder: {root}")
+        # Where scoring looks for RAWs: their own subfolder, else among the JPEGs.
+        raw_root = photo_dir / payload.raw_subdir.strip() if payload.raw_subdir.strip() else None
+        return folderinfo.shots(root, raw_root)
 
     @app.get("/api/recents")
     def get_recents() -> dict[str, Any]:
@@ -1972,6 +1997,10 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     def get_db() -> dict[str, Any]:
         _require_loaded()
         return {
+            # What the top of the sidebar calls this project: its folder's name,
+            # or the photo folder's for a legacy picks.json beside the photos.
+            "project_name": (ctx.project_dir.name if ctx.project_dir
+                             else Path(ctx.data["photo_root"]).name),
             "scored_at": ctx.data["scored_at"],
             "clustered_at": ctx.data.get("clustered_at"),
             "photo_root": ctx.data["photo_root"],

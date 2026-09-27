@@ -716,6 +716,8 @@ async function loadDb() {
   const res = await fetch("/api/db");
   if (!res.ok) throw new Error(`db load failed: ${res.status}`);
   const data = await res.json();
+  $("#project-name").textContent = data.project_name || "";
+  $("#project-name").title = data.project_name || "";
   state.photos = data.photos;
   state.byScene = new Map();
   state.sceneOrder = [];
@@ -1395,9 +1397,12 @@ function focusAt(absIdx, scroll) {
 }
 
 // ---------- remembered view ----------
-// A project reopens on the filter, layout and page it was left on. Saved on the
-// server per project: it is a preference about how you work, so it should follow
-// the project rather than the browser profile that happened to open it.
+// A project reopens on the filter, layout and photo it was left on, in the
+// viewer if that is where it was. Saved on the server per project: it is where
+// you are in the work, so it should follow the project rather than the browser
+// profile that happened to open it. The photo is kept as well as the page: with
+// the Undecided filter every decision takes a photo out of the list, so the
+// same page number soon points at different photos.
 let viewRestored = false;
 let viewSaveTimer = null;
 
@@ -1410,20 +1415,43 @@ function scheduleViewSave() {
   viewSaveTimer = setTimeout(saveView, 500);
 }
 
+function viewPayload() {
+  return {
+    filter: state.filter,
+    page_size: state.pageSize,
+    page: pageIdx(),
+    scene: state.selectedScene,
+    photo: state.filteredPhotos[state.cursorIdx]?.rel_path ?? null,
+    viewer: state.modal.open,
+  };
+}
+
 async function saveView() {
   viewSaveTimer = null;
   const res = await fetch("/api/view", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      filter: state.filter,
-      page_size: state.pageSize,
-      page: pageIdx(),
-      scene: state.selectedScene,
-    }),
+    body: JSON.stringify(viewPayload()),
   });
   if (!res.ok) throw new Error(`view save failed: ${res.status}`);
 }
+
+// The save waits for a pause in the arrow keys, and leaving the project, or
+// quitting, straight after the last one used to drop it.
+async function flushViewSave() {
+  if (!viewSaveTimer) return;
+  clearTimeout(viewSaveTimer);
+  await saveView();
+}
+
+// Closing the tab or the browser gives no time for a fetch to finish; a beacon
+// is sent anyway.
+window.addEventListener("pagehide", () => {
+  if (!viewSaveTimer) return;
+  clearTimeout(viewSaveTimer);
+  viewSaveTimer = null;
+  navigator.sendBeacon("/api/view", new Blob([JSON.stringify(viewPayload())], { type: "application/json" }));
+});
 
 // Applies what can be applied before the scene list is built, and hands the
 // rest back for the caller to use once it is.
@@ -5937,6 +5965,7 @@ function openModal(absIdx) {
   state.cursorIdx = absIdx;
   $("#modal").classList.remove("hidden");
   renderModal();
+  scheduleViewSave();
 }
 
 function closeModal() {
@@ -6027,6 +6056,7 @@ function modalNav(delta) {
   state.modal.fit = true;
   state.modal.compare = false;
   renderModal();
+  scheduleViewSave();
 }
 
 function toggleCompare() {
@@ -6421,11 +6451,19 @@ function bindUi() {
   $("#people-manage-btn").addEventListener("click", openPeopleModal);
   $("#people-modal-close").addEventListener("click", closePeopleModal);
   $("#people-save").addEventListener("click", savePeople);
+  // No "are you sure": every decision is saved the moment it is made, so going
+  // back to the projects loses nothing. What can stop it is a task still
+  // running, and then it says which.
   $("#switch-project-btn").addEventListener("click", async () => {
-    if (!confirm("Close this project and open a different one?")) return;
-    try {
-      await fetch("/api/close", { method: "POST" });
-    } catch {}
+    await flushViewSave();
+    const res = await fetch("/api/close", { method: "POST" });
+    if (res.status === 409) {
+      const err = await res.json();
+      const what = err.detail.charAt(0).toUpperCase() + err.detail.slice(1);
+      alert(`${what}. Let it finish, or stop it, before leaving this project.`);
+      return;
+    }
+    if (!res.ok) { alert("Could not close the project: " + res.status); return; }
     location.reload();
   });
   $$("#scene-mode-cards .option-card").forEach((card) => {
@@ -6490,6 +6528,16 @@ function bindUi() {
     wizardState.inspectTimer = setTimeout(inspectWizardPhotoDir, 450);
   });
   $("#wiz-project-name").addEventListener("input", syncWizardTargetHint);
+  // The slider and the box are one setting; either moves the other.
+  $("#wiz-gap-range").addEventListener("input", (e) => {
+    $("#wiz-gap").value = e.target.value;
+    renderScenePreview();
+  });
+  $("#wiz-gap").addEventListener("input", (e) => {
+    const v = parseInt(e.target.value, 10);
+    if (v >= 1) $("#wiz-gap-range").value = Math.min(180, v);
+    renderScenePreview();
+  });
   $$("#wiz-scene-cards .option-card").forEach((card) => {
     card.addEventListener("click", () => {
       wizardState.sceneTouched = true;
@@ -7618,6 +7666,7 @@ function bindHelp() {
 // ---------- quit ----------
 async function quitApp() {
   if (!confirm("Quit Picture Classifier?\n\nYour decisions and saved edits are kept.")) return;
+  await flushViewSave();
   const post = (force) => fetch("/api/quit", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ force }),
@@ -7660,8 +7709,8 @@ const TOURS = {
       body: "Faces grouped by person. Click one to see only the photos they are in." },
     { target: "#export-picks-btn", title: "Export your picks",
       body: "Writes every photo marked Pick to a folder, edits applied and camera details kept." },
-    { target: ".sidebar-actions", title: "Switch or quit",
-      body: "<b>Quit</b> stops the app completely; closing the browser tab leaves it running." },
+    { target: ".sidebar-top", title: "Back to your projects, or quit",
+      body: "<b>Projects</b> goes back to the start screen; everything you decided is already saved. The power button quits the app completely, since closing the browser tab leaves it running." },
     { target: "#tour-main-btn", title: "That's it",
       body: "Press <b>?</b> whenever you want this again. The editor has its own tour the first time you open it." },
   ],
@@ -7786,10 +7835,12 @@ function bindTour() {
 // ---------- new-project wizard ----------
 // `photoInfo` is the folder check for what is in the photo-folder field now,
 // or null while it is stale; `sceneTouched` stops the suggestion from undoing
-// a grouping the user picked by hand.
+// a grouping the user picked by hand. `shots` is the capture-time read the
+// grouping preview draws from, for the folders named by `shotsKey`.
 const wizardState = {
   step: 1, sceneMode: "folder", subjectPreset: "",
   photoInfo: null, inspectTimer: null, sceneTouched: false,
+  shots: null, shotsKey: "",
 };
 
 function openWizard({ first = false } = {}) {
@@ -7812,7 +7863,10 @@ function openWizard({ first = false } = {}) {
   $("#wiz-raw-subdir").value = "";
   $("#wiz-project-name").value = "";
   $("#wiz-gap").value = 30;
+  $("#wiz-gap-range").value = 30;
   $("#wiz-gap-row").style.display = "none";
+  wizardState.shots = null;
+  wizardState.shotsKey = "";
   $$("#wiz-scene-cards .option-card").forEach((c) =>
     c.classList.toggle("active", c.dataset.value === "folder"),
   );
@@ -7844,6 +7898,7 @@ function showWizardStep(n) {
     if (bn) { $("#wiz-project-name").value = bn; }
   }
   syncWizardTargetHint();
+  if (n === 2) loadWizardShots();
   if (onLast) renderWizardSummary();
 }
 
@@ -7864,6 +7919,132 @@ function setWizardSceneMode(mode) {
   wizardState.sceneMode = mode;
   setOptionCardValue("#wiz-scene-cards", mode);
   $("#wiz-gap-row").style.display = mode === "time_gap" ? "" : "none";
+  renderScenePreview();
+}
+
+// ---------- the grouping preview, on the folder's own photos ----------
+// The server reads every shot's capture time once (folderinfo.shots, the way
+// scoring pairs RAW and JPEG); the split for any gap is then worked out here,
+// on every slider move, with the same rule as scenes.group_by_time_gap: sort by
+// time, and start a new scene where the pause is longer than the gap.
+const SCENE_COLOURS = ["#5b8def", "#46a758", "#d4a02c", "#c56bd6", "#e0735b", "#3fb8c4", "#a3a3b8"];
+
+async function loadWizardShots() {
+  const path = $("#wiz-photo-dir").value.trim();
+  const sub = $("#wiz-jpeg-subdir").value.trim();
+  const rawSub = $("#wiz-raw-subdir").value.trim();
+  const key = `${path}|${sub}|${rawSub}`;
+  if (wizardState.shotsKey === key && wizardState.shots) { renderScenePreview(); return; }
+  wizardState.shotsKey = key;
+  wizardState.shots = null;
+  renderScenePreview();
+  const res = await fetch("/api/folder/shots", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, jpeg_subdir: sub, raw_subdir: rawSub }),
+  });
+  if (wizardState.shotsKey !== key) return;          // the folder changed meanwhile
+  wizardState.shots = res.ok ? await res.json() : { error: `Could not read the folder (${res.status}).` };
+  suggestSceneMode(wizardState.shots);
+  renderScenePreview();
+}
+
+function timeGapScenes(times, gapMin) {
+  const out = [];
+  let cur = null;
+  for (const t of times) {
+    if (!cur || t - cur.end > gapMin * 60) { cur = { start: t, end: t, times: [] }; out.push(cur); }
+    cur.times.push(t);
+    cur.end = t;
+  }
+  return out;
+}
+
+function fmtDuration(sec) {
+  const m = Math.round(sec / 60);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60), r = m % 60;
+  return r ? `${h} h ${r} min` : `${h} h`;
+}
+
+function fmtClock(sec) {
+  return new Date(sec * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function renderScenePreview() {
+  const box = $("#wiz-scene-preview");
+  if (!box) return;
+  const shots = wizardState.shots;
+  if (!shots) { box.innerHTML = `<p class="sp-wait">Looking at your photos…</p>`; return; }
+  if (shots.error) { box.innerHTML = `<p class="sp-wait">${escapeHtml(shots.error)}</p>`; return; }
+  box.innerHTML = (wizardState.sceneMode === "folder" ? folderPreview(shots) : timeGapPreview(shots))
+    + (shots.truncated ? `<p class="sp-note">Only the first ${shots.shots.toLocaleString()} photos were read.</p>` : "");
+}
+
+function folderPreview(shots) {
+  const folders = shots.folders;
+  if (folders.length === 1 && folders[0].name === "(none)") {
+    return `<p class="sp-head">All ${plural(shots.shots, "photo")} are directly in this folder, `
+      + `so this would be <b>one scene</b>.</p>`
+      + `<p class="sp-note">By time gap would split them where you paused.</p>`;
+  }
+  const max = Math.max(...folders.map((f) => f.count));
+  const rows = folders.slice(0, 10).map((f, i) =>
+    `<div class="sp-row"><span class="sp-name">${escapeHtml(f.name === "(none)" ? "(loose photos)" : f.name)}</span>`
+    + `<span class="sp-bar"><i style="width:${(100 * f.count / max).toFixed(1)}%;background:${SCENE_COLOURS[i % SCENE_COLOURS.length]}"></i></span>`
+    + `<span class="sp-count">${f.count}</span></div>`).join("");
+  const more = folders.length > 10 ? `<p class="sp-note">and ${folders.length - 10} more</p>` : "";
+  return `<p class="sp-head">Your photos would make <b>${plural(folders.length, "scene")}</b>, one per folder:</p>`
+    + rows + more;
+}
+
+function timeGapPreview(shots) {
+  const gap = parseInt($("#wiz-gap").value, 10) || 30;
+  const times = shots.times;
+  if (!times.length) {
+    return `<p class="sp-head">None of these photos has a capture time, so a time gap cannot split them.</p>`
+      + `<p class="sp-note">Group by folder instead.</p>`;
+  }
+  const groups = timeGapScenes(times, gap);
+  const sizes = groups.map((g) => g.times.length);
+  const pauses = groups.slice(1).map((g, i) => g.start - groups[i].end);
+  // A timeline with the long pauses cut out: each scene is as wide as it was
+  // long (with a floor, so a burst is not a sliver), and a fixed break stands
+  // for every pause that started a new scene.
+  const W = 1000, H = 44, BREAK = groups.length > 1 ? Math.min(14, 300 / (groups.length - 1)) : 0;
+  const span = groups.reduce((a, g) => a + (g.end - g.start), 0);
+  const floor = Math.max(span / Math.max(groups.length, 1) * 0.25, 1);
+  const weights = groups.map((g) => Math.max(g.end - g.start, floor));
+  const unit = (W - BREAK * (groups.length - 1)) / weights.reduce((a, b) => a + b, 0);
+  let x = 0, svg = "";
+  groups.forEach((g, i) => {
+    const w = weights[i] * unit, col = SCENE_COLOURS[i % SCENE_COLOURS.length];
+    svg += `<rect x="${x.toFixed(1)}" y="8" width="${Math.max(w, 1).toFixed(1)}" height="28" rx="4" fill="${col}" opacity="0.14"/>`;
+    const dur = Math.max(g.end - g.start, 1);
+    for (const t of g.times) {
+      const cx = x + (g.end === g.start ? w / 2 : ((t - g.start) / dur) * w);
+      svg += `<circle cx="${cx.toFixed(1)}" cy="22" r="3" fill="${col}"/>`;
+    }
+    x += w;
+    if (i < groups.length - 1) {
+      svg += `<line x1="${(x + BREAK / 2).toFixed(1)}" y1="4" x2="${(x + BREAK / 2).toFixed(1)}" y2="40" stroke="#6d6d7c" stroke-dasharray="3 3"/>`;
+      x += BREAK;
+    }
+  });
+  const untimed = shots.untimed
+    ? `<p class="sp-note">${plural(shots.untimed, "photo")} with no capture time go together into a scene of their own.</p>` : "";
+  const detail = groups.length > 1
+    ? `Largest ${sizes.length ? Math.max(...sizes) : 0} photos, smallest ${Math.min(...sizes)}. `
+      + `The shortest pause that split them was ${fmtDuration(Math.min(...pauses))}.`
+    : `Nowhere did you pause for longer than ${fmtDuration(gap * 60)}`
+      + (times.length > 1
+        ? `; your longest pause was ${fmtDuration(Math.max(...times.slice(1).map((t, i) => t - times[i])))}.`
+        : ".");
+  return `<p class="sp-head">At a ${gap}-minute gap your photos make <b>${plural(groups.length, "scene")}</b>.</p>`
+    + `<svg class="sp-timeline" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">${svg}</svg>`
+    + `<div class="sp-axis"><span>${fmtClock(times[0])}</span>`
+    + `<span>each colour is one scene · dashed lines are pauses, cut out</span>`
+    + `<span>${fmtClock(times[times.length - 1])}</span></div>`
+    + `<p class="sp-note">${detail}</p>${untimed}`;
 }
 
 // Check the photo folder as soon as one is chosen, and say what is in it, so
@@ -7913,22 +8094,25 @@ async function inspectWizardPhotoDir() {
     }
   }
   wizardState.photoInfo = { ...info, usable };
-  suggestSceneMode(info);
 }
 
 // Grouping by folder only makes scenes out of subfolders. With none, every photo
-// would land in one scene, so time gaps are the better default there.
-function suggestSceneMode(info) {
+// would land in one scene, so time gaps are the better default there, as long
+// as the photos carry capture times to split on.
+function suggestSceneMode(shots) {
   const note = $("#wiz-scene-note");
-  if (!wizardState.photoInfo?.usable) { note.textContent = ""; return; }
-  if (info.subfolders === 0) {
+  if (!shots || shots.error || !shots.shots) { note.textContent = ""; return; }
+  const loose = shots.folders.length === 1 && shots.folders[0].name === "(none)";
+  if (loose && shots.times.length > 1) {
     if (!wizardState.sceneTouched) setWizardSceneMode("time_gap");
-    note.textContent = "Suggested for this folder: the photos are not in subfolders, "
-      + "so grouping by folder would put them all in one scene.";
-  } else {
+    note.textContent = "Suggested for this folder: By time gap. The photos are not in "
+      + "subfolders, so By folder would put them all in one scene.";
+  } else if (!loose) {
     if (!wizardState.sceneTouched) setWizardSceneMode("folder");
-    note.textContent = `This folder has ${plural(info.subfolders, "subfolder")} with photos, `
-      + `so By folder gives ${plural(info.subfolders, "scene")}.`;
+    note.textContent = "Suggested for this folder: By folder. The photos are already "
+      + "sorted into subfolders.";
+  } else {
+    note.textContent = "";
   }
 }
 
@@ -8072,7 +8256,16 @@ async function bootMain() {
   const scene = state.byScene.has(view.scene) ? view.scene : state.sceneOrder[0];
   if (scene) {
     selectScene(scene);
-    if (scene === view.scene && view.page) gotoPageIndex(view.page);
+    const at = scene === view.scene && view.photo
+      ? state.filteredPhotos.findIndex((p) => p.rel_path === view.photo) : -1;
+    if (at >= 0) {
+      state.cursorIdx = at;
+      renderMain();
+      if (view.viewer) openModal(at);
+    } else if (scene === view.scene && view.page) {
+      // The photo is gone from this filter (decided, or removed): its page.
+      gotoPageIndex(view.page);
+    }
   } else {
     renderMain();
   }

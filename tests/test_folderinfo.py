@@ -108,6 +108,56 @@ def test_counting_stops_at_the_limit(tmp_path) -> None:
     assert info["photos"] == 5
 
 
+def _jpeg(path: Path, stamp: str | None) -> None:
+    from PIL import Image
+    path.parent.mkdir(parents=True, exist_ok=True)
+    exif = Image.Exif()
+    if stamp:
+        exif.get_ifd(0x8769)[0x9003] = stamp
+    Image.new("RGB", (8, 8)).save(path, exif=exif.tobytes())
+
+
+def _tiff_raw(path: Path, stamp: str) -> None:
+    """A TIFF-based RAW as far as its head goes, which is all a time read needs."""
+    from PIL import Image
+    path.parent.mkdir(parents=True, exist_ok=True)
+    exif = Image.Exif()
+    exif.get_ifd(0x8769)[0x9003] = stamp
+    tmp = path.with_suffix(".tif")
+    Image.new("RGB", (8, 8)).save(tmp, exif=exif.tobytes())
+    tmp.rename(path)
+
+
+def test_shots_pair_raw_and_jpeg_as_scoring_does(tmp_path) -> None:
+    from datetime import datetime
+
+    from picture_classifier import folderinfo
+    _jpeg(tmp_path / "day1" / "DSC1.JPG", "2026:05:01 10:00:00")
+    _tiff_raw(tmp_path / "day1" / "DSC1.ARW", "2026:05:01 09:00:00")   # one shot, RAW's time
+    _jpeg(tmp_path / "day1" / "DSC2.jpg", "2026:05:01 10:05:00")
+    _jpeg(tmp_path / "day2" / "DSC1.JPG", "2026:05:02 08:00:00")        # same stem, other folder
+    _jpeg(tmp_path / "loose.jpg", None)                                 # no capture time
+    _project(tmp_path, "proj")                                          # never counted
+
+    got = folderinfo.shots(tmp_path)
+    assert got["shots"] == 4
+    assert got["untimed"] == 1
+    assert got["folders"] == [{"name": "(none)", "count": 1}, {"name": "day1", "count": 2},
+                              {"name": "day2", "count": 1}]
+    want = [datetime(2026, 5, 1, 9, 0), datetime(2026, 5, 1, 10, 5), datetime(2026, 5, 2, 8, 0)]
+    assert got["times"] == [t.timestamp() for t in want]
+
+
+def test_shots_find_raws_in_their_own_subfolder(tmp_path) -> None:
+    from picture_classifier import folderinfo
+    _jpeg(tmp_path / "JPEG" / "a" / "DSC1.JPG", "2026:05:01 10:00:00")
+    _tiff_raw(tmp_path / "RAW" / "a" / "DSC1.ARW", "2026:05:01 09:00:00")
+    _tiff_raw(tmp_path / "RAW" / "a" / "DSC2.ARW", "2026:05:01 09:30:00")   # RAW only
+    got = folderinfo.shots(tmp_path / "JPEG", tmp_path / "RAW")
+    assert got["shots"] == 2 and got["folders"] == [{"name": "a", "count": 2}]
+    assert len(got["times"]) == 2 and got["times"][1] - got["times"][0] == 30 * 60
+
+
 def _main() -> None:
     import inspect
     import tempfile

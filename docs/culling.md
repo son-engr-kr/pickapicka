@@ -17,7 +17,11 @@ whole job: decide, filter, move on.
 ## Scenes
 
 - **Scene grouping**: by folder structure, or by EXIF capture-time gaps
-  (configurable in minutes). Switch any time without re-scoring.
+  (configurable in minutes). Switch any time without re-scoring. The
+  new-project wizard previews both on the chosen folder before anything is
+  scored: the scenes each subfolder would make, or a timeline of the shoot that
+  re-splits as you drag the gap slider, with the longest pause marked so you can
+  see which gap would separate what.
 
 ## Deciding
 
@@ -54,11 +58,15 @@ shortcut, so the list is not something you have to have memorised.
 - **Filter by decision or by edited**: alongside all/undecided/pick/review/reject
   there is `edited`, which shows only the photos you have actually graded —
   useful for a last pass over your own work, or for finding what still needs it.
-- **Reopens where you left it**: the filter, grid layout, page and scene are
-  remembered per project, so a project opens on the shot you were looking at
-  rather than on page 1 of everything. Stored per project in the app's
+- **Reopens where you left it**: the scene, filter, grid layout and the photo
+  you were on are remembered per project, and the full-screen viewer reopens if
+  that is where you were. It is the photo that is kept, not just the page, so
+  with the Undecided filter (where each decision takes a photo out of the list)
+  you land back on the right shot. Saved as you move, and once more on leaving
+  the project, quitting or closing the tab. Stored per project in the app's
   `state.json` (see [projects.md](projects.md#where-the-app-keeps-its-own-files));
-  a scene that has since been regrouped away falls back to the first one.
+  a scene that has since been regrouped away falls back to the first one, and a
+  photo no longer in the filter falls back to its page.
 - **Project history**: recent folders are remembered so you can reopen them
   from the landing page.
 
