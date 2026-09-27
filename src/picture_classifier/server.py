@@ -35,6 +35,7 @@ from . import (
     userstate, watermark as watermark_mod,
 )
 from .scoring import objects as objects_mod
+from . import lens as lens_mod
 from .scorer import (
     SUPPORTED_EXTS,
     _is_supported,
@@ -469,6 +470,12 @@ class AppContext:
         # otherwise analyse the same photo several times at once.
         self.portrait_cache: "OrderedDict[str, list[dict[str, Any]]]" = OrderedDict()
         self.portrait_lock = threading.Lock()
+        # Per photo: the automatic chromatic-aberration estimate made on its
+        # preview decode, and the optics of its last settled editor render,
+        # whose analysis (faces, segmentation, range source) a drag reuses.
+        self.ca_cache: "OrderedDict[str, tuple[float, float]]" = OrderedDict()
+        self.settled_optics: dict[str, dict[str, Any]] = {}
+        self.analysis_lock = threading.Lock()
 
     @staticmethod
     def _fresh_scoring_state() -> dict[str, Any]:
@@ -521,6 +528,8 @@ class AppContext:
         self.edit_base_cache.clear()
         self.full_base_cache.clear()
         self.portrait_cache.clear()
+        self.ca_cache.clear()
+        self.settled_optics.clear()
         self.opening_state = self._fresh_opening_state()
 
     def load_db(self, db_path: Path) -> None:
@@ -592,6 +601,8 @@ class AppContext:
         self.edit_base_cache.clear()
         self.full_base_cache.clear()
         self.portrait_cache.clear()
+        self.ca_cache.clear()
+        self.settled_optics.clear()
 
     def _rebuild_index(self) -> None:
         self.photo_index = {p["rel_path"]: p for p in self.data.get("photos", [])}
@@ -746,6 +757,51 @@ class AppContext:
                 interpolation=cv2.INTER_AREA)
         return self.edit_base_cache.get(rel_path, f"draft@{max_edge}", build)
 
+    def ca_for(self, rel_path: str, edit: dict[str, Any] | None) -> tuple[float, float] | None:
+        """The automatic chromatic-aberration estimate for a photo whose edit
+        asks for one, made once on its preview decode; None otherwise.
+
+        It is a scale, so the one estimate serves the preview, a drag's smaller
+        draft and every lens setting: estimating afresh cost 50 ms on each
+        frame of a lens drag, and made the draft disagree with the preview it
+        stands in for.
+        """
+        e = editing.normalize(edit)
+        if e["lens"] is None or not e["lens"].get("ca_auto"):
+            return None
+        with self.analysis_lock:
+            hit = self.ca_cache.get(rel_path)
+            if hit is not None:
+                self.ca_cache.move_to_end(rel_path)
+                return hit
+        base = self.get_decoded_base(rel_path)
+        est = lens_mod.estimate_ca(base.astype(np.float32) / 255.0)
+        with self.analysis_lock:
+            self.ca_cache[rel_path] = est
+            while len(self.ca_cache) > PORTRAIT_CACHE_MAX:
+                self.ca_cache.popitem(last=False)
+        return est
+
+    def analysis_edit(self, rel_path: str, edit: dict[str, Any] | None,
+                      draft: bool) -> dict[str, Any]:
+        """The edit to find faces, segment and select ranges for.
+
+        A settled render uses its own optics and remembers them. A draft keeps
+        the last settled optics instead: those analyses are made on the whole
+        corrected preview, and redoing them for every frame of a lens or
+        perspective drag cost a face detection a frame (250 ms with skin
+        smoothing on). The draft is then off by what the drag has moved so far,
+        and the settled render that follows it is exact.
+        """
+        e = editing.normalize(edit)
+        optics = {"lens": e["lens"], "transform": e["transform"]}
+        with self.analysis_lock:
+            if not draft:
+                self.settled_optics[rel_path] = optics
+                return e
+            settled = self.settled_optics.setdefault(rel_path, optics)
+        return {**e, **settled}
+
     def get_corrected_base(self, rel_path: str, edit: dict[str, Any] | None) -> np.ndarray:
         """The preview base with the edit's lens and perspective corrections
         applied: the frame every position in an edit is a fraction of. Cached
@@ -755,7 +811,8 @@ class AppContext:
             return self.get_decoded_base(rel_path)
         return self.edit_base_cache.get(
             rel_path, f"optics:{okey}",
-            lambda: editing.apply_optics(self.get_decoded_base(rel_path), edit))
+            lambda: editing.apply_optics(self.get_decoded_base(rel_path), edit,
+                                         self.ca_for(rel_path, edit)))
 
     def get_corrected_full(self, rel_path: str, edit: dict[str, Any] | None) -> np.ndarray:
         """`get_full_base` with the optics applied, for the 1:1 view: a window
@@ -2240,21 +2297,25 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             # Graded whole, then cropped — the same order `render` uses for an
             # export, so the fit view is what the file will be.
             # A drag's draft is small enough to correct on the fly; the settled
-            # render reuses the cached corrected frame.
-            base = ctx.get_corrected_base(payload.rel_path, fit_edit)
-            corrected = True
-            if payload.max_edge and payload.max_edge < max(base.shape[:2]):
-                base = ctx.get_draft_base(payload.rel_path, payload.max_edge)
-                corrected = False
-            which = "corrected" if corrected else f"draft@{payload.max_edge}"
+            # render reuses the cached corrected frame. The optics keep the
+            # frame's size, so the decode says which this is without building
+            # a corrected frame the draft would not use.
+            rel = payload.rel_path
+            draft = bool(payload.max_edge) and \
+                payload.max_edge < max(ctx.get_decoded_base(rel).shape[:2])
+            base = ctx.get_draft_base(rel, payload.max_edge) if draft \
+                else ctx.get_corrected_base(rel, fit_edit)
+            analysis = ctx.analysis_edit(rel, fit_edit, draft)
+            which = f"draft@{payload.max_edge}" if draft else "corrected"
             out = editing.render(base, fit_edit,
-                                 meta=ctx.photo_meta(payload.rel_path),
-                                 auto=ctx.auto_fields(payload.rel_path, fit_edit),
-                                 src=ctx.range_src(payload.rel_path, fit_edit),
+                                 meta=ctx.photo_meta(rel),
+                                 auto=ctx.auto_fields(rel, analysis),
+                                 src=ctx.range_src(rel, analysis),
                                  luts=_lut_tables(ctx, fit_edit),
-                                 optics=not corrected,
-                                 faces=ctx.portrait_faces(payload.rel_path, fit_edit),
-                                 cache_key=f"{payload.rel_path}|{which}")
+                                 optics=draft,
+                                 faces=ctx.portrait_faces(rel, analysis),
+                                 cache_key=f"{rel}|{which}",
+                                 ca=ctx.ca_for(rel, fit_edit))
         else:
             out = _render_roi(ctx, payload)
         buf = io.BytesIO()

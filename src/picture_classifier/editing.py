@@ -1712,8 +1712,12 @@ def optics_key(edit: dict[str, Any] | None) -> str:
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
 
 
-def apply_optics(rgb: np.ndarray, edit: dict[str, Any] | None) -> np.ndarray:
+def apply_optics(rgb: np.ndarray, edit: dict[str, Any] | None,
+                 ca: tuple[float, float] | None = None) -> np.ndarray:
     """The lens corrections, then the perspective, on a WHOLE uint8 frame.
+
+    `ca` is a precomputed automatic chromatic-aberration estimate; see
+    `lens.apply_lens`.
 
     Back to 8 bits after each, which keeps `_grade` on its lookup path. It also
     clips a lens-vignetting lift that pushes a bright corner past white, which
@@ -1723,7 +1727,7 @@ def apply_optics(rgb: np.ndarray, edit: dict[str, Any] | None) -> np.ndarray:
     e = normalize(edit)
     out = rgb
     if e["lens"] is not None:
-        out = _to_u8(lens_mod.apply_lens(out.astype(np.float32) / 255.0, e["lens"]))
+        out = _to_u8(lens_mod.apply_lens(out.astype(np.float32) / 255.0, e["lens"], ca=ca))
     if e["transform"] is not None:
         out = transform_mod.apply_transform(out, e["transform"])
     return out
@@ -2016,7 +2020,8 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
            luts: dict[str, dict[str, Any]] | None = None,
            optics: bool = True,
            faces: list[dict[str, Any]] | None = None,
-           cache_key: str | None = None) -> np.ndarray:
+           cache_key: str | None = None,
+           ca: tuple[float, float] | None = None) -> np.ndarray:
     """Apply `edit` to an RGB uint8 image and return a new RGB uint8 image.
     A neutral edit returns the input array unchanged (no copy).
 
@@ -2062,6 +2067,10 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     smoothing: the caller's to compute and cache, like `auto`, and required
     whenever the edit smooths skin (an empty list says there are no faces).
 
+    `ca` hands the optics an automatic chromatic-aberration estimate the
+    caller already has (see `lens.apply_lens`), rather than one made afresh
+    from `rgb`.
+
     `optics=False` is for a caller that has already applied the lens and
     perspective corrections (`apply_optics`) to the whole frame, which it must
     to render a window: those corrections move pixels across the frame, so they
@@ -2086,7 +2095,7 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         assert roi == FULL_ROI, \
             "lens and perspective corrections need the whole frame; apply_optics " \
             "to it first and pass optics=False for a window"
-        rgb = apply_optics(rgb, e)
+        rgb = apply_optics(rgb, e, ca)
 
     do_geom = geometry and not geometry_is_neutral(e)
     if do_geom:
