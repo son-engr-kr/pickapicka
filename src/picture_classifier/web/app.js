@@ -2474,10 +2474,29 @@ let previewSeq = 0;
 // at device resolution when zoomed.
 // Draft renders trade resolution for latency while something is being dragged.
 const DRAFT_EDGE = 1100;
+// A settled render is made at the size it is shown at, in device pixels, up to
+// the server's preview edge: grading cost follows the pixel count, and on a
+// 1x screen the 2048 px render was two to three times what the canvas shows.
+// In steps, so resizing the window does not make a new size on every pixel,
+// and never below a draft.
+const PREVIEW_EDGE = 2048;   // server.EDIT_PREVIEW_EDGE
+const FIT_STEP = 256;
+
+function fitEdge() {
+  const wrap = $(".edit-canvas-wrap");
+  if (!wrap || !wrap.clientWidth || !wrap.clientHeight) return null;   // not laid out yet
+  const need = Math.max(wrap.clientWidth, wrap.clientHeight) * (window.devicePixelRatio || 1);
+  const steps = Math.max(Math.ceil(DRAFT_EDGE / FIT_STEP), Math.ceil(need / FIT_STEP));
+  return Math.min(PREVIEW_EDGE, steps * FIT_STEP);
+}
 
 function previewBody(edit, draft) {
   const body = { rel_path: editSession.relPath, edit };
   if (draft) body.max_edge = DRAFT_EDGE;
+  else {
+    const edge = fitEdge();
+    if (edge && edge < PREVIEW_EDGE) body.fit_edge = edge;
+  }
   // While the crop tool is armed the frame is shown whole, so the box has
   // something to be dragged over.
   if (editSession.tool === "crop") body.skip_crop = true;

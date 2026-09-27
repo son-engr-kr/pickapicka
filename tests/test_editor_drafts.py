@@ -82,6 +82,22 @@ def test_a_first_draft_uses_its_own_optics(tmp_path):
     assert got["transform"]["vertical"] == 12
 
 
+def test_a_fit_sized_base_is_the_corrected_frame_scaled(tmp_path):
+    """A settled render the size the canvas shows is scaled after the optics,
+    so it is the corrected frame, only smaller, and it is made once."""
+    import cv2
+    ctx = _project(tmp_path)
+    edit = {"lens": {"distortion": 25}}
+    corrected = ctx.get_corrected_base("a.jpg", edit)
+    fit = ctx.get_fit_base("a.jpg", edit, 300)
+    h, w = corrected.shape[:2]
+    want = cv2.resize(corrected, (300, int(h * 300 / w)), interpolation=cv2.INTER_AREA)
+    assert np.array_equal(fit, want)
+    assert ctx.get_fit_base("a.jpg", edit, 300) is fit
+    # Asked for more than the preview holds, it is the preview.
+    assert ctx.get_fit_base("a.jpg", edit, 4000) is corrected
+
+
 def test_a_reload_forgets_both(tmp_path):
     ctx = _project(tmp_path)
     ctx.analysis_edit("a.jpg", {"lens": {"distortion": 10}}, draft=False)

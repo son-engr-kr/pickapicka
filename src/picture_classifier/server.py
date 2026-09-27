@@ -59,7 +59,7 @@ WEB_DIR = Path(__file__).parent / "web"
 EDIT_PREVIEW_EDGE = 2048   # long edge the live editor previews at (cached, re-graded on drag)
 EDIT_VIEW_EDGE = 2560      # long edge the full-size viewer renders edited/RAW photos at
 EDIT_BASE_CACHE_MAX = 4    # photos whose preview arrays are kept (RAW A/B benefits from >1)
-EDIT_VARIANTS_PER_PHOTO = 4  # the decode, a draft, lens-corrected copies
+EDIT_VARIANTS_PER_PHOTO = 6  # the decode, a draft, a fit-sized copy, lens-corrected copies
 PORTRAIT_CACHE_MAX = 64    # photos whose faces are kept analysed
 FULL_BASE_CACHE_MAX = 2    # full-res decode LRU: big arrays, so keep very few
 EDIT_ZOOM_MAX_OUT = 3200   # cap on the pixels a 1:1 request may return
@@ -118,6 +118,9 @@ class EditPreviewPayload(BaseModel):
     # Draft renders during a drag: grade a smaller copy so the frame keeps up,
     # then the client asks again at full size once the pointer settles.
     max_edge: int | None = None
+    # A settled render no bigger than the editor shows it: the canvas's long
+    # edge in device pixels. Unlike a draft it is analysed at its own optics.
+    fit_edge: int | None = None
     # The crop tool shows the straightened frame *uncropped*, so the box can be
     # dragged over everything still available. The tilt is honoured either way.
     skip_crop: bool = False
@@ -813,6 +816,22 @@ class AppContext:
             rel_path, f"optics:{okey}",
             lambda: editing.apply_optics(self.get_decoded_base(rel_path), edit,
                                          self.ca_for(rel_path, edit)))
+
+    def get_fit_base(self, rel_path: str, edit: dict[str, Any] | None,
+                     edge: int) -> np.ndarray:
+        """The corrected preview base scaled down to `edge`, for a settled
+        render the size the editor shows it at. Scaled after the optics, so it
+        is the corrected frame a draft only approximates."""
+        okey = editing.optics_key(edit)
+
+        def build() -> np.ndarray:
+            base = self.get_corrected_base(rel_path, edit)
+            h, w = base.shape[:2]
+            scale = edge / max(h, w)
+            return base if scale >= 1.0 else cv2.resize(
+                base, (max(1, int(w * scale)), max(1, int(h * scale))),
+                interpolation=cv2.INTER_AREA)
+        return self.edit_base_cache.get(rel_path, f"fit@{edge}:{okey}", build)
 
     def get_corrected_full(self, rel_path: str, edit: dict[str, Any] | None) -> np.ndarray:
         """`get_full_base` with the optics applied, for the 1:1 view: a window
@@ -2301,12 +2320,16 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             # frame's size, so the decode says which this is without building
             # a corrected frame the draft would not use.
             rel = payload.rel_path
-            draft = bool(payload.max_edge) and \
-                payload.max_edge < max(ctx.get_decoded_base(rel).shape[:2])
-            base = ctx.get_draft_base(rel, payload.max_edge) if draft \
-                else ctx.get_corrected_base(rel, fit_edit)
+            edge = max(ctx.get_decoded_base(rel).shape[:2])
+            draft = bool(payload.max_edge) and payload.max_edge < edge
+            fit = not draft and bool(payload.fit_edge) and payload.fit_edge < edge
+            if draft:
+                base, which = ctx.get_draft_base(rel, payload.max_edge), f"draft@{payload.max_edge}"
+            elif fit:
+                base, which = ctx.get_fit_base(rel, fit_edit, payload.fit_edge), f"fit@{payload.fit_edge}"
+            else:
+                base, which = ctx.get_corrected_base(rel, fit_edit), "corrected"
             analysis = ctx.analysis_edit(rel, fit_edit, draft)
-            which = f"draft@{payload.max_edge}" if draft else "corrected"
             out = editing.render(base, fit_edit,
                                  meta=ctx.photo_meta(rel),
                                  auto=ctx.auto_fields(rel, analysis),
