@@ -32,6 +32,7 @@ import json
 import math
 import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import cv2
@@ -451,9 +452,36 @@ def _normalize_adj(raw: Any) -> dict[str, Any]:
     return out
 
 
+# Strokes already normalized, by the identity of the list they came from.
+# Every draft of a brush stroke carries every point painted so far, and one
+# preview request normalizes its edit a dozen times over (render, the optics
+# key, the analyses, the frame headers): at 36 000 points that was 15 ms a
+# time. The list is held by its entry, so its id cannot be reused while the
+# entry lives, and a normalized list maps to itself, so normalizing a
+# normalized edit is free. Both are shared: treat them as read-only.
+_STROKES_MEMO: "OrderedDict[int, tuple[Any, list[dict[str, Any]]]]" = OrderedDict()
+_STROKES_MEMO_MAX = 8
+_STROKES_LOCK = threading.Lock()
+
+
 def _normalize_strokes(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, (list, tuple)):
         return []
+    with _STROKES_LOCK:
+        hit = _STROKES_MEMO.get(id(raw))
+        if hit is not None and hit[0] is raw:
+            _STROKES_MEMO.move_to_end(id(raw))
+            return hit[1]
+    out = _clean_strokes(raw)
+    with _STROKES_LOCK:
+        _STROKES_MEMO[id(raw)] = (raw, out)
+        _STROKES_MEMO[id(out)] = (out, out)
+        while len(_STROKES_MEMO) > _STROKES_MEMO_MAX:
+            _STROKES_MEMO.popitem(last=False)
+    return out
+
+
+def _clean_strokes(raw: list[Any] | tuple[Any, ...]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for item in raw[:STROKE_MAX]:
         if not isinstance(item, dict):
@@ -882,8 +910,26 @@ def _tone_is_neutral(e: dict[str, Any]) -> bool:
 
 # ----- colour / detail stages ---------------------------------------------
 
+_LUMA_ROW = np.array([[0.2126, 0.7152, 0.0722]], dtype=np.float32)
+
+
 def _luma(rgb: np.ndarray) -> np.ndarray:
-    return rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    """Rec. 709 luma of float RGB. cv2.transform rather than `rgb @ weights`:
+    the same sums to within a float32 rounding, ten times quicker."""
+    return cv2.transform(rgb, _LUMA_ROW)
+
+
+def _to_u8(img: np.ndarray) -> np.ndarray:
+    """Float RGB in [0,1] (clipped here) to uint8, rounded to nearest.
+
+    Byte-identical to `np.rint(np.clip(img, 0, 1) * 255).astype(np.uint8)` and
+    about four times quicker: convertScaleAbs rounds the same way and saturates
+    at 255, so only the floor needs clipping first (it takes the absolute value,
+    which would turn a small negative into a small positive). A scalar 0 is safe
+    as the other operand of cv2.max on a 3-channel image, where a non-zero one
+    would only apply to the first channel.
+    """
+    return cv2.convertScaleAbs(cv2.max(img, 0.0), alpha=255.0)
 
 
 def _lowfreq(chan: np.ndarray, frame_long: float,
@@ -1260,10 +1306,26 @@ def _apply_color(rgb: np.ndarray, vibrance: int, saturation: int) -> np.ndarray:
     """Saturate/desaturate by lerping each pixel toward its luma. Vibrance adds
     extra push weighted by (1 - current saturation), so already-vivid pixels
     (and skin) move less. No HSV round-trip, so no hue shift."""
-    y = _luma(rgb)[..., None]
-    sat_proxy = rgb.max(axis=2, keepdims=True) - rgb.min(axis=2, keepdims=True)
-    factor = 1.0 + saturation / 100.0 + (vibrance / 100.0) * (1.0 - np.clip(sat_proxy, 0, 1))
-    return y + factor * (rgb - y)
+    # Plane by plane with OpenCV: the channel max and min over an (h, w, 3)
+    # array were two thirds of the basic panel's render time. In place on the
+    # split planes, which are copies, so a 33 MP export holds one frame's worth
+    # of temporaries here rather than three: the same operations in the same
+    # order as y + factor * (c - y), so the same floats.
+    y = _luma(rgb)
+    r, g, b = cv2.split(rgb)
+    factor = cv2.max(cv2.max(r, g), b)
+    low = cv2.min(cv2.min(r, g), b)
+    cv2.subtract(factor, low, dst=factor)
+    del low
+    np.clip(factor, 0.0, 1.0, out=factor)             # the saturation proxy
+    np.subtract(1.0, factor, out=factor)
+    factor *= vibrance / 100.0
+    factor += 1.0 + saturation / 100.0
+    for c in (r, g, b):
+        c -= y
+        c *= factor
+        c += y
+    return cv2.merge([r, g, b])
 
 
 def _sharpen_params(e: dict[str, Any]) -> dict[str, int]:
@@ -1359,15 +1421,69 @@ def _linear_alpha(m: dict[str, Any], sh: int, sw: int,
     return 1.0 - _smoothstep(np.clip((t - 0.5) / f + 0.5, 0.0, 1.0))
 
 
+# Chained digests of a stroke list, by the identity of the (normalized, shared)
+# list: entry k names strokes[:k + 1]. Worked out once a request rather than
+# once for the alpha cache's key and again for the brush's own.
+_DIGEST_MEMO: "OrderedDict[int, tuple[Any, list[bytes]]]" = OrderedDict()
+_DIGEST_MEMO_MAX = 8
+
+
+def _stroke_digests(strokes: list[dict[str, Any]]) -> list[bytes]:
+    with _ALPHA_LOCK:
+        hit = _DIGEST_MEMO.get(id(strokes))
+        if hit is not None and hit[0] is strokes:
+            return hit[1]
+    h = hashlib.blake2b(digest_size=16)
+    out = []
+    for st in strokes:
+        h.update(f"{st['radius']}|{st['erase']}".encode())
+        h.update(np.asarray(st["points"], dtype=np.float64).tobytes())
+        out.append(h.copy().digest())
+    with _ALPHA_LOCK:
+        _DIGEST_MEMO[id(strokes)] = (strokes, out)
+        while len(_DIGEST_MEMO) > _DIGEST_MEMO_MAX:
+            _DIGEST_MEMO.popitem(last=False)
+    return out
+
+
+# A brush's alpha after its first k strokes, for the k a later render starts
+# from. While a stroke is painted, every draft carries the same finished strokes
+# and one more point on the last; replaying all of them cost 12 ms a stroke on
+# every draft, so painting got slower with every stroke laid down. Now a draft
+# replays only the stroke under the pointer. Kept read-only; a render that
+# continues from one works on a copy.
+_BRUSH_PREFIX: "OrderedDict[bytes, np.ndarray]" = OrderedDict()
+_BRUSH_PREFIX_MAX = 6
+
+
 def _brush_alpha(m: dict[str, Any], sh: int, sw: int,
                  roi: tuple[float, float, float, float]) -> np.ndarray:
     """Replay the strokes in order: paint strokes union in, erase strokes take
     out, each softened by its own radius so feather scales with brush size."""
-    alpha = np.zeros((sh, sw), dtype=np.float32)
+    strokes = m["strokes"]
+    n = len(strokes)
+    digests = _stroke_digests(strokes)
+    head = f"{m['feather']}|{sh}x{sw}|{roi}|".encode()
+
+    def after(k: int) -> bytes:
+        return head + digests[k - 1]
+
+    alpha, start = np.zeros((sh, sw), dtype=np.float32), 0
+    with _ALPHA_LOCK:
+        # All of them (nothing about the strokes changed), else all but the
+        # last (the last is being painted).
+        for k in (n, n - 1):
+            hit = _BRUSH_PREFIX.get(after(k)) if k >= 1 else None
+            if hit is not None:
+                _BRUSH_PREFIX.move_to_end(after(k))
+                alpha, start = hit.copy(), k
+                break
+    keep: list[tuple[bytes, np.ndarray]] = []
     f = m["feather"] / 100.0
     x0, y0, rw, rh = roi
     # Stroke coords are whole-frame fractions; map them into this window.
-    for stroke in m["strokes"]:
+    for i in range(start, n):
+        stroke = strokes[i]
         r_px = max(1.0, stroke["radius"] * sw / rw)
         layer = np.zeros((sh, sw), dtype=np.uint8)
         pts = np.array([[(p[0] - x0) / rw * sw, (p[1] - y0) / rh * sh]
@@ -1403,6 +1519,14 @@ def _brush_alpha(m: dict[str, Any], sh: int, sw: int,
             alpha *= 1.0 - soft
         else:
             alpha = np.maximum(alpha, soft)
+        if i >= n - 2:   # after all but the last, and after all
+            keep.append((after(i + 1), alpha.copy()))
+    with _ALPHA_LOCK:
+        for key, arr in keep:
+            arr.flags.writeable = False
+            _BRUSH_PREFIX[key] = arr
+        while len(_BRUSH_PREFIX) > _BRUSH_PREFIX_MAX:
+            _BRUSH_PREFIX.popitem(last=False)
     return alpha
 
 
@@ -1505,9 +1629,7 @@ def _alpha_key(mask: dict[str, Any], sh: int, sw: int,
         raise AssertionError(
             f"{mask['type']} masks depend on the pixels and are not cached here")
     else:
-        for s in mask["strokes"]:
-            h.update(f"{s['radius']}|{s['erase']}".encode())
-            h.update(np.asarray(s["points"], dtype=np.float64).tobytes())
+        h.update(_stroke_digests(mask["strokes"])[-1])
     return h.digest()
 
 
@@ -1602,11 +1724,25 @@ def _full_edit_from_adj(adj: dict[str, Any]) -> dict[str, Any]:
 def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
                  roi: tuple[float, float, float, float],
                  auto: dict[str, np.ndarray] | None = None,
-                 src: np.ndarray | None = None) -> np.ndarray:
+                 src: np.ndarray | None = None,
+                 frame_size: tuple[int, int] | None = None) -> np.ndarray:
     """Blend a locally graded copy through each mask, in order. `img` is float32
-    RGB clipped to [0,1] and is modified in place."""
+    RGB clipped to [0,1] and is modified in place.
+
+    `frame_size` (w, h) is the photo's own size, for a render of the whole
+    frame at any scale: the mask grid is then the photo's, not this array's.
+    Worked out from the array, a 1100 px draft got a grid a row shorter than
+    the 2048 px preview it stands in for, so the cached masks of the one never
+    served the other, and a brush was drawn again from nothing on every settle.
+    """
     h, w = img.shape[:2]
-    sh, sw = _work_size(h, w)
+    if frame_size is not None and roi == FULL_ROI:
+        fw, fh = frame_size
+        assert abs(fh / fw - h / w) < 0.01, \
+            f"frame_size {frame_size} is not the shape of this {w}x{h} frame"
+        sh, sw = _work_size(fh, fw)
+    else:
+        sh, sw = _work_size(h, w)
     for m in masks:
         if not mask_is_active(m):
             continue
@@ -1635,12 +1771,13 @@ def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
         # lookup instead of an interpolation over every float in the crop —
         # about five times faster, and the crop is on its way to an 8-bit
         # result anyway. Only worth the conversion when there is a tone stage
-        # to accelerate.
+        # to accelerate. Not named `src`: that is the whole ungraded frame every
+        # later mask's range refinement selects from.
         if _wb_tone_lut(adj) is not None:
-            src = cv2.convertScaleAbs(sub, alpha=255.0)
+            crop = cv2.convertScaleAbs(sub, alpha=255.0)
         else:
-            src = sub.copy()
-        graded = np.clip(_grade(src, adj, sub_roi), 0.0, 1.0)
+            crop = sub.copy()
+        graded = np.clip(_grade(crop, adj, sub_roi), 0.0, 1.0)
         img[y0:y1, x0:x1] = sub + (graded - sub) * alpha[..., None]
     return img
 
@@ -1689,8 +1826,12 @@ def optics_key(edit: dict[str, Any] | None) -> str:
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
 
 
-def apply_optics(rgb: np.ndarray, edit: dict[str, Any] | None) -> np.ndarray:
+def apply_optics(rgb: np.ndarray, edit: dict[str, Any] | None,
+                 ca: tuple[float, float] | None = None) -> np.ndarray:
     """The lens corrections, then the perspective, on a WHOLE uint8 frame.
+
+    `ca` is a precomputed automatic chromatic-aberration estimate; see
+    `lens.apply_lens`.
 
     Back to 8 bits after each, which keeps `_grade` on its lookup path. It also
     clips a lens-vignetting lift that pushes a bright corner past white, which
@@ -1700,8 +1841,7 @@ def apply_optics(rgb: np.ndarray, edit: dict[str, Any] | None) -> np.ndarray:
     e = normalize(edit)
     out = rgb
     if e["lens"] is not None:
-        f = lens_mod.apply_lens(out.astype(np.float32) / 255.0, e["lens"])
-        out = np.rint(np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8)
+        out = _to_u8(lens_mod.apply_lens(out.astype(np.float32) / 255.0, e["lens"], ca=ca))
     if e["transform"] is not None:
         out = transform_mod.apply_transform(out, e["transform"])
     return out
@@ -1755,8 +1895,7 @@ def _apply_look(rgb: np.ndarray, ref: dict[str, Any],
         f"the edit names look {ref['key']} ({ref['name'] or 'unnamed'}) "
         "but the caller did not pass its table")
     params = {**luts[ref["key"]], "amount": ref["amount"]}
-    out = lut_mod.apply_lut(rgb.astype(np.float32) / 255.0, params)
-    return np.rint(out * 255.0).astype(np.uint8)
+    return _to_u8(lut_mod.apply_lut(rgb.astype(np.float32) / 255.0, params))
 
 
 def _repair(rgb: np.ndarray, e: dict[str, Any],
@@ -1787,7 +1926,64 @@ def _repair(rgb: np.ndarray, e: dict[str, Any],
         work = redeye_mod.apply_redeye(work, e["redeye"], roi)
     if e["healing"] is not None:
         work = healing_mod.apply_healing(work, e["healing"], roi)
-    return np.rint(np.clip(work, 0.0, 1.0) * 255.0).astype(np.uint8)
+    return _to_u8(work)
+
+
+# The frame as it enters the grade: repaired, retouched and with its look.
+# None of that moves when a slider does, and on a 2048 px preview it is 60 ms
+# for a look, 50 for skin smoothing, 15 for a few heals, paid on every frame of
+# a drag. Kept for the caller's key (the photo and which of its arrays), plus
+# everything else those stages read. A hit also needs the very same input array
+# and face list, so a photo decoded afresh after a re-score cannot be answered
+# with the old pixels.
+_PREGRADE_CACHE: "OrderedDict[tuple, tuple[np.ndarray, Any, np.ndarray]]" = OrderedDict()
+_PREGRADE_CACHE_MAX = 4
+_PREGRADE_LOCK = threading.Lock()
+
+
+def _pregrade_stages_active(e: dict[str, Any]) -> bool:
+    return any(e[k] is not None for k in ("redeye", "healing", "portrait", "lut"))
+
+
+def _pregrade(rgb: np.ndarray, e: dict[str, Any], roi: tuple[float, float, float, float],
+              faces: list[dict[str, Any]] | None,
+              luts: dict[str, dict[str, Any]] | None,
+              cache_key: str | None, given: np.ndarray) -> np.ndarray:
+    """Repairs, then skin smoothing, then the look, on the uint8 frame.
+
+    `given` is the array the caller handed `render`, before the optics made
+    `rgb` out of it: the one a cached result is checked against. The optics
+    are in the key, and are a function of it.
+    """
+    if not _pregrade_stages_active(e):
+        return rgb
+    key = None
+    if cache_key is not None:
+        stages = json.dumps({k: e[k] for k in ("redeye", "healing", "portrait", "lut")},
+                            sort_keys=True, separators=(",", ":"))
+        key = (cache_key, rgb.shape, tuple(roi), stages)
+        with _PREGRADE_LOCK:
+            hit = _PREGRADE_CACHE.get(key)
+            if hit is not None and hit[0] is given and hit[1] is faces:
+                _PREGRADE_CACHE.move_to_end(key)
+                return hit[2]
+    img = _repair(rgb, e, roi)
+    # Retouching before the look and the grade, as a retoucher works on the
+    # capture before any colour: and after the repairs, so a healed spot is
+    # not smoothed into its surroundings before it has gone.
+    if e["portrait"] is not None:
+        assert faces is not None, "smoothing skin needs the caller's portrait.analyze faces"
+        img = _to_u8(portrait_mod.apply_portrait(img.astype(np.float32) / 255.0,
+                                                 e["portrait"], faces, roi))
+    if e["lut"] is not None:
+        img = _apply_look(img, e["lut"], luts)
+    if key is not None:
+        img.flags.writeable = False     # shared with later renders
+        with _PREGRADE_LOCK:
+            _PREGRADE_CACHE[key] = (given, faces, img)
+            while len(_PREGRADE_CACHE) > _PREGRADE_CACHE_MAX:
+                _PREGRADE_CACHE.popitem(last=False)
+    return img
 
 
 def _grade(img: np.ndarray, e: dict[str, Any],
@@ -1937,7 +2133,10 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
            src: np.ndarray | None = None,
            luts: dict[str, dict[str, Any]] | None = None,
            optics: bool = True,
-           faces: list[dict[str, Any]] | None = None) -> np.ndarray:
+           faces: list[dict[str, Any]] | None = None,
+           cache_key: str | None = None,
+           ca: tuple[float, float] | None = None,
+           frame_size: tuple[int, int] | None = None) -> np.ndarray:
     """Apply `edit` to an RGB uint8 image and return a new RGB uint8 image.
     A neutral edit returns the input array unchanged (no copy).
 
@@ -1983,10 +2182,24 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     smoothing: the caller's to compute and cache, like `auto`, and required
     whenever the edit smooths skin (an empty list says there are no faces).
 
+    `frame_size` is the photo's (w, h), for a caller that renders the whole
+    frame at several scales, as the editor does: masks are then built on the
+    photo's own grid at every scale (see `_apply_masks`).
+
+    `ca` hands the optics an automatic chromatic-aberration estimate the
+    caller already has (see `lens.apply_lens`), rather than one made afresh
+    from `rgb`.
+
     `optics=False` is for a caller that has already applied the lens and
     perspective corrections (`apply_optics`) to the whole frame, which it must
     to render a window: those corrections move pixels across the frame, so they
     cannot be applied to a piece of it.
+
+    `cache_key` names `rgb` (the photo, and which of the caller's arrays of it)
+    for a caller that renders the same array over and over, as the live editor
+    does: what comes before the grade (repairs, skin smoothing, the look) is
+    then kept between renders. It is only a name; a hit also needs the same
+    array object and face list.
 
     `meta` is the photo's shooting info (see `exifinfo`), used to fill the
     watermark's tokens. `with_watermark=False` grades without stamping, for
@@ -1996,11 +2209,12 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     e = normalize(edit)
     if is_neutral(e):
         return rgb
+    given = rgb
     if optics and not optics_is_neutral(e):
         assert roi == FULL_ROI, \
             "lens and perspective corrections need the whole frame; apply_optics " \
             "to it first and pass optics=False for a window"
-        rgb = apply_optics(rgb, e)
+        rgb = apply_optics(rgb, e, ca)
 
     do_geom = geometry and not geometry_is_neutral(e)
     if do_geom:
@@ -2023,26 +2237,113 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         # Grain must be the same grain every time this photo is rendered, so it
         # is seeded from the photo rather than from chance.
         seed = film_mod.seed_for(str((meta or {}).get("file") or ""))
-        img = _repair(rgb, e, roi)
-        # Retouching before the look and the grade, as a retoucher works on the
-        # capture before any colour: and after the repairs, so a healed spot is
-        # not smoothed into its surroundings before it has gone.
-        if e["portrait"] is not None:
-            assert faces is not None, "smoothing skin needs the caller's portrait.analyze faces"
-            f = portrait_mod.apply_portrait(img.astype(np.float32) / 255.0, e["portrait"], faces, roi)
-            img = np.rint(np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8)
-        if e["lut"] is not None:
-            img = _apply_look(img, e["lut"], luts)
+        img = _pregrade(rgb, e, roi, faces, luts,
+                        None if cache_key is None else f"{cache_key}|{optics_key(e)}", given)
         img = _grade(img, e, roi, seed)
         img = np.clip(img, 0.0, 1.0)
         if e["masks"]:
-            img = _apply_masks(img, e["masks"], roi, auto, src)
-        out = np.rint(np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
+            img = _apply_masks(img, e["masks"], roi, auto, src, frame_size)
+        out = _to_u8(img)
     if do_geom:
         out = apply_geometry(out, e)
     if stamp is not None:
         # FULL_ROI once cropped: `out` is now the whole of the frame that ships.
         out = watermark_mod.render(out, stamp, meta, FULL_ROI if do_geom else roi)
+    return out
+
+
+BAND_WORKERS = 4        # threads a banded render grades on
+_BANDS_PER_WORKER = 2   # more bands than threads, so fewer bands' floats are alive at once
+_BAND_ROWS_MIN = 256    # thinner than this a band is mostly its own padding
+_BAND_PAD_SHARE = 0.5   # padding may add at most this share of the frame's rows
+
+
+def _band_count(e: dict[str, Any], h: int, pad: int, workers: int) -> int:
+    """How many bands a normalized edit is graded in; under 2 means whole.
+
+    Whole when banding would not be close to the whole render, or not quicker:
+      - dehaze, anywhere: its haze map is estimated on a reduced copy of what it
+        is given, and a band's copy falls on a different grid than the frame's,
+        which put a line of up to 6 levels along every band edge on a 33 MP
+        photo (31 with clarity and a contrasty grade on top);
+      - a brush: a band rasterizes its strokes on its own grid, and the soft
+        edges moved by up to 21 levels;
+      - denoise: OpenCV already runs it on every core, so bands only fought
+        it for them (2.2 times slower with a glow and heals alongside);
+      - a reach so wide that the padding would be most of what is graded (a
+        strong glow or clarity on a small frame): the band count is cut until
+        the padding adds at most `_BAND_PAD_SHARE` of the rows.
+    """
+    tone_neutral = is_neutral({**e, "watermark": None, "crop": None, "tilt": 0.0,
+                               "lens": None, "transform": None})
+    active = [m for m in e["masks"] if mask_is_active(m)]
+    if tone_neutral or workers < 2 or e["dehaze"] or e["denoise"] \
+            or any(m["adj"]["dehaze"] or m["adj"]["denoise"] or m["type"] == "brush"
+                   for m in active):
+        return 1
+    n = min(workers * _BANDS_PER_WORKER, h // _BAND_ROWS_MIN)
+    if pad > 0:
+        n = min(n, 1 + int(_BAND_PAD_SHARE * h / (2 * pad)))
+    return n
+
+
+def render_bands(rgb: np.ndarray, edit: dict[str, Any] | None,
+                 meta: dict[str, Any] | None = None,
+                 with_watermark: bool = True,
+                 auto: dict[str, np.ndarray] | None = None,
+                 src: np.ndarray | None = None,
+                 luts: dict[str, dict[str, Any]] | None = None,
+                 faces: list[dict[str, Any]] | None = None,
+                 workers: int = BAND_WORKERS) -> np.ndarray:
+    """`render` of a whole frame, graded in horizontal bands on `workers` threads.
+
+    For a big render made once, the export: numpy runs a stage on one core, and
+    a 33 MP frame spent one to two seconds on one core while the rest idled.
+    Each band is graded as a window of the frame through the `roi` contract the
+    1:1 view already relies on, padded by `effect_padding` so whatever a stage
+    reaches for past the band's edge is there; NumPy and OpenCV let go of the
+    GIL for the pixel work, so the bands run side by side. With more bands than
+    threads, only a few bands' float temporaries exist at a time rather than
+    the whole frame's. The optics go first and the geometry and the watermark
+    last, on the whole frame, as in `render`.
+
+    Pointwise stages come out byte-identical. Those that reach across pixels
+    are resampled on each band's own grid, as a 1:1 window is, which moves an
+    8-bit value by a few levels where a mask or a blur changes fastest:
+    measured on 33 MP photos at most 3 levels, a mean under 0.025, for a grade
+    with masks, clarity, texture and sharpening, a film look, lens and crop and
+    a watermark, and skin smoothing. Edits that would move more, or gain
+    nothing, are rendered whole (`_band_count`). Time: 3x for a basic grade and
+    skin smoothing, 1.8x to 1.9x for masks, a heavy grade or a film look.
+    """
+    e = normalize(edit)
+    if is_neutral(e):
+        return rgb
+    h, w = rgb.shape[:2]
+    kw = dict(meta=meta, auto=auto, src=src, luts=luts, faces=faces)
+    if not optics_is_neutral(e):
+        rgb = apply_optics(rgb, e)
+    pad = int(math.ceil(effect_padding(e, float(max(h, w)), faces)))
+    n = _band_count(e, h, pad, workers)
+    if n < 2:
+        return render(rgb, e, with_watermark=with_watermark, optics=False, **kw)
+    cuts = np.linspace(0, h, n + 1).astype(int)
+    out = np.empty((h, w, 3), dtype=np.uint8)
+
+    def band(i: int) -> None:
+        y0, y1 = int(cuts[i]), int(cuts[i + 1])
+        py0, py1 = max(0, y0 - pad), min(h, y1 + pad)
+        graded = render(rgb[py0:py1], e, roi=(0.0, py0 / h, 1.0, (py1 - py0) / h),
+                        with_watermark=False, geometry=False, optics=False, **kw)
+        out[y0:y1] = graded[y0 - py0:y1 - py0]
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for done in pool.map(band, range(n)):
+            assert done is None
+    if not geometry_is_neutral(e):
+        out = apply_geometry(out, e)
+    if with_watermark and e["watermark"] is not None:
+        out = watermark_mod.render(out, e["watermark"], meta, FULL_ROI)
     return out
 
 

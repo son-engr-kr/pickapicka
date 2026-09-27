@@ -35,6 +35,7 @@ from . import (
     userstate, watermark as watermark_mod,
 )
 from .scoring import objects as objects_mod
+from . import lens as lens_mod
 from .scorer import (
     SUPPORTED_EXTS,
     _is_supported,
@@ -57,8 +58,10 @@ WEB_DIR = Path(__file__).parent / "web"
 
 EDIT_PREVIEW_EDGE = 2048   # long edge the live editor previews at (cached, re-graded on drag)
 EDIT_VIEW_EDGE = 2560      # long edge the full-size viewer renders edited/RAW photos at
-EDIT_BASE_CACHE_MAX = 4    # decoded-base LRU size (RAW A/B benefits from >1)
+EDIT_BASE_CACHE_MAX = 4    # photos whose preview arrays are kept (RAW A/B benefits from >1)
+EDIT_VARIANTS_PER_PHOTO = 6  # the decode, a draft, a fit-sized copy, lens-corrected copies
 PORTRAIT_CACHE_MAX = 64    # photos whose faces are kept analysed
+PREFETCH_MAX = 2           # neighbours decoded ahead: under EDIT_BASE_CACHE_MAX with the current one
 FULL_BASE_CACHE_MAX = 2    # full-res decode LRU: big arrays, so keep very few
 EDIT_ZOOM_MAX_OUT = 3200   # cap on the pixels a 1:1 request may return
 # Per-photo edit slots: a scratchpad for "try this, keep that". Six fits one
@@ -106,6 +109,10 @@ class MaskPreviewPayload(BaseModel):
     mask: dict[str, Any]
 
 
+class PrefetchPayload(BaseModel):
+    rel_paths: list[str]
+
+
 class EditPreviewPayload(BaseModel):
     rel_path: str
     edit: dict[str, Any] = {}
@@ -116,6 +123,9 @@ class EditPreviewPayload(BaseModel):
     # Draft renders during a drag: grade a smaller copy so the frame keeps up,
     # then the client asks again at full size once the pointer settles.
     max_edge: int | None = None
+    # A settled render no bigger than the editor shows it: the canvas's long
+    # edge in device pixels. Unlike a draft it is analysed at its own optics.
+    fit_edge: int | None = None
     # The crop tool shows the straightened frame *uncropped*, so the box can be
     # dragged over everything still available. The tilt is honoured either way.
     skip_crop: bool = False
@@ -341,6 +351,95 @@ class RelinkPayload(BaseModel):
 
 # ----- app context --------------------------------------------------------
 
+class PhotoArrays:
+    """Decoded arrays of recently edited photos, one entry per photo.
+
+    An entry holds every variant of its photo the editor has asked for (the
+    decode itself, the drag's draft, the lens-corrected frame), so they are kept
+    and dropped together. Keyed one variant at a time, a lens drag's corrected
+    copies pushed out the decode they came from, and going back one photo
+    decoded it again: 1.4 s for a RAW. Photos go least recently used first.
+    Within a photo the oldest derived variant goes once there are more than
+    `per_photo`, so a lens drag does not grow one entry without bound, and
+    `max_arrays` caps the whole cache for the full-resolution one, where each
+    array is a hundred megabytes.
+
+    A variant is built once. A second caller asking for one that is still being
+    built waits for that result: the editor opens a photo with two requests at
+    once (the preview, and the original for hold-to-compare), and each used to
+    decode it.
+    """
+
+    BASE = "base"   # the decode every other variant is derived from; kept longest
+
+    def __init__(self, photos: int, per_photo: int, max_arrays: int | None = None) -> None:
+        assert photos >= 1 and per_photo >= 1 and (max_arrays is None or max_arrays >= 1)
+        self._photos = photos
+        self._per_photo = per_photo
+        self._max_arrays = max_arrays
+        self._entries: "OrderedDict[str, OrderedDict[str, np.ndarray]]" = OrderedDict()
+        self._building: dict[tuple[str, str], Future] = {}
+        self._generation = 0      # bumped by clear(), so a build that straddles it is not kept
+        self._lock = threading.Lock()
+
+    def get(self, rel_path: str, variant: str, build: Callable[[], np.ndarray]) -> np.ndarray:
+        key = (rel_path, variant)
+        with self._lock:
+            entry = self._entries.get(rel_path)
+            if entry is not None and variant in entry:
+                self._entries.move_to_end(rel_path)
+                entry.move_to_end(variant)
+                return entry[variant]
+            waiting = self._building.get(key)
+            if waiting is None:
+                future: Future = Future()
+                self._building[key] = future
+                generation = self._generation
+        if waiting is not None:
+            return waiting.result()
+        try:
+            arr = build()
+        except BaseException as exc:
+            # Handed on to anyone waiting, then raised here as well: a waiter
+            # must not hang on a decode that failed.
+            with self._lock:
+                del self._building[key]
+            future.set_exception(exc)
+            raise
+        with self._lock:
+            del self._building[key]
+            if generation == self._generation:
+                entry = self._entries.setdefault(rel_path, OrderedDict())
+                entry[variant] = arr
+                self._entries.move_to_end(rel_path)
+                self._trim(entry)
+        future.set_result(arr)
+        return arr
+
+    def _derived(self, entry: "OrderedDict[str, np.ndarray]") -> list[str]:
+        return [v for v in entry if v != self.BASE]
+
+    def _trim(self, newest: "OrderedDict[str, np.ndarray]") -> None:
+        while len(newest) > self._per_photo and self._derived(newest):
+            del newest[self._derived(newest)[0]]
+        while len(self._entries) > self._photos:
+            self._entries.popitem(last=False)
+        if self._max_arrays is None:
+            return
+        while sum(len(e) for e in self._entries.values()) > self._max_arrays:
+            rel, oldest = next(iter(self._entries.items()))
+            derived = self._derived(oldest)
+            if derived:
+                del oldest[derived[0]]
+            else:
+                del self._entries[rel]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._generation += 1
+
+
 class AppContext:
     """Holds all per-project mutable state. Swapped on /api/open."""
 
@@ -360,13 +459,13 @@ class AppContext:
         # Single-entry cache of the last previewed bracket's fused array, so
         # dragging the look sliders re-grades instead of re-fusing.
         self.hdr_fuse_cache: tuple[tuple[str, ...], Any] | None = None
-        # LRU of decoded, downscaled *original* RGB arrays keyed by rel_path, so
-        # dragging the editor sliders re-grades instead of re-decoding (RAW
-        # decode is expensive). Holds originals — survives edit saves.
-        self.edit_base_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
+        # Decoded, downscaled *original* RGB arrays per photo, so dragging the
+        # editor sliders re-grades instead of re-decoding (RAW decode is
+        # expensive). Holds originals — survives edit saves.
+        self.edit_base_cache = PhotoArrays(EDIT_BASE_CACHE_MAX, EDIT_VARIANTS_PER_PHOTO)
         # Full-resolution originals for the 1:1 zoom view (see get_full_base).
-        self.full_base_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
-        self.decode_lock = threading.Lock()
+        self.full_base_cache = PhotoArrays(FULL_BASE_CACHE_MAX, FULL_BASE_CACHE_MAX,
+                                           max_arrays=FULL_BASE_CACHE_MAX)
 
         self.save_lock = threading.Lock()
         self.score_lock = threading.Lock()
@@ -379,6 +478,15 @@ class AppContext:
         # otherwise analyse the same photo several times at once.
         self.portrait_cache: "OrderedDict[str, list[dict[str, Any]]]" = OrderedDict()
         self.portrait_lock = threading.Lock()
+        # Per photo: the automatic chromatic-aberration estimate made on its
+        # preview decode, and the optics of its last settled editor render,
+        # whose analysis (faces, segmentation, range source) a drag reuses.
+        self.ca_cache: "OrderedDict[str, tuple[float, float]]" = OrderedDict()
+        # One worker decoding the photos the editor may step to next, so a
+        # prefetch never takes more than a core from the photo being edited.
+        self.prefetch_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prefetch")
+        self.settled_optics: dict[str, dict[str, Any]] = {}
+        self.analysis_lock = threading.Lock()
 
     @staticmethod
     def _fresh_scoring_state() -> dict[str, Any]:
@@ -431,6 +539,8 @@ class AppContext:
         self.edit_base_cache.clear()
         self.full_base_cache.clear()
         self.portrait_cache.clear()
+        self.ca_cache.clear()
+        self.settled_optics.clear()
         self.opening_state = self._fresh_opening_state()
 
     def load_db(self, db_path: Path) -> None:
@@ -502,6 +612,8 @@ class AppContext:
         self.edit_base_cache.clear()
         self.full_base_cache.clear()
         self.portrait_cache.clear()
+        self.ca_cache.clear()
+        self.settled_optics.clear()
 
     def _rebuild_index(self) -> None:
         self.photo_index = {p["rel_path"]: p for p in self.data.get("photos", [])}
@@ -525,19 +637,37 @@ class AppContext:
         assert self.jpeg_root is not None
         return self.jpeg_root / rel_path
 
-    def _decode_scaled(self, rel_path: str, max_edge: int | None) -> np.ndarray:
+    def _decode_scaled(self, rel_path: str, max_edge: int | None,
+                       quick: bool = False) -> np.ndarray:
         """Oriented RGB uint8 for a photo, optionally downscaled so its long edge
         is <= max_edge. Handles JPEG/PNG and merged HDR results; RAW is decoded
-        via rawpy (already oriented by libraw — no exif_transpose)."""
+        via rawpy (already oriented by libraw — no exif_transpose).
+
+        `quick` is for the editor's preview base, which is shown at screen size
+        and re-graded on every drag: a JPEG is then decoded at the largest DCT
+        scale (1/2, 1/4, 1/8) that still covers `max_edge` before it is resized,
+        and a RAW is binned at half size (`raw.decode_preview`) rather than
+        demosaiced: 0.1 s instead of 0.2 for a JPEG and 0.37 s instead of 0.95
+        for a RAW, on 33 MP Sony files. Against the full decode the preview moves by about
+        a level on average and by up to 5 on 99% of pixels; what is left is on
+        fine detail, where the two resamplings alias differently. The 1:1 view
+        and the export still decode in full.
+        """
         photo = self.photo_index.get(rel_path)
         if photo is not None and photo.get("type") == "raw":
             from . import raw
+            if quick and max_edge:
+                # A sensor whose half is shorter than max_edge gives a base that
+                # long; everything reads the base as fractions of the frame.
+                return np.ascontiguousarray(raw.decode_preview(self.source_path(rel_path), max_edge))
             arr = raw.decode_raw(self.source_path(rel_path))
             if max_edge and max(arr.shape[:2]) > max_edge:
                 arr = raw.fit_within(arr, max_edge)
             return np.ascontiguousarray(arr)
         src = self.source_path(rel_path)
         with Image.open(src) as im:
+            if quick and max_edge:
+                im.draft("RGB", (max_edge, max_edge))   # a no-op for anything but JPEG
             im = ImageOps.exif_transpose(im).convert("RGB")
             if max_edge and max(im.size) > max_edge:
                 im.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
@@ -553,19 +683,11 @@ class AppContext:
         return self._decode_scaled(rel_path, EDIT_VIEW_EDGE)
 
     def get_decoded_base(self, rel_path: str) -> np.ndarray:
-        """LRU-cached downscaled (~EDIT_PREVIEW_EDGE) original RGB — the array the
+        """Cached downscaled (~EDIT_PREVIEW_EDGE) original RGB — the array the
         live editor re-grades on each slider drag (decode happens once)."""
-        with self.decode_lock:
-            arr = self.edit_base_cache.get(rel_path)
-            if arr is not None:
-                self.edit_base_cache.move_to_end(rel_path)
-                return arr
-        arr = self._decode_scaled(rel_path, EDIT_PREVIEW_EDGE)
-        with self.decode_lock:
-            self.edit_base_cache[rel_path] = arr
-            while len(self.edit_base_cache) > EDIT_BASE_CACHE_MAX:
-                self.edit_base_cache.popitem(last=False)
-        return arr
+        return self.edit_base_cache.get(
+            rel_path, PhotoArrays.BASE,
+            lambda: self._decode_scaled(rel_path, EDIT_PREVIEW_EDGE, quick=True))
 
     def auto_fields(self, rel_path: str,
                     edit: dict[str, Any] | None) -> dict[str, np.ndarray] | None:
@@ -656,23 +778,59 @@ class AppContext:
         """A downscaled copy of the preview base, cached alongside it. Grading
         a quarter of the pixels is what keeps a mask drag interactive when
         several layers are stacked."""
-        key = f"{rel_path}@{max_edge}"
-        with self.decode_lock:
-            arr = self.edit_base_cache.get(key)
-            if arr is not None:
-                self.edit_base_cache.move_to_end(key)
-                return arr
+        def build() -> np.ndarray:
+            base = self.get_decoded_base(rel_path)
+            h, w = base.shape[:2]
+            scale = max_edge / max(h, w)
+            return base if scale >= 1.0 else cv2.resize(
+                base, (max(1, int(w * scale)), max(1, int(h * scale))),
+                interpolation=cv2.INTER_AREA)
+        return self.edit_base_cache.get(rel_path, f"draft@{max_edge}", build)
+
+    def ca_for(self, rel_path: str, edit: dict[str, Any] | None) -> tuple[float, float] | None:
+        """The automatic chromatic-aberration estimate for a photo whose edit
+        asks for one, made once on its preview decode; None otherwise.
+
+        It is a scale, so the one estimate serves the preview, a drag's smaller
+        draft and every lens setting: estimating afresh cost 50 ms on each
+        frame of a lens drag, and made the draft disagree with the preview it
+        stands in for.
+        """
+        e = editing.normalize(edit)
+        if e["lens"] is None or not e["lens"].get("ca_auto"):
+            return None
+        with self.analysis_lock:
+            hit = self.ca_cache.get(rel_path)
+            if hit is not None:
+                self.ca_cache.move_to_end(rel_path)
+                return hit
         base = self.get_decoded_base(rel_path)
-        h, w = base.shape[:2]
-        scale = max_edge / max(h, w)
-        arr = base if scale >= 1.0 else cv2.resize(
-            base, (max(1, int(w * scale)), max(1, int(h * scale))),
-            interpolation=cv2.INTER_AREA)
-        with self.decode_lock:
-            self.edit_base_cache[key] = arr
-            while len(self.edit_base_cache) > EDIT_BASE_CACHE_MAX * 2:
-                self.edit_base_cache.popitem(last=False)
-        return arr
+        est = lens_mod.estimate_ca(base.astype(np.float32) / 255.0)
+        with self.analysis_lock:
+            self.ca_cache[rel_path] = est
+            while len(self.ca_cache) > PORTRAIT_CACHE_MAX:
+                self.ca_cache.popitem(last=False)
+        return est
+
+    def analysis_edit(self, rel_path: str, edit: dict[str, Any] | None,
+                      draft: bool) -> dict[str, Any]:
+        """The edit to find faces, segment and select ranges for.
+
+        A settled render uses its own optics and remembers them. A draft keeps
+        the last settled optics instead: those analyses are made on the whole
+        corrected preview, and redoing them for every frame of a lens or
+        perspective drag cost a face detection a frame (250 ms with skin
+        smoothing on). The draft is then off by what the drag has moved so far,
+        and the settled render that follows it is exact.
+        """
+        e = editing.normalize(edit)
+        optics = {"lens": e["lens"], "transform": e["transform"]}
+        with self.analysis_lock:
+            if not draft:
+                self.settled_optics[rel_path] = optics
+                return e
+            settled = self.settled_optics.setdefault(rel_path, optics)
+        return {**e, **settled}
 
     def get_corrected_base(self, rel_path: str, edit: dict[str, Any] | None) -> np.ndarray:
         """The preview base with the edit's lens and perspective corrections
@@ -681,18 +839,26 @@ class AppContext:
         okey = editing.optics_key(edit)
         if not okey:
             return self.get_decoded_base(rel_path)
-        key = f"{rel_path}#optics:{okey}"
-        with self.decode_lock:
-            arr = self.edit_base_cache.get(key)
-            if arr is not None:
-                self.edit_base_cache.move_to_end(key)
-                return arr
-        arr = editing.apply_optics(self.get_decoded_base(rel_path), edit)
-        with self.decode_lock:
-            self.edit_base_cache[key] = arr
-            while len(self.edit_base_cache) > EDIT_BASE_CACHE_MAX * 2:
-                self.edit_base_cache.popitem(last=False)
-        return arr
+        return self.edit_base_cache.get(
+            rel_path, f"optics:{okey}",
+            lambda: editing.apply_optics(self.get_decoded_base(rel_path), edit,
+                                         self.ca_for(rel_path, edit)))
+
+    def get_fit_base(self, rel_path: str, edit: dict[str, Any] | None,
+                     edge: int) -> np.ndarray:
+        """The corrected preview base scaled down to `edge`, for a settled
+        render the size the editor shows it at. Scaled after the optics, so it
+        is the corrected frame a draft only approximates."""
+        okey = editing.optics_key(edit)
+
+        def build() -> np.ndarray:
+            base = self.get_corrected_base(rel_path, edit)
+            h, w = base.shape[:2]
+            scale = edge / max(h, w)
+            return base if scale >= 1.0 else cv2.resize(
+                base, (max(1, int(w * scale)), max(1, int(h * scale))),
+                interpolation=cv2.INTER_AREA)
+        return self.edit_base_cache.get(rel_path, f"fit@{edge}:{okey}", build)
 
     def get_corrected_full(self, rel_path: str, edit: dict[str, Any] | None) -> np.ndarray:
         """`get_full_base` with the optics applied, for the 1:1 view: a window
@@ -700,34 +866,16 @@ class AppContext:
         okey = editing.optics_key(edit)
         if not okey:
             return self.get_full_base(rel_path)
-        key = f"{rel_path}#optics:{okey}"
-        with self.decode_lock:
-            arr = self.full_base_cache.get(key)
-            if arr is not None:
-                self.full_base_cache.move_to_end(key)
-                return arr
-        arr = editing.apply_optics(self.get_full_base(rel_path), edit)
-        with self.decode_lock:
-            self.full_base_cache[key] = arr
-            while len(self.full_base_cache) > FULL_BASE_CACHE_MAX:
-                self.full_base_cache.popitem(last=False)
-        return arr
+        return self.full_base_cache.get(
+            rel_path, f"optics:{okey}",
+            lambda: editing.apply_optics(self.get_full_base(rel_path), edit))
 
     def get_full_base(self, rel_path: str) -> np.ndarray:
         """LRU-cached *full-resolution* original — what the 1:1 editor view
         grades. Kept to a couple of entries because a 24 MP frame is ~70 MB, but
         one entry is what makes panning around at 100% feel instant."""
-        with self.decode_lock:
-            arr = self.full_base_cache.get(rel_path)
-            if arr is not None:
-                self.full_base_cache.move_to_end(rel_path)
-                return arr
-        arr = self._decode_scaled(rel_path, None)
-        with self.decode_lock:
-            self.full_base_cache[rel_path] = arr
-            while len(self.full_base_cache) > FULL_BASE_CACHE_MAX:
-                self.full_base_cache.popitem(last=False)
-        return arr
+        return self.full_base_cache.get(
+            rel_path, PhotoArrays.BASE, lambda: self._decode_scaled(rel_path, None))
 
 
 # ----- helpers ------------------------------------------------------------
@@ -963,12 +1111,12 @@ def _bake_rendered(ctx: "AppContext", photo: dict[str, Any], rel: str,
                    dst: Path | BinaryIO, settings: ExportSettings) -> None:
     """Render one photo and write it to `dst`, a path or an open buffer."""
     edit = photo.get("edit")
-    out = editing.render(ctx.decode_full(rel), edit,
-                         meta=ctx.photo_meta(rel),
-                         auto=ctx.auto_fields(rel, edit),
-                         src=ctx.range_src(rel, edit),
-                         luts=_lut_tables(ctx, edit),
-                         faces=ctx.portrait_faces(rel, edit))
+    out = editing.render_bands(ctx.decode_full(rel), edit,
+                               meta=ctx.photo_meta(rel),
+                               auto=ctx.auto_fields(rel, edit),
+                               src=ctx.range_src(rel, edit),
+                               luts=_lut_tables(ctx, edit),
+                               faces=ctx.portrait_faces(rel, edit))
     out = exporting.resize(out, settings.long_edge)
     src_path, is_raw = _metadata_source(ctx, photo, rel)
     src_exif, icc = metadata_mod.read_source(src_path, is_raw)
@@ -2225,6 +2373,24 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
 
     # ----- editing ---------------------------------------------------
 
+    @app.post("/api/edit/prefetch")
+    def edit_prefetch(payload: PrefetchPayload) -> dict[str, Any]:
+        """Decode the preview base of the photos either side of the one being
+        edited, in the background, while it is looked at. Stepping to one then
+        finds its decode done, or waits for the one under way, instead of
+        starting it: 0.1 s of a JPEG's open and 0.4 of a RAW's."""
+        _require_loaded()
+        rels = payload.rel_paths[:PREFETCH_MAX]
+        for rel in rels:
+            if ctx.photo_index.get(rel) is None:
+                raise HTTPException(status_code=404, detail=f"photo not found: {rel}")
+        for rel in rels:
+            # A decode that fails here is logged with its traceback, then
+            # raised again when the photo is opened.
+            ctx.prefetch_pool.submit(ctx.get_decoded_base, rel).add_done_callback(
+                lambda f: f.result())
+        return {"queued": rels}
+
     @app.post("/api/edit/preview")
     def edit_preview(payload: EditPreviewPayload) -> Response:
         """Render the given edit onto a cached copy of the photo and return a
@@ -2247,19 +2413,33 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             # Graded whole, then cropped — the same order `render` uses for an
             # export, so the fit view is what the file will be.
             # A drag's draft is small enough to correct on the fly; the settled
-            # render reuses the cached corrected frame.
-            base = ctx.get_corrected_base(payload.rel_path, fit_edit)
-            corrected = True
-            if payload.max_edge and payload.max_edge < max(base.shape[:2]):
-                base = ctx.get_draft_base(payload.rel_path, payload.max_edge)
-                corrected = False
+            # render reuses the cached corrected frame. The optics keep the
+            # frame's size, so the decode says which this is without building
+            # a corrected frame the draft would not use.
+            rel = payload.rel_path
+            edge = max(ctx.get_decoded_base(rel).shape[:2])
+            draft = bool(payload.max_edge) and payload.max_edge < edge
+            fit = not draft and bool(payload.fit_edge) and payload.fit_edge < edge
+            if draft:
+                base, which = ctx.get_draft_base(rel, payload.max_edge), f"draft@{payload.max_edge}"
+            elif fit:
+                base, which = ctx.get_fit_base(rel, fit_edit, payload.fit_edge), f"fit@{payload.fit_edge}"
+            else:
+                base, which = ctx.get_corrected_base(rel, fit_edit), "corrected"
+            analysis = ctx.analysis_edit(rel, fit_edit, draft)
+            photo = ctx.photo_index[rel]
+            frame = (int(photo["width"]), int(photo["height"])) \
+                if photo.get("width") and photo.get("height") else None
             out = editing.render(base, fit_edit,
-                                 meta=ctx.photo_meta(payload.rel_path),
-                                 auto=ctx.auto_fields(payload.rel_path, fit_edit),
-                                 src=ctx.range_src(payload.rel_path, fit_edit),
+                                 meta=ctx.photo_meta(rel),
+                                 auto=ctx.auto_fields(rel, analysis),
+                                 src=ctx.range_src(rel, analysis),
                                  luts=_lut_tables(ctx, fit_edit),
-                                 optics=not corrected,
-                                 faces=ctx.portrait_faces(payload.rel_path, fit_edit))
+                                 optics=draft,
+                                 faces=ctx.portrait_faces(rel, analysis),
+                                 cache_key=f"{rel}|{which}",
+                                 ca=ctx.ca_for(rel, fit_edit),
+                                 frame_size=frame)
         else:
             out = _render_roi(ctx, payload)
         buf = io.BytesIO()

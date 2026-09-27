@@ -1205,6 +1205,25 @@ def test_a_refinement_on_an_automatic_mask() -> None:
     assert abs(float(out[:, 72:].mean()) - 225.0) < 2.0, "the bright part moved"
 
 
+def test_a_refinement_after_another_mask_selects_from_the_frame() -> None:
+    """A range is measured on the whole ungraded frame whatever masks come
+    before it. The mask loop once reused that frame's name for the crop it had
+    just graded, so a refined mask after any active mask selected its tones out
+    of the previous mask's crop: in the preview, the thumbnails and the export.
+    """
+    img = _bands_frame()
+    # A small shape over the bright band, well away from the dark one.
+    first = editing.normalize_mask({"type": "radial", "cx": 0.9, "cy": 0.2, "rx": 0.06,
+                                    "ry": 0.1, "feather": 0, "adj": {"exposure": 0.5}})
+    ranged = editing.normalize_mask({"type": "range", "range_luma": {"lo": 0, "hi": 35},
+                                     "adj": {"exposure": 1.0}})
+    alone = editing.render(img, {"masks": [ranged]}, src=img)
+    both = editing.render(img, {"masks": [first, ranged]}, src=img)
+    # Outside the first mask's box only the range mask acts, so the two agree.
+    assert np.array_equal(both[:, :64], alone[:, :64])
+    assert both[:, :24].mean() > 45, "the dark band was not selected"
+
+
 # ----- repairs: healing and red-eye (operators tested in their own suites) --
 
 def _spot_op(cx: float = 0.5, cy: float = 0.5, r: float = 0.06) -> dict:
@@ -1311,6 +1330,211 @@ def test_repair_hashes_into_the_edit() -> None:
 # of globals(), so anything defined below it would not exist yet and would be
 # silently skipped. It sat mid-file for a while and ran 37 of 97 while printing
 # a pass. `assert_collected` is the guard that makes that impossible to repeat.
+# ----- the quick paths agree with the formulas they replaced ---------------
+
+def _graded_like(h: int = 301, w: int = 457) -> np.ndarray:
+    """Float RGB the way it looks mid-pipeline: mostly in [0,1], a little over
+    and under after a push, with exact half-level steps in it."""
+    rng = np.random.default_rng(5)
+    img = rng.uniform(-0.03, 1.03, (h, w, 3)).astype(np.float32)
+    img[0, :, :] = (np.arange(w) % 511)[:, None].astype(np.float32) / 510.0
+    return img
+
+
+def test_luma_is_the_weighted_sum() -> None:
+    img = _graded_like()
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    for arr in (img, img[20:200, 33:300]):          # a view, as masks hand in
+        assert np.abs(editing._luma(arr) - arr @ weights).max() < 1e-6
+
+
+def test_colour_is_the_per_pixel_formula() -> None:
+    img = _graded_like()
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    for vib, sat in ((20, 5), (-40, 30), (0, -100), (100, 0)):
+        y = (img @ weights)[..., None]
+        proxy = img.max(axis=2, keepdims=True) - img.min(axis=2, keepdims=True)
+        factor = 1.0 + sat / 100.0 + (vib / 100.0) * (1.0 - np.clip(proxy, 0, 1))
+        want = y + factor * (img - y)
+        got = editing._apply_color(img, vib, sat)
+        assert got.shape == img.shape and got.dtype == np.float32
+        assert np.abs(got - want).max() < 1e-5, (vib, sat)
+
+
+def test_to_u8_is_rint_of_the_clipped_value() -> None:
+    img = _graded_like()
+    want = np.rint(np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
+    assert np.array_equal(editing._to_u8(img), want)
+    assert np.array_equal(editing._to_u8(img[5:50, 7:90]), want[5:50, 7:90])
+
+
+def test_the_frame_before_the_grade_is_kept_between_renders() -> None:
+    """A slider drag re-renders one photo over and over; what comes before the
+    grade (repairs, skin smoothing, the look) does not move with the slider."""
+    real = editing._repair
+    calls = []
+    editing._repair = lambda *a, **k: calls.append(1) or real(*a, **k)
+    try:
+        _check_the_pregrade_cache(calls)
+    finally:
+        editing._repair = real
+
+
+def _check_the_pregrade_cache(calls: list) -> None:
+    img = _sample()
+    spot = {"healing": {"ops": [_spot_op()]}}
+    first = editing.render(img, {**spot, "exposure": 0.3}, cache_key="p.jpg|corrected")
+    second = editing.render(img, {**spot, "exposure": 0.6}, cache_key="p.jpg|corrected")
+    assert len(calls) == 1, "the repairs ran again for a slider that cannot change them"
+    assert np.array_equal(first, editing.render(img, {**spot, "exposure": 0.3}))
+    assert np.array_equal(second, editing.render(img, {**spot, "exposure": 0.6}))
+    calls.clear()
+
+    # The same name on a different array (the photo decoded afresh) is a miss.
+    editing.render(img.copy(), {**spot, "exposure": 0.6}, cache_key="p.jpg|corrected")
+    assert len(calls) == 1
+    # So is a change to what the stages themselves read.
+    moved = {"healing": {"ops": [_spot_op(cx=0.3)]}}
+    got = editing.render(img, {**moved, "exposure": 0.6}, cache_key="p.jpg|corrected")
+    assert np.array_equal(got, editing.render(img, {**moved, "exposure": 0.6}))
+
+
+def _strokes(n: int, pts: int, seed: int = 0, erase_every: int = 3) -> list:
+    rng = np.random.default_rng(seed)
+    out = []
+    for i in range(n):
+        x0, y0 = rng.uniform(0.2, 0.8, 2)
+        out.append({"radius": 0.03, "erase": i % erase_every == erase_every - 1,
+                    "points": [[float(x0 + 0.2 * np.sin(t / 9 + i)), float(y0 + 0.1 * np.cos(t / 7))]
+                               for t in range(pts)]})
+    return out
+
+
+def _clear_brush_caches() -> None:
+    for cache in (editing._ALPHA_CACHE, editing._BRUSH_PREFIX, editing._DIGEST_MEMO,
+                  editing._STROKES_MEMO):
+        cache.clear()
+
+
+def test_painting_replays_only_the_stroke_being_painted() -> None:
+    """While a stroke is painted every draft carries the finished strokes and
+    a longer last one. The finished ones are not drawn again, and the result is
+    the one a full replay gives."""
+    import cv2
+    strokes = _strokes(6, 40)
+
+    def draft(end: int) -> np.ndarray:
+        # A fresh copy each time, as each request parses the edit afresh.
+        live = [dict(s, points=list(s["points"])) for s in strokes[:-1]] \
+            + [dict(strokes[-1], points=strokes[-1]["points"][:end])]
+        m = editing.normalize_mask({"type": "brush", "feather": 40, "strokes": live})
+        return editing._brush_alpha(m, 120, 180, editing.FULL_ROI)
+
+    drawn = []
+    real = cv2.polylines
+    editing.cv2.polylines = lambda *a, **k: drawn.append(1) or real(*a, **k)
+    try:
+        _clear_brush_caches()
+        draft(10)
+        draft(20)
+        drawn.clear()
+        got = draft(30).copy()
+        assert len(drawn) == 1, f"drew {len(drawn)} strokes for the one being painted"
+        _clear_brush_caches()
+        assert np.array_equal(got, draft(30)), "the cached replay differs from a full one"
+    finally:
+        editing.cv2.polylines = real
+
+
+def test_a_draft_and_the_preview_share_the_photos_mask_grid() -> None:
+    """Rendered with the photo's size, a draft and the settled preview build
+    their masks on the same grid, so the settle reuses what the drafts drew."""
+    import cv2
+    rng = np.random.default_rng(2)
+    preview = rng.integers(0, 256, (1366, 2048, 3), dtype=np.uint8)
+    draft = cv2.resize(preview, (1100, 733), interpolation=cv2.INTER_AREA)
+    assert editing._work_size(733, 1100) != editing._work_size(1366, 2048)   # what went wrong
+    brush = {"type": "brush", "feather": 40, "strokes": _strokes(3, 30), "adj": {"exposure": 0.5}}
+    edit = {"masks": [brush]}
+    drawn = []
+    real = cv2.polylines
+    editing.cv2.polylines = lambda *a, **k: drawn.append(1) or real(*a, **k)
+    try:
+        _clear_brush_caches()
+        editing.render(draft, edit, frame_size=(7028, 4688))
+        drawn.clear()
+        editing.render(preview, edit, frame_size=(7028, 4688))
+        assert drawn == [], f"the settle drew {len(drawn)} strokes again"
+    finally:
+        editing.cv2.polylines = real
+    with pytest.raises(AssertionError, match="not the shape"):
+        editing.render(preview, edit, frame_size=(4688, 7028))
+
+
+def test_normalized_strokes_are_the_same_whoever_asks() -> None:
+    raw = _strokes(4, 30) + [{"radius": 9, "points": [[5, -3], "x", [0.2]]}, "junk"]
+    _clear_brush_caches()
+    first = editing._normalize_strokes(raw)
+    again = editing._normalize_strokes(raw)
+    assert again is first
+    assert editing._normalize_strokes(first) is first
+    _clear_brush_caches()
+    assert editing._normalize_strokes(raw) == first
+    assert first[-1]["points"] == [[2.0, -1.0]] and first[-1]["radius"] == 0.5
+
+
+def _detailed(h: int = 1200, w: int = 1800) -> np.ndarray:
+    """Edges, gradients and highlights at several scales, so every spatial stage
+    has something to act on at the band edges."""
+    rng = np.random.default_rng(4)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    base = 110 + 60 * np.sin(xx / 37.0) * np.cos(yy / 23.0) + 40 * np.sign(np.sin(xx / 5.0 + yy / 9.0))
+    img = np.stack([base, np.roll(base, 7, axis=0) * 0.9, np.roll(base, -11, axis=1) * 1.1], axis=2)
+    img += rng.normal(0, 6, img.shape)
+    img[500:540, 800:900] = 250
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def test_banded_renders_agree_with_the_whole_render() -> None:
+    img = _detailed()
+    basic = {"exposure": 0.3, "contrast": 20, "shadows": 30, "vibrance": 25, "temp": 10}
+    radial = {"type": "radial", "cx": 0.45, "cy": 0.43, "rx": 0.3, "ry": 0.2, "feather": 60,
+              "adj": {"exposure": 0.5, "clarity": 30}}
+    cases = [
+        ("pointwise", basic, 0),
+        ("hsl, grading, vignette, radial", {**basic, "hsl": {"blue": {"hue": -10, "sat": 20}},
+                                            "grading": {"shadows": {"hue": 220, "sat": 20}},
+                                            "vignette": -20, "masks": [radial]}, 3),
+        ("clarity, texture, sharpen", {**basic, "clarity": 30, "texture": 20, "sharpen": 40}, 3),
+        ("film", {**basic, "film": editing.film_mod.stock("Warm portrait")}, 3),
+        ("lens, tilt, crop, watermark", {**basic, "lens": {"distortion": 20},
+                                          "tilt": 2.0, "crop": {"x": 0.1, "y": 0.1, "w": 0.8, "h": 0.8},
+                                          "watermark": {"enabled": True, "name": "Test"}}, 3),
+    ]
+    for name, edit, tol in cases:
+        e = editing.normalize(edit)
+        pad = int(np.ceil(editing.effect_padding(e, float(max(img.shape[:2])))))
+        assert editing._band_count(e, img.shape[0], pad, editing.BAND_WORKERS) >= 2, name
+        whole = editing.render(img, edit, meta={"file": "b"})
+        banded = editing.render_bands(img, edit, meta={"file": "b"})
+        assert banded.shape == whole.shape, name
+        d = np.abs(banded.astype(int) - whole.astype(int))
+        assert d.max() <= tol, (name, d.max())
+        assert d.mean() < 0.05, (name, d.mean())
+
+
+def test_edits_that_would_seam_are_rendered_whole() -> None:
+    img = _detailed(900, 1300)
+    brush = {"type": "brush", "feather": 40, "strokes": _strokes(3, 30), "adj": {"exposure": 0.5}}
+    for edit in ({"dehaze": 30}, {"denoise": 30},
+                 {"masks": [{"type": "linear", "x1": 0.5, "y1": 0, "x2": 0.5, "y2": 0.5,
+                             "adj": {"dehaze": 40}}]},
+                 {"exposure": 0.2, "masks": [brush]}):
+        e = editing.normalize(edit)
+        assert editing._band_count(e, img.shape[0], 10, editing.BAND_WORKERS) == 1, edit
+        assert np.array_equal(editing.render_bands(img, edit), editing.render(img, edit)), edit
+
+
 def _main() -> None:
     import re
     from pathlib import Path

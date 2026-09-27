@@ -256,7 +256,8 @@ def _radial_grid(w: int, h: int, cx: float, cy: float, r: float,
 # ----- chromatic aberration -----------------------------------------------
 
 def _ca_gains(params: dict[str, Any] | None,
-              rgb: np.ndarray | None) -> tuple[float, float, float]:
+              rgb: np.ndarray | None,
+              ca: tuple[float, float] | None = None) -> tuple[float, float, float]:
     """(gain_r, gain_g, gain_b): the radial scale each channel is sampled at.
 
     Green is the reference and is never touched — it is the channel the lens is
@@ -270,8 +271,10 @@ def _ca_gains(params: dict[str, Any] | None,
     a_r = (p["ca_red_cyan"] / 100.0) * _CA_MAX_SCALE
     a_b = (p["ca_blue_yellow"] / 100.0) * _CA_MAX_SCALE
     if p["ca_auto"]:
-        assert rgb is not None, "automatic CA needs the frame to estimate from"
-        auto_r, auto_b = estimate_ca(rgb)
+        if ca is None:
+            assert rgb is not None, "automatic CA needs the frame to estimate from"
+            ca = estimate_ca(rgb)
+        auto_r, auto_b = ca
         a_r += auto_r
         a_b += auto_b
     return 1.0 + a_r, 1.0, 1.0 + a_b
@@ -448,7 +451,8 @@ def _remap(img: np.ndarray, map_x: np.ndarray, map_y: np.ndarray) -> np.ndarray:
 
 
 def apply_lens(rgb: np.ndarray, params: dict[str, Any] | None,
-               roi: tuple[float, float, float, float] = FULL_ROI) -> np.ndarray:
+               roi: tuple[float, float, float, float] = FULL_ROI,
+               ca: tuple[float, float] | None = None) -> np.ndarray:
     """Apply the lens corrections to a float32 RGB frame in [0,1].
 
     `rgb` must be a whole frame unless `is_geometric(params)` is False, in which
@@ -478,6 +482,10 @@ def apply_lens(rgb: np.ndarray, params: dict[str, Any] | None,
     black corners here would survive all the way into the export. A scale is
     also cheap to be honest about: it is one normalized number, so it costs the
     same fraction of the field of view at every render size.
+
+    `ca` is an `estimate_ca` the caller already has, for `ca_auto`: a scale,
+    so one made on a photo's preview serves every render of it, and a drag
+    need not estimate it again on every frame. Without it the frame is asked.
     """
     assert rgb.dtype == np.float32, "lens corrections work in float32"
     assert rgb.ndim == 3 and rgb.shape[2] == 3, "apply_lens wants an RGB frame"
@@ -497,7 +505,7 @@ def apply_lens(rgb: np.ndarray, params: dict[str, Any] | None,
 
     k, s = _distortion_coeff(p)
     cx, cy, r = _centre(w, h)
-    gains = _ca_gains(p, rgb)
+    gains = _ca_gains(p, rgb, ca)
     if gains[0] == 1.0 and gains[2] == 1.0:
         # One grid for all three channels: a single three-channel remap, which
         # is what OpenCV is fastest at and what most edits will hit.

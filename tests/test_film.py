@@ -363,6 +363,65 @@ def test_a_preset_can_carry_a_stock() -> None:
     assert kept["film"]["stock"] == "Punchy slide"
 
 
+# ----- the quick paths agree with the formulas they replaced ---------------
+
+def _speculars(h: int = 600, w: int = 900) -> np.ndarray:
+    """Mid-grey with bright highlights of several sizes: what halation is for."""
+    rng = np.random.default_rng(3)
+    img = np.clip(0.35 + 0.05 * rng.standard_normal((h, w, 3)), 0, 1).astype(np.float32)
+    for (y, x, r) in ((100, 150, 6), (300, 450, 30), (450, 700, 70), (150, 750, 2)):
+        yy, xx = np.ogrid[:h, :w]
+        img[(yy - y) ** 2 + (xx - x) ** 2 <= r * r] = 0.98
+    return img
+
+
+def test_crosstalk_is_the_matrix_product() -> None:
+    f = {**film.DEFAULT_FILM, **film.stock("Warm portrait"), "warmth": 0}
+    img = _speculars()
+    got = film._apply_tone(img, f)
+    curve = film._density_curve(f)
+    table = np.repeat((curve * 255.0).astype(np.uint8).reshape(256, 1), 3, axis=1)
+    import cv2
+    dens = cv2.LUT(cv2.convertScaleAbs(img, alpha=255.0), table.reshape(256, 1, 3))
+    want = np.clip((dens.astype(np.float32) / 255.0) @ film._crosstalk_matrix(f).T, 0.0, 1.0)
+    assert np.abs(got - want).max() < 1e-6
+
+
+def test_the_capped_halation_blur_stays_within_two_levels() -> None:
+    """Wide halation blurs a reduced copy of the highlight mask. Against the
+    blur at full size the finished frame may move by 2 levels out of 255."""
+    import cv2
+    img = _speculars()
+    for radius_param in (25, 60, 100):
+        f = {**film.DEFAULT_FILM, "enabled": True, "halation": 100,
+             "halation_radius": radius_param}
+        frame_long = float(max(img.shape[:2]))
+        got = film._apply_halation(img, f, frame_long)
+        radius = max(1.0, (radius_param / 100.0) * 0.035 * frame_long)
+        lum = img @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+        hot = np.clip((lum - 0.80) / 0.20, 0.0, 1.0) ** 2.0
+        spread = cv2.GaussianBlur(hot, (0, 0), radius)
+        want = img + spread[..., None] * film._HALATION_WEIGHT * 1.9 * (1.0 - img)
+        to8 = lambda a: np.rint(np.clip(a, 0, 1) * 255).astype(int)
+        d = np.abs(to8(got) - to8(want))
+        assert d.max() <= 2, (radius_param, d.max())
+        assert d.mean() < 0.1, (radius_param, d.mean())
+
+
+def test_the_grain_cache_hands_back_what_it_would_build() -> None:
+    f = {**film.DEFAULT_FILM, **_GRAIN}
+    args = ((240, 320), (0.1, 0.2, 0.5, 0.5), 640.0, 480.0, 11)
+    first = film._grain_field(f, *args)
+    again = film._grain_field(f, *args)
+    assert again is first
+    assert np.array_equal(first, film._build_grain_field(f, *args))
+    assert not first.flags.writeable
+    other = film._grain_field(f, *args[:-1], 12)
+    assert not np.array_equal(other, first)
+    coarser = film._grain_field({**f, "grain_size": 80}, *args)
+    assert not np.array_equal(coarser, first)
+
+
 def _main() -> None:
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
