@@ -5,6 +5,33 @@ whole job: decide, filter, move on.
 
 ![The grid](images/grid.jpg)
 
+## The screen
+
+- **The top bar** is on every screen: the project's name (a menu of recent
+  projects to switch to), the tabs **Projects**, **Cull** and **Edit**, a note
+  of anything running in the background (an export, a re-score, face
+  grouping), Export and `?`. The viewer and the editor open under it, so the
+  tabs always say where you are; leaving the editor by a tab asks first about
+  an unsaved edit.
+- **The sidebar** lists the scenes first, each with how much is left and how
+  many picks, and below them the grouping, People and Subjects.
+- **The filter bar** above the grid shows each filter with how many photos it
+  would show in this scene.
+- **The grid scrolls.** 1, 2, 4 or 8 per screen sets the tile size; the arrow
+  keys scroll a row at a time to keep the cursor in view, `[` `]` move a
+  screen, and the header says which photos are showing ("61–68 of 734"). Only
+  the rows on screen are built, so a scene of thousands scrolls as smoothly as
+  one of twenty. Thumbnails are made in the background as soon as a project
+  opens, so a fresh shoot does not show black tiles for long.
+- **The info panel** (`I`) beside the grid shows the highlighted photo's
+  histogram, the suggestion and why in words, its faces, and the camera and
+  exposure, with the decision buttons. It steps aside on a window narrower
+  than 1180 px.
+- **The viewer** (`Enter`) shows the photo at once from its thumbnail while the
+  full image loads, with the decision buttons, the reasons for the suggestion,
+  and a **filmstrip** of the scene along the bottom. The editor has the same
+  filmstrip; moving to another photo there saves the edit.
+
 ## Scoring and suggestions
 
 - **Per-photo scoring**: Laplacian blur, brightness exposure, optional

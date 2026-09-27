@@ -15,6 +15,11 @@ adjustments bake in only on export or download.
   non-destructive — originals are never modified; adjustments bake in only on
   export. Save **global presets** and **apply an edit/preset to many photos at
   once** (a whole scene, all picks, or a hand-picked selection).
+- **Fast on large files.** A photo opens in the editor in about a fifth of a
+  second (a RAW in under half), a slider drag re-renders in a few milliseconds
+  and the settled preview in tens, sized to the canvas you are looking at; the
+  photos either side are decoded ahead, so stepping to the next one is
+  immediate. Export grades a frame in bands on four threads.
 - **Edits are not lost by leaving.** Moving to the next or previous photo
   (`←` `→`) saves the edit, and says so beside Save. Closing with `Esc` or `×`
   while something is unsaved asks whether to save, discard or keep editing;

@@ -49,6 +49,10 @@ project's own folder, in a `picks.json` that points at them.
 
 ## What it does
 
+**One window, three places**: a bar across the top names the project (click it
+to switch to another) and has three tabs, **Projects**, **Cull** and **Edit**,
+with what is running in the background, Export and help beside them.
+
 **Culling** — per-frame blur and exposure scores, per-scene pick/review/reject
 suggestions, scenes by folder or by EXIF time gap, one-key decisions, focus
 peaking that measures edge steepness rather than contrast, a loupe, HDR bracket
@@ -69,9 +73,10 @@ rather than deletes.
 ## Keyboard
 
 `P` pick · `R` reject · `V` review · `U` clear (each decides the highlighted
-photo and moves to the next) · `←` `→` move · `[` `]` pages · `Enter` viewer ·
-`E` edit · `X` select · `D` download the selection · `B` subject boxes ·
-`K` focus peaking · `L` loupe · `?` every shortcut
+photo and moves to the next) · `←` `→` move · `[` `]` a screen on or back ·
+`Enter` viewer · `E` edit · `I` photo info · `X` select · `D` download the
+selection · `B` subject boxes · `K` focus peaking · `L` loupe · `?` every
+shortcut
 
 In the editor: `R` `G` `B` add a radial, gradient or brush mask · `\` show the
 mask · `Del` remove it · `C` hold the original · `F` fit ↔ 100% ·

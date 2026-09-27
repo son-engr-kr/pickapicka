@@ -2808,9 +2808,10 @@ function fetchEditPreview(immediate, draft) {
       if (editSession.objUrl) URL.revokeObjectURL(editSession.objUrl);
       editSession.objUrl = URL.createObjectURL(blob);
       if (!editSession.comparing) $("#edit-img").src = editSession.objUrl;
-      // Showing the render time makes "the editor feels slow" answerable
-      // instead of a guess.
-      $("#edit-status").textContent = ms ? `${ms} ms${draft ? " · draft" : ""}` : "";
+      // The render time is for whoever is measuring (the tooltip); on screen
+      // it read as a number to worry about. The line is for messages.
+      $("#edit-status").title = ms ? `last render ${ms} ms${draft ? " (draft)" : ""}` : "";
+      if ($("#edit-status").textContent === "preview error") $("#edit-status").textContent = "";
       if (!draft) prefetchNeighbours(rel);
     } catch {
       $("#edit-status").textContent = "preview error";
