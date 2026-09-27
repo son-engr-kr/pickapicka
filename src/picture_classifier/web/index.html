@@ -426,6 +426,24 @@
         <button data-filter="reject" class="filter" role="tab">Rejects <span class="n"></span></button>
         <button data-filter="edited" class="filter" role="tab">Edited <span class="n"></span></button>
       </div>
+      <div class="filter-extra">
+        <select id="rating-filter" title="Only photos with at least this many stars">
+          <option value="0">Any stars</option>
+          <option value="1">★ or more</option>
+          <option value="2">★★ or more</option>
+          <option value="3">★★★ or more</option>
+          <option value="4">★★★★ or more</option>
+          <option value="5">★★★★★</option>
+        </select>
+        <select id="label-filter" title="Only photos with this colour label">
+          <option value="">Any label</option>
+          <option value="red">Red</option>
+          <option value="yellow">Yellow</option>
+          <option value="green">Green</option>
+          <option value="blue">Blue</option>
+          <option value="purple">Purple</option>
+        </select>
+      </div>
     </div>
     <div class="cull-body">
       <div id="grid"></div>
@@ -443,6 +461,10 @@
           <div class="insp-label">Suggestion</div>
           <div id="insp-suggestion"></div>
           <ul id="insp-reasons"></ul>
+          <div id="insp-marks">
+            <span id="insp-stars"></span>
+            <span class="label-chips" role="group" aria-label="Colour label"><button type="button" class="label-chip red" data-label="red" title="Red label (6)"></button><button type="button" class="label-chip yellow" data-label="yellow" title="Yellow label (7)"></button><button type="button" class="label-chip green" data-label="green" title="Green label (8)"></button><button type="button" class="label-chip blue" data-label="blue" title="Blue label (9)"></button><button type="button" class="label-chip purple" data-label="purple" title="Purple label"></button></span>
+          </div>
           <div id="insp-decide" role="group" aria-label="Decision">
             <button type="button" class="btn-decision" data-decision="reject">Reject <span class="kbd">R</span></button>
             <button type="button" class="btn-decision" data-decision="review">Review <span class="kbd">V</span></button>
@@ -816,6 +838,7 @@
         <button type="button" class="btn-decision" data-decision="review">Review <span class="kbd">V</span></button>
         <button type="button" class="btn-decision" data-decision="pick">Pick <span class="kbd">P</span></button>
       </div>
+      <span id="modal-marks"></span>
       <span id="modal-scores"></span>
       <button id="modal-compare" class="hidden" title="Toggle HDR merged vs 0 EV original (C)">showing: HDR merged</button>
       <button id="modal-loupe" data-icon="loupe">Loupe</button>

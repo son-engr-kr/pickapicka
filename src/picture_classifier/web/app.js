@@ -33,6 +33,8 @@ const state = {
   presets: [],
   presetMode: "add",        // additive by default: local presets stack
   selection: new Set(),   // rel_paths selected for batch actions
+  minRating: 0,           // show photos with at least this many stars
+  labelFilter: "",        // show photos with this colour label ("" = any)
 };
 
 // Mirror of hdr.DEFAULT_LOOK — the realtor-style starting point.
@@ -621,7 +623,64 @@ function matchesSubjectFilter(p) {
   return classHit && groupHit;
 }
 function matchesFilter(p) {
-  return matchesDecisionFilter(p) && matchesPersonFilter(p) && matchesSubjectFilter(p);
+  return matchesDecisionFilter(p) && matchesPersonFilter(p) && matchesSubjectFilter(p)
+    && (p.rating || 0) >= state.minRating && (!state.labelFilter || p.label === state.labelFilter);
+}
+
+// ---------- stars and colour labels ----------
+// Set by the photographer, apart from the decision, and written into exports
+// (metadata.build_xmp). The keys are Lightroom's: 1-5 stars, 0 none, 6-9 red,
+// yellow, green, blue. Neither moves the cursor on, as they do not there.
+const LABEL_KEYS = { 6: "red", 7: "yellow", 8: "green", 9: "blue" };
+const LABEL_NAMES = { red: "Red", yellow: "Yellow", green: "Green", blue: "Blue", purple: "Purple" };
+
+function starsHtml(rating, cls = "stars") {
+  const r = rating || 0;
+  return `<span class="${cls}" aria-label="${r ? `${r} star${r > 1 ? "s" : ""}` : "no stars"}">`
+    + [1, 2, 3, 4, 5].map((n) => `<i data-star="${n}" class="${n <= r ? "on" : ""}">★</i>`).join("") + "</span>";
+}
+
+function markAt(absIdx, marks) {
+  const photo = state.filteredPhotos[absIdx];
+  if (!photo) return;
+  if (marks.rating !== undefined) {
+    if (marks.rating) photo.rating = marks.rating; else delete photo.rating;
+  }
+  if (marks.label !== undefined) {
+    if (marks.label) photo.label = marks.label; else delete photo.label;
+  }
+  saveMarks(photo, marks);
+  recomputeFilter();
+  const at = state.filteredPhotos.indexOf(photo);
+  // A filter on stars or a label can drop the photo; the next one is then in
+  // its place, as with a decision.
+  state.cursorIdx = at >= 0 ? at : Math.max(0, Math.min(absIdx, state.filteredPhotos.length - 1));
+  showCursor();
+  if (state.modal.open) {
+    if (!state.filteredPhotos.length) { closeModal(); return; }
+    state.modal.idx = state.cursorIdx;
+    renderModal();
+  }
+}
+
+function saveMarks(photo, marks) {
+  decisionSaves = decisionSaves.then(async () => {
+    const res = await fetch("/api/mark", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rel_paths: [photo.rel_path], ...marks }),
+    });
+    if (!res.ok) throw new Error(`mark failed: ${res.status}`);
+  }).catch((err) => {
+    alert(`Saving a star or label failed (${err.message}). The project will reload.`);
+    location.reload();
+  });
+}
+
+// The mark a key stands for, or undefined for any other key.
+function markForKey(k, photo) {
+  if (/^[0-5]$/.test(k)) return { rating: Number(k) };
+  if (LABEL_KEYS[k]) return { label: photo && photo.label === LABEL_KEYS[k] ? "" : LABEL_KEYS[k] };
+  return undefined;
 }
 
 // Focus peaking rides on the same aspect-ratio trick as the boxes: the overlay
@@ -1377,7 +1436,7 @@ function tileSig(p, i) {
     const person = f.person_id ? state.peopleById.get(f.person_id) : null;
     return person && person.excluded ? "x" : (f.person_id || "-");
   }).join(",");
-  return [i, p.rel_path, p.decision, p.edited_at, p.auto_suggestion, p.scores?.badness,
+  return [i, p.rel_path, p.decision, p.rating, p.label, p.edited_at, p.auto_suggestion, p.scores?.badness,
     state.selection.has(p.rel_path), state.showBoxes, state.showPeak, state.peakLevel, faces].join("|");
 }
 
@@ -1391,13 +1450,16 @@ function renderGrid() {
   if (!state.filteredPhotos.length) {
     if (!state.selectedScene) { grid.innerHTML = ""; return; }
     const narrowed = state.filter !== "all" || state.personFilter.size
-      || state.subjectClassFilter.size || state.subjectGroupFilter.size;
+      || state.subjectClassFilter.size || state.subjectGroupFilter.size
+      || state.minRating || state.labelFilter;
     grid.innerHTML = `<div id="grid-inner" class="empty"><div class="grid-empty">
       <p>${narrowed ? escapeHtml(FILTER_EMPTY[state.filter] || "No photos match these filters.") : "This scene has no photos."}</p>
       ${narrowed ? `<button type="button" class="primary" id="grid-show-all">Show all photos in the scene</button>` : ""}
     </div></div>`;
     $("#grid-show-all")?.addEventListener("click", () => {
       state.personFilter.clear(); state.subjectClassFilter.clear(); state.subjectGroupFilter.clear();
+      state.minRating = 0; state.labelFilter = "";
+      $("#rating-filter").value = "0"; $("#label-filter").value = "";
       $$(".filter").forEach((x) => x.classList.toggle("active", x.dataset.filter === "all"));
       state.filter = "all";
       state.cursorIdx = 0;
@@ -1491,7 +1553,9 @@ function makeTile(p, absIdx) {
       </div>
     </div>
     <div class="tile-meta">
+      ${p.label ? `<span class="label-dot ${p.label}" title="${LABEL_NAMES[p.label]} label"></span>` : ""}
       <span class="tile-name">${escapeHtml(fname)}</span>
+      ${p.rating ? starsHtml(p.rating, "stars tile-stars") : ""}
       <span class="badness" title="How bad it looks, from sharpness, exposure and closed eyes: lower is better">badness ${badness}</span>
     </div>
     <div class="tile-action-bar">
@@ -6429,6 +6493,8 @@ function renderModal() {
   }
   $$("#modal-decide .btn-decision").forEach((b) =>
     b.classList.toggle("active", b.dataset.decision === photo.decision));
+  $("#modal-marks").innerHTML = starsHtml(photo.rating, "stars clickable")
+    + (photo.label ? `<span class="label-dot ${photo.label}" title="${LABEL_NAMES[photo.label]} label"></span>` : "");
   const ex = photo.exif || {};
   $("#modal-exif").textContent = [
     ex.camera, ex.lens, ex.focal, ex.aperture, ex.shutter, ex.iso_text,
@@ -6537,9 +6603,9 @@ function toggleCompare() {
 // ---------- keyboard ----------
 // The decision a key stands for: null clears it, undefined is not a decision key.
 function decisionForKey(k) {
-  if (k === "1" || k === "r" || k === "R") return "reject";
-  if (k === "2" || k === "v" || k === "V") return "review";
-  if (k === "3" || k === "p" || k === "P" || k === "a" || k === "A") return "pick";
+  if (k === "r" || k === "R") return "reject";
+  if (k === "v" || k === "V") return "review";
+  if (k === "p" || k === "P" || k === "a" || k === "A") return "pick";
   if (k === "u" || k === "U") return null;
   return undefined;
 }
@@ -6723,6 +6789,8 @@ function bindKeys() {
       if (k === "e" || k === "E") {
         const i = state.modal.idx; closeModal(); openEditModal(i); e.preventDefault(); return;
       }
+      const mark = markForKey(k, state.filteredPhotos[state.modal.idx]);
+      if (mark) { e.preventDefault(); markAt(state.modal.idx, mark); return; }
       const decision = decisionForKey(k);
       if (decision === undefined) return;
       e.preventDefault();
@@ -6761,6 +6829,8 @@ function bindKeys() {
     }
     if (k === "Escape") { if (state.selection.size) { clearSelection(); e.preventDefault(); } return; }
 
+    const mark = markForKey(k, state.filteredPhotos[i]);
+    if (mark) { e.preventDefault(); markAt(i, mark); return; }
     const decision = decisionForKey(k);
     if (decision !== undefined) {
       e.preventDefault();
@@ -6880,6 +6950,8 @@ function renderInspector() {
     : "—";
   $("#insp-reasons").innerHTML = explainScores(p).map((r) => `<li>${escapeHtml(r)}</li>`).join("");
   $$("#insp-decide .btn-decision").forEach((b) => b.classList.toggle("active", b.dataset.decision === p.decision));
+  $("#insp-stars").innerHTML = starsHtml(p.rating, "stars clickable");
+  $$("#insp-marks .label-chip").forEach((c) => c.classList.toggle("active", c.dataset.label === p.label));
   const faces = (p.faces || []).map((f, fi) => ({ f, fi, person: f.person_id ? state.peopleById.get(f.person_id) : null }))
     .filter(({ person }) => !(person && person.excluded));
   $("#insp-faces-section").classList.toggle("hidden", !faces.length);
@@ -6900,6 +6972,32 @@ function bindInspector() {
     if (p) decideAt(state.cursorIdx, p.decision === b.dataset.decision ? null : b.dataset.decision);
   }));
   $("#insp-edit").addEventListener("click", () => openEditModal(state.cursorIdx));
+  $$("#insp-marks .label-chip").forEach((c) => c.addEventListener("click", () => {
+    const p = state.filteredPhotos[state.cursorIdx];
+    if (p) markAt(state.cursorIdx, { label: p.label === c.dataset.label ? "" : c.dataset.label });
+  }));
+  // A star clicked sets that many; the star already set clears them.
+  const starClicks = (el, idx) => el.addEventListener("click", (e) => {
+    const star = e.target.closest("[data-star]");
+    const i = idx();
+    const p = state.filteredPhotos[i];
+    if (!star || !p) return;
+    const n = Number(star.dataset.star);
+    markAt(i, { rating: (p.rating || 0) === n ? 0 : n });
+  });
+  starClicks($("#insp-stars"), () => state.cursorIdx);
+  starClicks($("#modal-marks"), () => state.modal.idx);
+  // Filters on stars and labels
+  for (const [sel, key, parse] of [["#rating-filter", "minRating", Number], ["#label-filter", "labelFilter", String]]) {
+    $(sel).addEventListener("change", (e) => {
+      state[key] = parse(e.target.value);
+      state.cursorIdx = 0;
+      recomputeFilter();
+      $("#grid").scrollTop = 0;
+      showCursor();
+      e.target.blur();   // so the next key goes to the photos, not the menu
+    });
+  }
 }
 
 // ---------- filmstrip ----------
@@ -6921,7 +7019,8 @@ function renderFilmstrip(el, current, onPick) {
   };
   el.querySelectorAll(".film-cell").forEach((cell, i) => {
     const p = list[i];
-    cell.className = "film-cell" + (i === current ? " current" : "") + (p.decision ? ` d-${p.decision}` : "");
+    cell.className = "film-cell" + (i === current ? " current" : "") + (p.decision ? ` d-${p.decision}` : "")
+      + (p.label ? ` l-${p.label}` : "");
     const img = cell.firstElementChild, src = thumbUrl(p);
     if (!img.src.endsWith(src)) img.src = src;   // an edit saved since
   });
@@ -8458,11 +8557,16 @@ const MOD = IS_MAC ? "⌘" : "Ctrl";
 const KEYMAP = {
   grid: [
     { group: "Decide", note: "Acts on the highlighted photo, then moves to the next.", keys: [
-      { k: ["P"], alt: "A or 3", label: "Pick", bar: true },
-      { k: ["R"], alt: "1", label: "Reject", bar: true },
-      { k: ["V"], alt: "2", label: "Review", bar: true },
+      { k: ["P"], alt: "A", label: "Pick", bar: true },
+      { k: ["R"], label: "Reject", bar: true },
+      { k: ["V"], label: "Review", bar: true },
       { k: ["U"], label: "Clear the decision", bar: "Clear" },
       { k: [MOD, "Z"], label: "Undo a decision made on many photos at once" },
+    ]},
+    { group: "Rate and label", note: "Kept apart from the decision, and written into exports.", keys: [
+      { k: ["1", "–", "5"], label: "Stars", bar: "Stars" },
+      { k: ["0"], label: "No stars" },
+      { k: ["6", "7", "8", "9"], label: "Red, yellow, green, blue label (again to remove)" },
     ]},
     { group: "Move", keys: [
       { k: ["←", "→"], label: "Previous / next photo", bar: "Move" },
@@ -8487,10 +8591,15 @@ const KEYMAP = {
   ],
   viewer: [
     { group: "Decide", note: "Acts on the photo shown, then moves to the next.", keys: [
-      { k: ["P"], alt: "A or 3", label: "Pick", bar: true },
-      { k: ["R"], alt: "1", label: "Reject", bar: true },
-      { k: ["V"], alt: "2", label: "Review", bar: true },
+      { k: ["P"], alt: "A", label: "Pick", bar: true },
+      { k: ["R"], label: "Reject", bar: true },
+      { k: ["V"], label: "Review", bar: true },
       { k: ["U"], label: "Clear the decision", bar: "Clear" },
+    ]},
+    { group: "Rate and label", note: "Kept apart from the decision, and written into exports.", keys: [
+      { k: ["1", "–", "5"], label: "Stars", bar: "Stars" },
+      { k: ["0"], label: "No stars" },
+      { k: ["6", "7", "8", "9"], label: "Red, yellow, green, blue label (again to remove)" },
     ]},
     { group: "Move", keys: [
       { k: ["←", "→"], alt: "Space", label: "Previous / next photo", bar: "Move" },

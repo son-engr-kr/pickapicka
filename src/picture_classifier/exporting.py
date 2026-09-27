@@ -87,7 +87,7 @@ def resize(rgb: np.ndarray, long_edge: int | None) -> np.ndarray:
 
 
 def write(rgb: np.ndarray, dst: Path | BinaryIO, *, fmt: Format, quality: int,
-          exif: bytes | None, icc: bytes | None) -> None:
+          exif: bytes | None, icc: bytes | None, xmp: bytes | None = None) -> None:
     extra: dict[str, Any] = {}
     if exif:
         extra["exif"] = exif
@@ -95,10 +95,24 @@ def write(rgb: np.ndarray, dst: Path | BinaryIO, *, fmt: Format, quality: int,
         extra["icc_profile"] = icc
     img = Image.fromarray(rgb)
     if fmt == "jpeg":
+        if xmp:
+            extra["xmp"] = xmp
         img.save(dst, "JPEG", quality=quality, **extra)
     else:
         # Uncompressed. Pillow's compressed TIFF goes through libtiff, which
         # cannot write the Exif and GPS sub-IFDs ("Error setting from
         # dictionary"), so LZW would cost the capture time and the lens. Without
         # compression every lab and editor can open it, at 3 bytes a pixel.
+        if xmp:
+            # A TIFF's XMP is tag 700 among the others. Given as tiffinfo it
+            # replaces the EXIF tags instead of joining them, so it goes in with
+            # them.
+            tags = Image.Exif()
+            if exif:
+                tags.load(exif)
+            tags[_TIFF_XMP] = xmp
+            extra["exif"] = tags.tobytes()
         img.save(dst, "TIFF", **extra)
+
+
+_TIFF_XMP = 700

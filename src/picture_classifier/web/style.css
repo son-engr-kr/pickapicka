@@ -2405,3 +2405,36 @@ body.inspector-off #inspector { display: none; }
 #grid-inner { display: grid; gap: 10px; }
 #grid-inner.empty { display: flex; height: 100%; }
 #grid-inner.empty .grid-empty { flex: 1; }
+
+/* ----- stars and colour labels ----- */
+:root { --label-red: #e5484d; --label-yellow: #f5d90a; --label-green: #46a758; --label-blue: #3e7bfa; --label-purple: #8e4ec6; }
+.stars { display: inline-flex; gap: 1px; font-style: normal; line-height: 1; }
+.stars i { font-style: normal; color: var(--line-strong); }
+.stars i.on { color: #f0c24b; }
+.stars.clickable i { cursor: pointer; font-size: 15px; padding: 0 1px; }
+/* Hovering the nth star previews n: all of them lit, then the ones after it dimmed. */
+.stars.clickable:hover i { color: #f0c24b; }
+.stars.clickable i:hover ~ i { color: var(--line-strong); }
+.tile-stars { flex-shrink: 0; font-size: 10px; }
+.label-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; }
+.label-dot.red, .label-chip.red { background: var(--label-red); }
+.label-dot.yellow, .label-chip.yellow { background: var(--label-yellow); }
+.label-dot.green, .label-chip.green { background: var(--label-green); }
+.label-dot.blue, .label-chip.blue { background: var(--label-blue); }
+.label-dot.purple, .label-chip.purple { background: var(--label-purple); }
+#modal-marks { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+#insp-marks { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.label-chips { display: inline-flex; gap: 6px; }
+.label-chip { width: 16px; height: 16px; padding: 0; border-radius: 50%; border: 2px solid transparent; opacity: 0.55; }
+.label-chip:hover { opacity: 0.9; }
+.label-chip.active { opacity: 1; border-color: #fff; }
+.film-cell[class*=" l-"]::before { content: ""; position: absolute; top: 3px; right: 3px; width: 7px; height: 7px;
+  border-radius: 50%; z-index: 1; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5); }
+.film-cell.l-red::before { background: var(--label-red); }
+.film-cell.l-yellow::before { background: var(--label-yellow); }
+.film-cell.l-green::before { background: var(--label-green); }
+.film-cell.l-blue::before { background: var(--label-blue); }
+.film-cell.l-purple::before { background: var(--label-purple); }
+#filter-bar { gap: 12px; }
+.filter-extra { margin-left: auto; display: flex; gap: 6px; flex-shrink: 0; }
+.filter-extra select { height: 26px; font-size: var(--fs-sm); }

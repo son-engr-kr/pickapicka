@@ -26,7 +26,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import (
     cameras, db, editing, exifinfo, exporting, film as film_mod, folderinfo, fsutil, hdr, imfile,
@@ -83,6 +83,14 @@ class DecidePayload(BaseModel):
 class BulkDecidePayload(BaseModel):
     rel_paths: list[str]
     decision: Decision | None
+
+
+class MarkPayload(BaseModel):
+    """Stars and a colour label for one or more photos. A field left out is
+    left alone; rating 0 and label "" clear."""
+    rel_paths: list[str]
+    rating: int | None = Field(default=None, ge=0, le=5)
+    label: Literal["", "red", "yellow", "green", "blue", "purple"] | None = None
 
 
 class ScorePayload(BaseModel):
@@ -1104,6 +1112,10 @@ def _bake_photo(ctx: "AppContext", photo: dict[str, Any], rel: str, dst: Path,
     export, otherwise rendered, resized and written with its metadata."""
     if _copies_as_is(ctx, photo, rel, settings):
         shutil.copy2(ctx.source_path(rel), dst)
+        # Stars and a colour label go into the copy's XMP; only a copy with
+        # every tag kept is made at all, so they are kept too.
+        if photo.get("rating") or photo.get("label"):
+            metadata_mod.mark_jpeg(dst, photo.get("rating") or 0, photo.get("label"))
         return
     _bake_rendered(ctx, photo, rel, dst, settings)
 
@@ -1121,12 +1133,14 @@ def _bake_rendered(ctx: "AppContext", photo: dict[str, Any], rel: str,
     out = exporting.resize(out, settings.long_edge)
     src_path, is_raw = _metadata_source(ctx, photo, rel)
     src_exif, icc = metadata_mod.read_source(src_path, is_raw)
+    keep = settings.metadata != "none"
+    rating, label = (photo.get("rating") or 0, photo.get("label")) if keep else (0, None)
     exif = metadata_mod.build_exif(
         src_exif, size=(out.shape[1], out.shape[0]),
         captured_at=ctx.photo_meta(rel).get("captured_at") or "",
-        mode=settings.metadata, srgb=is_raw)
+        mode=settings.metadata, srgb=is_raw, rating=rating)
     exporting.write(out, dst, fmt=settings.format, quality=settings.quality,
-                    exif=exif, icc=icc)
+                    exif=exif, icc=icc, xmp=metadata_mod.build_xmp(rating, label))
 
 
 def _export_picks_to(ctx: "AppContext", picks: list[dict[str, Any]], target: Path,
@@ -2295,6 +2309,34 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         with ctx.save_lock:
             db.save(ctx.db_path, ctx.data)
         return photo
+
+    @app.post("/api/mark")
+    def mark(payload: MarkPayload) -> dict[str, Any]:
+        """Set stars and/or a colour label, independent of the decision."""
+        _require_loaded()
+        if ctx.scoring_state["running"]:
+            raise HTTPException(status_code=409, detail="scoring in progress; marks disabled")
+        photos = []
+        for rp in payload.rel_paths:
+            photo = ctx.photo_index.get(rp)
+            if photo is None:
+                raise HTTPException(status_code=404, detail=f"photo not found: {rp}")
+            photos.append(photo)
+        for photo in photos:
+            if payload.rating is not None:
+                if payload.rating:
+                    photo["rating"] = payload.rating
+                else:
+                    photo.pop("rating", None)
+            if payload.label is not None:
+                if payload.label:
+                    photo["label"] = payload.label
+                else:
+                    photo.pop("label", None)
+        with ctx.save_lock:
+            db.save(ctx.db_path, ctx.data)
+        return {"photos": [{"rel_path": p["rel_path"], "rating": p.get("rating", 0),
+                            "label": p.get("label")} for p in photos]}
 
     @app.post("/api/decide/bulk")
     def decide_bulk(payload: BulkDecidePayload) -> dict[str, Any]:

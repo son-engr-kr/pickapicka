@@ -148,13 +148,19 @@ def _load_existing(db_path: Path) -> dict[str, Any] | None:
     return db.load(db_path)
 
 
-def _existing_decisions(data: dict[str, Any] | None) -> dict[str, tuple[Any, Any]]:
-    """Map rel_path -> (decision, decided_at) so a re-score keeps prior calls.
-    Bracket ids are content-stable, so merged-result decisions survive too."""
+# What the photographer set on a photo, as opposed to what scoring measured:
+# a re-score keeps all of it.
+MARKS = ("decision", "decided_at", "rating", "label")
+
+
+def _existing_decisions(data: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Map rel_path -> its MARKS so a re-score keeps prior calls, stars and
+    colour labels. Bracket ids are content-stable, so merged-result decisions
+    survive too."""
     if not data:
         return {}
     return {
-        p["rel_path"]: (p.get("decision"), p.get("decided_at"))
+        p["rel_path"]: {k: p[k] for k in MARKS if p.get(k) is not None}
         for p in data.get("photos", [])
     }
 
@@ -375,7 +381,7 @@ def _score_one(
     if object_detect is not None:
         objects, _, _ = object_detect(str(abs_path))
         subject = _subject_scores(abs_path, objects, width, height)
-    prior_decision, prior_decided_at = existing.get(rel_path, (None, None))
+    prior = existing.get(rel_path, {})
     # Shooting info is read once here and cached in the db; the watermark and
     # the viewer both read it back rather than re-parsing EXIF per render.
     # A merged HDR result inherits the EXIF of its base frame.
@@ -399,9 +405,12 @@ def _score_one(
             **subject,
         },
         "auto_suggestion": None,
-        "decision": prior_decision,
-        "decided_at": prior_decided_at,
+        "decision": prior.get("decision"),
+        "decided_at": prior.get("decided_at"),
     }
+    for k in ("rating", "label"):
+        if k in prior:
+            photo[k] = prior[k]
     if target.get("captured_at"):
         photo["captured_at"] = target["captured_at"]
     if members is not None:
@@ -465,7 +474,7 @@ def run_scoring(
     existing_edits = _existing_edits(existing)
     if verbose and existing_dec:
         click.echo(
-            f"Preserving {sum(1 for d in existing_dec.values() if d[0] is not None)} "
+            f"Preserving {sum(1 for d in existing_dec.values() if d.get('decision') is not None)} "
             "prior decisions"
         )
 
