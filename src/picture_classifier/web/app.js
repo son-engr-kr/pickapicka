@@ -778,7 +778,7 @@ function renderPeopleChips() {
     chip.innerHTML = `
       <img src="/face/${enc(person.ref.rel_path)}?idx=${person.ref.face_idx}" alt="" />
       <span class="pri">#${person.priority}</span>
-      <span class="lbl">${person.label}</span>
+      <span class="lbl">${escapeHtml(person.label)}</span>
       <span class="cnt">${person.count}</span>`;
     chip.addEventListener("click", () => {
       if (state.personFilter.has(person.id)) state.personFilter.delete(person.id);
@@ -1196,9 +1196,11 @@ function renderSidebar() {
     const li = document.createElement("li");
     li.className = "scene-item" + (state.selectedScene === scene ? " active" : "");
     const n = photos.length;
+    const left = counts.undecided;
+    const picks = counts.pick ? ` · ${plural(counts.pick, "pick")}` : "";
     li.innerHTML = `
-      <span class="name">${scene}</span>
-      <span class="stats">${n} shots · pick ${counts.pick} · rev ${counts.review} · rej ${counts.reject} · — ${counts.undecided}</span>
+      <span class="name">${escapeHtml(scene)}</span>
+      <span class="stats">${left ? `${left} of ${n} left` : `All ${n} decided`}${picks}</span>
       <span class="bar">
         <span class="b-pick" style="width:${100*counts.pick/n}%"></span>
         <span class="b-review" style="width:${100*counts.review/n}%"></span>
@@ -1210,8 +1212,8 @@ function renderSidebar() {
   const total = state.photos.length;
   const decided = total - totalUndecided;
   $("#overall-progress").textContent =
-    `${total} shots · decided ${decided}/${total} (${total ? Math.round(100*decided/total) : 0}%) · ` +
-    `pick ${totalPick} rev ${totalReview} rej ${totalReject}`;
+    `${decided} of ${plural(total, "photo")} decided (${total ? Math.round(100 * decided / total) : 0}%)`
+    + (totalPick ? ` · ${plural(totalPick, "pick")}` : "");
 }
 
 // ---------- rendering: main ----------
@@ -1260,6 +1262,7 @@ function applyLayoutCSS() {
   const grid = $("#grid");
   grid.style.setProperty("--cols", L.cols);
   grid.style.setProperty("--rows", L.rows);
+  grid.dataset.per = state.pageSize;   // for styles that depend on tile size
 }
 
 function renderHeader() {
@@ -1268,13 +1271,25 @@ function renderHeader() {
     ? (state.byScene.get(state.selectedScene) || []) : [];
   const sceneTotal = scenePhotos.length;
   const sceneUndecided = scenePhotos.reduce((n, p) => n + (p.decision == null ? 1 : 0), 0);
-  $("#scene-title").textContent = state.selectedScene || "— select a scene —";
-  $("#scene-stats").textContent = state.selectedScene
-    ? `${total} of ${sceneTotal} shown · filter: ${state.filter}`
-    : "";
+  $("#scene-title").textContent = state.selectedScene || "Select a scene";
+  // Progress through the scene first; how much of it the filter shows only
+  // when it hides some.
+  $("#scene-stats").textContent = !state.selectedScene ? ""
+    : `${sceneTotal - sceneUndecided} of ${plural(sceneTotal, "photo")} decided`
+      + (total < sceneTotal ? ` · ${total} shown` : "");
   $("#page-indicator").textContent = total
-    ? `page ${pageIdx() + 1}/${pageCount()}`
+    ? `${pageIdx() + 1} / ${pageCount()}`
     : "—";
+  // How many each filter would show in this scene, so an empty one is not a
+  // click away from finding out.
+  const n = { all: sceneTotal, undecided: sceneUndecided, pick: 0, review: 0, reject: 0, edited: 0 };
+  for (const p of scenePhotos) {
+    if (p.decision) n[p.decision] += 1;
+    if (p.edit) n.edited += 1;
+  }
+  $$("#filter-row .filter").forEach((b) => {
+    b.querySelector(".n").textContent = state.selectedScene ? n[b.dataset.filter] : "";
+  });
   $("#prev-page").disabled = pageIdx() === 0 || total === 0;
   $("#next-page").disabled = pageIdx() >= pageCount() - 1 || total === 0;
   // These three carry both an icon and a changing count. Writing to textContent
@@ -1282,22 +1297,56 @@ function renderHeader() {
   const rejectBtn = $("#reject-undecided-btn");
   rejectBtn.disabled = sceneUndecided === 0;
   setBtnLabel(rejectBtn, sceneUndecided > 0
-    ? `reject ${sceneUndecided} undecided`
-    : "reject undecided");
+    ? `Reject ${sceneUndecided} undecided`
+    : "Reject undecided");
   const totalPicks = state.photos.reduce((n, p) => n + (p.decision === "pick" ? 1 : 0), 0);
   const exportBtn = $("#export-picks-btn");
   exportBtn.disabled = totalPicks === 0;
   setBtnLabel(exportBtn, totalPicks > 0
-    ? `export ${totalPicks} pick${totalPicks > 1 ? "s" : ""}`
-    : "export picks");
-  setBtnLabel($("#hdr-btn"), `HDR (${state.brackets.length})`);
+    ? `Export ${totalPicks} pick${totalPicks > 1 ? "s" : ""}`
+    : "Export picks");
+  setBtnLabel($("#hdr-btn"), state.brackets.length ? `HDR brackets (${state.brackets.length})` : "HDR brackets");
 }
+
+// Faces shown on a tile before the rest are counted as "+n".
+const TILE_FACES = 4;
+const AUTO_LABEL = { pick: "Pick", review: "Review", reject: "Reject" };
+
+const FILTER_EMPTY = {
+  undecided: "Every photo in this scene is decided.",
+  pick: "No picks in this scene yet.",
+  review: "Nothing marked for review in this scene.",
+  reject: "Nothing rejected in this scene.",
+  edited: "No edited photos in this scene.",
+};
 
 function renderGrid() {
   const grid = $("#grid");
   grid.innerHTML = "";
   const start = pageIdx() * state.pageSize;
   const visible = visiblePhotos();
+  // A filter that matches nothing used to leave a blank grid, which reads as
+  // the app having lost the photos.
+  if (!visible.length && state.selectedScene) {
+    const narrowed = state.filter !== "all" || state.personFilter.size
+      || state.subjectClassFilter.size || state.subjectGroupFilter.size;
+    grid.innerHTML = `<div class="grid-empty">
+      <p>${narrowed ? escapeHtml(FILTER_EMPTY[state.filter] || "No photos match these filters.") : "This scene has no photos."}</p>
+      ${narrowed ? `<button type="button" class="primary" id="grid-show-all">Show all photos in the scene</button>` : ""}
+    </div>`;
+    $("#grid-show-all")?.addEventListener("click", () => {
+      state.personFilter.clear(); state.subjectClassFilter.clear(); state.subjectGroupFilter.clear();
+      $$(".filter").forEach((x) => x.classList.toggle("active", x.dataset.filter === "all"));
+      state.filter = "all";
+      state.cursorIdx = 0;
+      recomputeFilter();
+      renderSidebar();
+      renderPeopleChips();
+      renderSubjectPanel();
+      renderMain();
+    });
+    return;
+  }
   visible.forEach((p, i) => {
     const absIdx = start + i;
     const tile = document.createElement("div");
@@ -1318,32 +1367,45 @@ function renderGrid() {
         return pa - pb;
       });
     const faceCount = visibleFaces.length;
+    // Faces sit along the bottom of the photo rather than in a strip of their
+    // own, which made tiles with faces shorter than their neighbours and
+    // threw every row out of line.
+    const shownFaces = visibleFaces.slice(0, TILE_FACES);
     const facesHtml = faceCount
-      ? `<div class="tile-faces">${
-          visibleFaces.map(({ fi }) =>
-            `<div class="face-thumb"><img loading="lazy" src="/face/${enc(p.rel_path)}?idx=${fi}" alt="" /></div>`
+      ? `<span class="tile-faces">${
+          shownFaces.map(({ fi }) =>
+            `<span class="face-thumb"><img loading="lazy" src="/face/${enc(p.rel_path)}?idx=${fi}" alt="" /></span>`
           ).join("")
-        }</div>`
+        }${faceCount > TILE_FACES ? `<span class="face-more">+${faceCount - TILE_FACES}</span>` : ""}</span>`
       : "";
+    // The frame is the photo's own rectangle inside the letterboxed cell (the
+    // same aspect-ratio trick the box layer uses), so what is drawn on the photo
+    // stays on it whatever its shape.
+    const ar = p.geom ? `${p.geom.w}/${p.geom.h}` : (p.width && p.height ? `${p.width}/${p.height}` : "3/2");
+    const suggestion = auto ? AUTO_LABEL[auto] || auto : "";
     tile.innerHTML = `
       <div class="tile-content">
-        ${facesHtml}
         <div class="tile-img" data-action="open">
-          <input type="checkbox" class="tile-select"${state.selection.has(p.rel_path) ? " checked" : ""} title="Select (X)" />
           <img loading="lazy" src="${thumbUrl(p)}" alt="" />
           ${peakLayerHtml(p)}
           ${boxLayerHtml(p)}
-          ${auto ? `<span class="auto-badge ${auto}">auto: ${auto}</span>` : ""}
-          ${p.type === "hdr" ? `<span class="hdr-tile-badge">HDR · ${(p.members || []).length}</span>` : ""}
-          <span class="badness">${badness}</span>
+          <span class="tile-frame" style="aspect-ratio:${ar}">
+            ${auto ? `<span class="auto-badge ${auto}" title="The app suggests: ${suggestion.toLowerCase()}">${suggestion}</span>` : ""}
+            ${p.type === "hdr" ? `<span class="hdr-tile-badge">HDR · ${(p.members || []).length}</span>` : ""}
+            ${facesHtml}
+          </span>
+          <input type="checkbox" class="tile-select"${state.selection.has(p.rel_path) ? " checked" : ""} title="Select (X)" />
           <button class="tile-edit-btn${p.edit ? " edited" : ""}" data-action="edit" title="Edit (E)" aria-label="Edit">${icon("pencil")}</button>
         </div>
       </div>
-      <div class="tile-name">${fname}${faceCount ? ` · ${faceCount} face${faceCount>1?"s":""}` : ""}</div>
+      <div class="tile-meta">
+        <span class="tile-name">${escapeHtml(fname)}</span>
+        <span class="badness" title="How bad it looks, from sharpness, exposure and closed eyes: lower is better">badness ${badness}</span>
+      </div>
       <div class="tile-action-bar">
-        <button class="btn-decision${p.decision === "reject" ? " active" : ""}" data-decision="reject">REJECT <span class="kbd">R</span></button>
-        <button class="btn-decision${p.decision === "review" ? " active" : ""}" data-decision="review">REVIEW <span class="kbd">V</span></button>
-        <button class="btn-decision${p.decision === "pick" ? " active" : ""}" data-decision="pick">PICK <span class="kbd">P</span></button>
+        <button class="btn-decision${p.decision === "reject" ? " active" : ""}" data-decision="reject">Reject <span class="kbd">R</span></button>
+        <button class="btn-decision${p.decision === "review" ? " active" : ""}" data-decision="review">Review <span class="kbd">V</span></button>
+        <button class="btn-decision${p.decision === "pick" ? " active" : ""}" data-decision="pick">Pick <span class="kbd">P</span></button>
       </div>`;
     tile.querySelector(".tile-img").addEventListener("click", () => openModal(absIdx));
     tile.querySelector(".tile-edit-btn").addEventListener("click", (e) => {
@@ -6271,6 +6333,7 @@ function bindKeys() {
       || (tag === "input"
           && !["checkbox", "radio", "range", "button", "submit", "color"].includes(type));
     if (textEntry && k !== "Escape") return;
+    if (k === "Escape" && closeMenus()) { e.preventDefault(); return; }
 
     // The projects explainer; Esc only.
     if (!$("#explainer-modal").classList.contains("hidden")) {
@@ -6372,7 +6435,6 @@ function bindKeys() {
       }
       if (k === "c" || k === "C") { toggleCompare(); e.preventDefault(); return; }
       if (k === "b" || k === "B") { toggleBoxes(); e.preventDefault(); return; }
-    if (k === "k" || k === "K") { togglePeak(); e.preventDefault(); return; }
       if (k === "k" || k === "K") { togglePeak(); e.preventDefault(); return; }
       if (k === "l" || k === "L") { toggleLoupe(); e.preventDefault(); return; }
       if (k === "e" || k === "E") {
@@ -6422,6 +6484,7 @@ function bindKeys() {
     if (k === "Enter") { openModal(i); e.preventDefault(); return; }
     if (k === "e" || k === "E") { openEditModal(state.cursorIdx); e.preventDefault(); return; }
     if (k === "b" || k === "B") { toggleBoxes(); e.preventDefault(); return; }
+    if (k === "k" || k === "K") { togglePeak(); e.preventDefault(); return; }
     if (k === "x" || k === "X") { toggleSelect(state.cursorIdx, e.shiftKey); e.preventDefault(); return; }
     if ((k === "d" || k === "D") && state.selection.size) {
       downloadSelection(); e.preventDefault(); return;
@@ -6443,8 +6506,32 @@ function bindKeys() {
   });
 }
 
+// ---------- menus ----------
+// A button that drops a list of actions. Opens on click, closes on a choice,
+// a click elsewhere or Esc.
+function bindMenu(btnSel, menuSel) {
+  const btn = $(btnSel), menu = $(menuSel);
+  const close = () => { menu.classList.add("hidden"); btn.setAttribute("aria-expanded", "false"); };
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = menu.classList.contains("hidden");
+    $$(".menu").forEach((m) => m.classList.add("hidden"));
+    menu.classList.toggle("hidden", !open);
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+  });
+  menu.addEventListener("click", (e) => { if (e.target.closest("button")) close(); });
+  document.addEventListener("click", (e) => { if (!menu.contains(e.target)) close(); });
+}
+
+function closeMenus() {
+  const open = $$(".menu:not(.hidden)");
+  open.forEach((m) => m.classList.add("hidden"));
+  return open.length > 0;
+}
+
 // ---------- UI bindings ----------
 function bindUi() {
+  bindMenu("#more-btn", "#more-menu");
   bindGridHover();
   bindKeysSheet();
   $$(".filter").forEach((b) => {
@@ -7855,6 +7942,7 @@ const KEYMAP = {
       { k: ["Esc"], label: "Clear the selection" },
     ]},
     { group: "Show", keys: [
+      { k: ["K"], label: "Focus peaking" },
       { k: ["B"], label: "Subject boxes" },
     ]},
   ],
@@ -7991,7 +8079,7 @@ const TOURS = {
     { target: "#scene-list", title: "Scenes",
       body: "Your photos, grouped into scenes by folder or by time gaps. Work through them one at a time; the bar under each shows how far you are." },
     { target: () => $(".tile .tile-img"), title: "Every photo has a suggestion",
-      body: "The <b>AUTO</b> badge is the app's guess from sharpness, exposure and closed eyes. The number is how bad it looks: lower is better. Click a photo, or press <kbd>Enter</kbd>, to see it large." },
+      body: "The tag on the photo is the app's suggestion, from sharpness, exposure and closed eyes; <b>badness</b> under it is how bad it looks, lower is better. Click a photo, or press <kbd>Enter</kbd>, to see it large." },
     { target: () => $(".tile .tile-action-bar"), title: "Decide",
       body: "<b>Reject</b> <kbd>R</kbd> · <b>Review</b> <kbd>V</kbd> · <b>Pick</b> <kbd>P</kbd>. The keys act on the highlighted photo and move on to the next; the arrow keys move without deciding, and <kbd>U</kbd> clears a decision. The bar along the bottom always shows the keys for where you are." },
     { target: () => $(".tile .tile-edit-btn"), title: "Edit",
@@ -8583,6 +8671,7 @@ function getOptionCardValue(containerSelector) {
 
 function syncSceneGroupingControls() {
   const sg = state.sceneGrouping || { mode: "folder", gap_minutes: 30 };
+  $("#scene-grouping-now").textContent = sg.mode === "time_gap" ? `by ${sg.gap_minutes}-min gaps` : "by folder";
   setOptionCardValue("#scene-mode-cards", sg.mode);
   $("#scene-gap").value = sg.gap_minutes;
   $("#scene-gap-row").classList.toggle("hidden", sg.mode !== "time_gap");

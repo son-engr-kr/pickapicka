@@ -245,63 +245,60 @@
       <span id="project-name"></span>
       <button type="button" class="quit-btn" data-icon="power" title="Quit Picture Classifier" aria-label="Quit"></button>
     </div>
-    <header>
-      <h1>Scenes</h1>
-      <div id="overall-progress"></div>
-      <div id="scene-grouping">
-        <span class="section-label">
-          Group scenes
-          <button class="help-btn" type="button" data-help="scene-grouping" title="What is this?">?</button>
-        </span>
-        <div class="option-cards" id="scene-mode-cards">
-          <button class="option-card" type="button" data-value="folder"
-            title="Each subfolder under your photo folder becomes one scene. Use this if the shots are already organised into folders.">
-            <span class="option-icon">
-              <svg viewBox="0 0 36 24" width="36" height="24" aria-hidden="true">
-                <rect x="1" y="6" width="10" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
-                <rect x="13" y="6" width="10" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
-                <rect x="25" y="6" width="10" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
-                <circle cx="6" cy="12" r="1" fill="currentColor"/>
-                <circle cx="18" cy="12" r="1" fill="currentColor"/>
-                <circle cx="30" cy="12" r="1" fill="currentColor"/>
-              </svg>
-            </span>
-            <span class="option-title">By folder</span>
-            <span class="option-sub">Each subfolder = a scene</span>
-          </button>
-          <button class="option-card" type="button" data-value="time_gap"
-            title="Reads EXIF capture time and starts a new scene after a long pause. Good for an unsorted dump.">
-            <span class="option-icon">
-              <svg viewBox="0 0 40 24" width="40" height="24" aria-hidden="true">
-                <line x1="1" y1="20" x2="39" y2="20" stroke="currentColor" stroke-width="1"/>
-                <circle cx="4" cy="20" r="2" fill="currentColor"/>
-                <circle cx="7" cy="20" r="2" fill="currentColor"/>
-                <circle cx="10" cy="20" r="2" fill="currentColor"/>
-                <circle cx="22" cy="20" r="2" fill="currentColor"/>
-                <circle cx="25" cy="20" r="2" fill="currentColor"/>
-                <circle cx="34" cy="20" r="2" fill="currentColor"/>
-                <text x="14" y="11" font-size="6" fill="currentColor" opacity="0.7">gap</text>
-              </svg>
-            </span>
-            <span class="option-title">By time gap</span>
-            <span class="option-sub">EXIF capture-time clusters</span>
-          </button>
+    <!-- The scenes are where you go next, so they come first; the settings
+         that shape them follow, folded until wanted. -->
+    <section class="side-scenes">
+      <header>
+        <h1>Scenes</h1>
+        <div id="overall-progress"></div>
+      </header>
+      <ul id="scene-list"></ul>
+    </section>
+    <details class="side-section" id="scene-grouping-section">
+      <summary><span>Group scenes</span><span id="scene-grouping-now" class="side-now"></span>
+        <button class="help-btn" type="button" data-help="scene-grouping" title="What is this?">?</button></summary>
+        <div id="scene-grouping">
+          <div class="option-cards" id="scene-mode-cards">
+            <button class="option-card" type="button" data-value="folder"
+              title="Each subfolder under your photo folder becomes one scene. Use this if the shots are already organised into folders.">
+              <span class="option-icon">
+                <svg viewBox="0 0 36 24" width="36" height="24" aria-hidden="true">
+                  <rect x="1" y="6" width="10" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+                  <rect x="13" y="6" width="10" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+                  <rect x="25" y="6" width="10" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+                  <circle cx="6" cy="12" r="1" fill="currentColor"/>
+                  <circle cx="18" cy="12" r="1" fill="currentColor"/>
+                  <circle cx="30" cy="12" r="1" fill="currentColor"/>
+                </svg>
+              </span>
+              <span class="option-title">By folder</span>
+              <span class="option-sub">Each subfolder = a scene</span>
+            </button>
+            <button class="option-card" type="button" data-value="time_gap"
+              title="Reads EXIF capture time and starts a new scene after a long pause. Good for an unsorted dump.">
+              <span class="option-icon">
+                <svg viewBox="0 0 40 24" width="40" height="24" aria-hidden="true">
+                  <line x1="1" y1="20" x2="39" y2="20" stroke="currentColor" stroke-width="1"/>
+                  <circle cx="4" cy="20" r="2" fill="currentColor"/>
+                  <circle cx="7" cy="20" r="2" fill="currentColor"/>
+                  <circle cx="10" cy="20" r="2" fill="currentColor"/>
+                  <circle cx="22" cy="20" r="2" fill="currentColor"/>
+                  <circle cx="25" cy="20" r="2" fill="currentColor"/>
+                  <circle cx="34" cy="20" r="2" fill="currentColor"/>
+                  <text x="14" y="11" font-size="6" fill="currentColor" opacity="0.7">gap</text>
+                </svg>
+              </span>
+              <span class="option-title">By time gap</span>
+              <span class="option-sub">EXIF capture-time clusters</span>
+            </button>
+          </div>
+          <div id="scene-gap-row" class="hidden">
+            <label for="scene-gap">Gap</label>
+            <input type="number" id="scene-gap" value="30" min="1" />
+            <span class="unit">minutes</span>
+          </div>
         </div>
-        <div id="scene-gap-row" class="hidden">
-          <label for="scene-gap">Gap</label>
-          <input type="number" id="scene-gap" value="30" min="1" />
-          <span class="unit">minutes</span>
-        </div>
-      </div>
-    </header>
-    <div id="filter-row">
-      <button data-filter="all" class="filter active">all</button>
-      <button data-filter="undecided" class="filter">undecided</button>
-      <button data-filter="pick" class="filter">pick</button>
-      <button data-filter="review" class="filter">review</button>
-      <button data-filter="reject" class="filter">reject</button>
-      <button data-filter="edited" class="filter">edited</button>
-    </div>
+    </details>
     <div id="people-section">
       <div id="people-section-head">
         <h2>People</h2>
@@ -319,7 +316,6 @@
       <div id="subject-classes"></div>
       <div id="subject-groups"></div>
     </div>
-    <ul id="scene-list"></ul>
     <details id="sidebar-footer">
       <summary>How suggestions are made</summary>
       <div class="criteria">
@@ -345,34 +341,60 @@
   </aside>
 
   <main id="main">
+    <!-- One row: where you are, how you page through it, and what to do with it.
+         Actions on the whole scene or project live in More, so the one that
+         rejects a whole scene is not a stray click from the paging buttons. -->
     <header id="main-header">
-      <span id="scene-title">— select a scene —</span>
-      <div id="page-nav">
-        <button id="prev-page" data-icon="left" title="prev page (←)" aria-label="Previous page"></button>
-        <span id="page-indicator">—</span>
-        <button id="next-page" data-icon="right" title="next page (→)" aria-label="Next page"></button>
+      <div class="hdr-where">
+        <span id="scene-title">Select a scene</span>
+        <span id="scene-stats"></span>
       </div>
-      <div id="cols-toggle">
-        <span class="label">view:</span>
-        <button data-cols="1" class="cols">1</button>
-        <button data-cols="2" class="cols">2</button>
-        <button data-cols="4" class="cols active">4</button>
-        <button data-cols="8" class="cols">8</button>
+      <div class="hdr-paging">
+        <div id="page-nav">
+          <button id="prev-page" data-icon="left" title="Previous page ([)" aria-label="Previous page"></button>
+          <span id="page-indicator">—</span>
+          <button id="next-page" data-icon="right" title="Next page (])" aria-label="Next page"></button>
+        </div>
+        <div id="cols-toggle" role="group" aria-label="Photos per page">
+          <span class="label">Per page</span>
+          <button data-cols="1" class="cols">1</button>
+          <button data-cols="2" class="cols">2</button>
+          <button data-cols="4" class="cols active">4</button>
+          <button data-cols="8" class="cols">8</button>
+        </div>
       </div>
-      <span id="scene-stats"></span>
-      <button id="reject-undecided-btn" title="Mark all undecided photos in this scene as reject" disabled data-icon="close">reject undecided</button>
-      <button id="export-picks-btn" title="Copy all PICK photos to a folder" disabled data-icon="folder">export picks</button>
-      <button id="peak-btn" data-icon="focus">focus</button>
-      <span id="peak-level" class="hidden">
-        <button data-peak-level="tight">tight</button><button
-                data-peak-level="normal" class="active">normal</button><button
-                data-peak-level="loose">loose</button>
-      </span>
-      <button id="boxes-btn" class="hidden" title="Show detected subject boxes (B)" data-icon="boxes">boxes</button>
-      <button id="hdr-btn" title="Review and fix auto-detected HDR brackets" data-icon="hdr">HDR</button>
-      <button id="rescore-btn" title="Re-run scoring on all photos (preserves decisions)" data-icon="refresh">rescore</button>
-      <button id="tour-main-btn" class="tour-btn" type="button" title="Keyboard shortcuts and the guided tour (?)" aria-label="Keyboard shortcuts">?</button>
+      <div class="hdr-tools">
+        <button id="peak-btn" data-icon="focus">Focus</button>
+        <span id="peak-level" class="hidden">
+          <button data-peak-level="tight">tight</button><button
+                  data-peak-level="normal" class="active">normal</button><button
+                  data-peak-level="loose">loose</button>
+        </span>
+        <button id="boxes-btn" class="hidden" title="Show detected subject boxes (B)" data-icon="boxes">Boxes</button>
+        <div class="menu-wrap">
+          <button id="more-btn" type="button" data-icon="more" aria-haspopup="menu" aria-expanded="false">More</button>
+          <div id="more-menu" class="menu hidden" role="menu">
+            <button id="hdr-btn" role="menuitem" title="Review and fix auto-detected HDR brackets" data-icon="hdr">HDR brackets</button>
+            <button id="rescore-btn" role="menuitem" title="Re-run scoring on all photos (preserves decisions)" data-icon="refresh">Rescore…</button>
+            <hr />
+            <button id="reject-undecided-btn" role="menuitem" class="danger" title="Mark all undecided photos in this scene as reject" disabled data-icon="close">Reject undecided</button>
+          </div>
+        </div>
+        <button id="export-picks-btn" class="primary" title="Copy all PICK photos to a folder" disabled data-icon="folder">Export picks</button>
+        <button id="tour-main-btn" class="tour-btn" type="button" title="Keyboard shortcuts and the guided tour (?)" aria-label="Keyboard shortcuts">?</button>
+      </div>
     </header>
+    <!-- Which photos of the scene are shown, with how many each would show. -->
+    <div id="filter-bar">
+      <div id="filter-row" role="tablist" aria-label="Show">
+        <button data-filter="all" class="filter active" role="tab">All <span class="n"></span></button>
+        <button data-filter="undecided" class="filter" role="tab">Undecided <span class="n"></span></button>
+        <button data-filter="pick" class="filter" role="tab">Picks <span class="n"></span></button>
+        <button data-filter="review" class="filter" role="tab">Review <span class="n"></span></button>
+        <button data-filter="reject" class="filter" role="tab">Rejects <span class="n"></span></button>
+        <button data-filter="edited" class="filter" role="tab">Edited <span class="n"></span></button>
+      </div>
+    </div>
     <div id="grid"></div>
     <div class="keybar" data-context="grid"></div>
     <div id="next-preview" class="hidden">
