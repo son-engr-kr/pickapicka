@@ -15,6 +15,11 @@ adjustments bake in only on export or download.
   non-destructive — originals are never modified; adjustments bake in only on
   export. Save **global presets** and **apply an edit/preset to many photos at
   once** (a whole scene, all picks, or a hand-picked selection).
+- **Edits are not lost by leaving.** Moving to the next or previous photo
+  (`←` `→`) saves the edit, and says so beside Save. Closing with `Esc` or `×`
+  while something is unsaved asks whether to save, discard or keep editing;
+  **Cancel** asks before discarding; and the browser warns before a reload or a
+  closed tab would drop an unsaved edit.
 - **White balance by click.** Temperature and Tint are channel gains rather
   than a Kelvin conversion, and the eyedropper beside them solves the pair for
   you: click something that ought to be grey — a white wall, a shirt, a grey

@@ -68,17 +68,20 @@ rather than deletes.
 
 ## Keyboard
 
-`R` reject · `V` review · `A` pick · `U` undo · `E` edit · `X` select ·
-`Enter` viewer · `[` `]` pages · `B` subject boxes · `K` focus peaking ·
-`L` loupe · `D` download the selection · `?` guided tour
+`P` pick · `R` reject · `V` review · `U` clear (each decides the highlighted
+photo and moves to the next) · `←` `→` move · `[` `]` pages · `Enter` viewer ·
+`E` edit · `X` select · `D` download the selection · `B` subject boxes ·
+`K` focus peaking · `L` loupe · `?` every shortcut
 
 In the editor: `R` `G` `B` add a radial, gradient or brush mask · `\` show the
 mask · `Del` remove it · `C` hold the original · `F` fit ↔ 100% ·
 `⌘Z` / `Ctrl+Z` undo · `⇧⌘Z` / `Ctrl+Y` redo
 
-Hovering any button shows what it does and its shortcut. The first time you
-open a project, and the first time you open the editor, a guided tour walks
-through the screen; the **?** button or the `?` key replays it.
+A bar along the bottom of the culling screen, the viewer and the editor shows
+the keys for where you are, and `?` opens the full list, by screen. Hovering any
+button shows what it does and its shortcut. The first time you open a project,
+and the first time you open the editor, a guided tour walks through the
+screen; the shortcut list replays it.
 
 ## Built on
 

@@ -25,9 +25,17 @@ whole job: decide, filter, move on.
 
 ## Deciding
 
-One key per frame, without leaving the keyboard — the full list is in the
-[README](../README.md#keyboard). Hovering any button shows what it does and its
-shortcut, so the list is not something you have to have memorised.
+One key per frame, without leaving the keyboard: `P` pick, `R` reject, `V`
+review, `U` clear. Each acts on the highlighted photo and moves on to the next,
+in the grid and in the viewer alike; with a filter such as Undecided, where the
+decided photo leaves the list, the next one is already in its place. Decisions
+show at once and are saved in the background in the order made, so keys can be
+pressed as fast as you can judge. The bar along the bottom always shows the
+keys for where you are, `?` lists every one (also in the
+[README](../README.md#keyboard)), and hovering any button shows its shortcut.
+
+The keyboard cursor follows the mouse only when the mouse moves: a pointer
+resting on the grid does not pull the cursor when the page turns under it.
 
 - **Bulk actions**: reject all undecided in a scene; export all picks to a
   folder (preserving structure, flattened, or one folder per combination of

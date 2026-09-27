@@ -732,17 +732,33 @@ class AppContext:
 
 # ----- helpers ------------------------------------------------------------
 
+def _lexical(path: Path) -> Path:
+    """`path` made absolute with `..` and `.` taken out, symlinks left alone."""
+    return Path(os.path.normpath(path.absolute()))
+
+
 def _within_roots(ctx: "AppContext", path: Path) -> bool:
-    """True when an already-resolved `path` lies inside the JPEG root or the
-    HDR output directory — guards the image routes against path traversal."""
-    roots = [ctx.jpeg_root.resolve()]
+    """True when `path` lies inside the JPEG root, the photo root, the HDR
+    output or the RAW preview cache: guards the image routes against a
+    rel_path that climbs out with `..`.
+
+    Checked on the path as written, not with its symlinks followed. A photo
+    folder holding links to files kept elsewhere scores (the scan follows
+    them) but then could not be shown: resolved, every such photo lay outside
+    the folder and got a 403, a black viewer and broken tiles. `..` is still
+    taken out first, so it cannot climb out. The roots are compared both ways,
+    since a project may store them resolved (/private/tmp) or not (/tmp).
+    """
+    roots = [ctx.jpeg_root]
     if ctx.hdr_root is not None:
-        roots.append(ctx.hdr_root.resolve())
+        roots.append(ctx.hdr_root)
     if ctx.photo_root is not None:
-        roots.append(ctx.photo_root.resolve())  # RAW sources live under the photo root
+        roots.append(ctx.photo_root)  # RAW sources live under the photo root
     if ctx.raw_cache_root is not None:
-        roots.append(ctx.raw_cache_root.resolve())  # RAW preview JPEGs (project .cache/raw)
-    return any(path == r or r in path.parents for r in roots)
+        roots.append(ctx.raw_cache_root)  # RAW preview JPEGs (project .cache/raw)
+    p = _lexical(path)
+    return any(p == r or r in p.parents
+               for root in roots for r in (_lexical(root), root.resolve()))
 
 
 # Focus peaking sensitivity: (sharpness ratio threshold, gradient floor).
@@ -2893,7 +2909,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     @app.get("/img/{rel_path:path}")
     def get_image(rel_path: str) -> Response:
         _require_loaded()
-        path = ctx.source_path(rel_path).resolve()
+        path = _lexical(ctx.source_path(rel_path))
         if not _within_roots(ctx, path):
             raise HTTPException(status_code=403, detail="forbidden")
         if not path.is_file():
@@ -2920,7 +2936,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     def get_thumb(rel_path: str) -> Response:
         _require_loaded()
         photo = ctx.photo_index.get(rel_path)
-        src = _thumb_source(ctx, rel_path, photo).resolve()
+        src = _lexical(_thumb_source(ctx, rel_path, photo))
         if not _within_roots(ctx, src):
             raise HTTPException(status_code=403, detail="forbidden")
         if not src.is_file():
@@ -2945,7 +2961,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         """
         _require_loaded()
         photo = ctx.photo_index.get(rel_path)
-        src = _thumb_source(ctx, rel_path, photo).resolve()
+        src = _lexical(_thumb_source(ctx, rel_path, photo))
         if not _within_roots(ctx, src):
             raise HTTPException(status_code=403, detail="forbidden")
         if not src.is_file():

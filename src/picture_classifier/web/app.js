@@ -1343,7 +1343,7 @@ function renderGrid() {
       <div class="tile-action-bar">
         <button class="btn-decision${p.decision === "reject" ? " active" : ""}" data-decision="reject">REJECT <span class="kbd">R</span></button>
         <button class="btn-decision${p.decision === "review" ? " active" : ""}" data-decision="review">REVIEW <span class="kbd">V</span></button>
-        <button class="btn-decision${p.decision === "pick" ? " active" : ""}" data-decision="pick">PICK <span class="kbd">A</span></button>
+        <button class="btn-decision${p.decision === "pick" ? " active" : ""}" data-decision="pick">PICK <span class="kbd">P</span></button>
       </div>`;
     tile.querySelector(".tile-img").addEventListener("click", () => openModal(absIdx));
     tile.querySelector(".tile-edit-btn").addEventListener("click", (e) => {
@@ -1362,8 +1362,23 @@ function renderGrid() {
         decideAt(absIdx, newDecision);
       });
     });
-    tile.addEventListener("mouseenter", () => focusAt(absIdx, false));
+    tile.dataset.idx = absIdx;
     grid.appendChild(tile);
+  });
+}
+
+// Hovering a tile focuses it, but only when the pointer really moves. A page
+// turn re-renders the tiles under a resting pointer and the browser reports it
+// entering whichever tile landed there, which pulled the cursor off the photo
+// the arrow key had just moved to (the 5th photo became the 6th).
+let lastPointer = null;
+
+function bindGridHover() {
+  $("#grid").addEventListener("pointermove", (e) => {
+    if (lastPointer && lastPointer.x === e.clientX && lastPointer.y === e.clientY) return;
+    lastPointer = { x: e.clientX, y: e.clientY };
+    const tile = e.target.closest(".tile");
+    if (tile && tile.dataset.idx !== undefined) focusAt(Number(tile.dataset.idx), false);
   });
 }
 
@@ -1505,28 +1520,57 @@ function tryAutoAdvance() {
 }
 
 // ---------- decisions ----------
-async function decideAt(absIdx, decision) {
+// A decision shows at once and is saved behind, in the order made. Waiting
+// for each save before moving on let a key pressed during it act on where the
+// cursor had been: P, R, V typed quickly in the viewer left one decision, the
+// last, on the first photo, with the cursor three photos on.
+let decisionSaves = Promise.resolve();
+
+function saveDecision(photo, decision) {
+  decisionSaves = decisionSaves.then(async () => {
+    const saved = await postDecision(photo.rel_path, decision);
+    // A later decision on the same photo may already be showing; only the
+    // time stamp of this one is the server's to set.
+    if (photo.decision === saved.decision) photo.decided_at = saved.decided_at;
+  }).catch((err) => {
+    // The screen and the project no longer agree about this photo: say so,
+    // and reload the project's own record rather than carry on over it.
+    alert(`Saving a decision failed (${err.message}). The project will reload.`);
+    location.reload();
+  });
+  return decisionSaves;
+}
+
+// `advance` is for the keyboard: the key acts on the highlighted photo and
+// the cursor moves on to the next. A click on a tile's own button decides that
+// tile and leaves the cursor alone.
+function decideAt(absIdx, decision, { advance = false } = {}) {
   const photo = state.filteredPhotos[absIdx];
   if (!photo) return;
-  const updated = await postDecision(photo.rel_path, decision);
-  Object.assign(photo, updated);
-  // Re-filter (a decided photo might leave the current filter view)
-  const wasInFilter = matchesFilter(photo);
+  photo.decision = decision;
+  photo.decided_at = decision ? new Date().toISOString() : null;
+  saveDecision(photo, decision);
   recomputeFilter();
   renderSidebar();
-  if (!wasInFilter && state.filteredPhotos.indexOf(photo) === -1) {
-    // (no-op) photo no longer matches; cursor may have shifted
-  }
-  // Move cursor: stay at same position (which now points to the next photo
-  // if the just-decided one left the filter), else advance by 1 within page.
-  if (state.cursorIdx >= state.filteredPhotos.length) {
-    state.cursorIdx = Math.max(0, state.filteredPhotos.length - 1);
+  const n = state.filteredPhotos.length;
+  const at = state.filteredPhotos.indexOf(photo);
+  if (at === -1) {
+    // It left the filter (Undecided, or Picks after a reject), so the photo
+    // after it has moved up into its place: stay put, and that one is next.
+    // Stepping on as well skipped a photo on every decision.
+    state.cursorIdx = Math.max(0, Math.min(absIdx, n - 1));
+  } else if (advance && decision !== null) {
+    state.cursorIdx = Math.min(at + 1, n - 1);
   }
   renderMain();
   if (state.modal.open) {
+    if (!n) { closeModal(); return; }
     state.modal.idx = state.cursorIdx;
+    state.modal.fit = true;
+    state.modal.compare = false;
     renderModal();
-  } else {
+    scheduleViewSave();
+  } else if (!advance) {
     tryAutoAdvance();
   }
 }
@@ -2778,8 +2822,13 @@ function editPayload() {
   return { ...editSession.edit, masks: persistableMasks(editSession.edit.masks) };
 }
 
-async function saveEdit() {
-  if (!editSession.relPath) return;
+function editIsDirty() {
+  return !!editSession.relPath && !editsEqual(editSession.edit, editSession.baseline);
+}
+
+// Writes the edit on screen to the project. True when it was saved; on a
+// refusal the reason is shown and the edit stays on screen, unsaved.
+async function persistEdit() {
   const rel = editSession.relPath;
   const res = await fetch("/api/edit", {
     method: "POST",
@@ -2789,7 +2838,7 @@ async function saveEdit() {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     $("#edit-status").textContent = "save failed: " + (err.detail || res.status);
-    return;
+    return false;
   }
   const updated = await res.json();
   const photo = state.photos.find((p) => p.rel_path === rel);
@@ -2799,16 +2848,90 @@ async function saveEdit() {
   }
   editSession.baseline = mergeNeutralEdit(editSession.edit);
   setEditDirty();
+  return true;
+}
+
+async function saveEdit() {
+  if (!editSession.relPath) return;
+  if (!(await persistEdit())) return;
   closeEditModal();
   renderMain();
 }
 
-function editNav(delta) {
+// Moving to another photo keeps the edit, as Lightroom does: it used to be
+// dropped without a word, and ← → are what you press to look at the next one.
+async function editNav(delta) {
   if (!state.filteredPhotos.length) return;
   const i = Math.max(0, Math.min(state.filteredPhotos.length - 1, editSession.idx + delta));
   if (i === editSession.idx) return;
+  const kept = editIsDirty() ? basename(editSession.relPath) : null;
+  if (kept && !(await persistEdit())) return;
   openEditModal(i);
+  if (kept) {
+    renderMain();
+    // Beside Save, where "unsaved changes" shows: the status line under the
+    // photo is rewritten by every render.
+    $("#edit-dirty").textContent = `Saved your edit to ${kept}`;
+  }
 }
+
+// Leaving the editor asks first when there is something unsaved. `how` is what
+// the button said: Cancel means discard, so only that is confirmed; closing
+// offers to save.
+async function leaveEditor(how) {
+  if (!editIsDirty()) { closeEditModal(); return; }
+  const name = basename(editSession.relPath);
+  const answer = how === "cancel"
+    ? await askChoice("Discard your changes?", `The edit to ${name} has not been saved.`, [
+        { id: "discard", label: "Discard", danger: true }, { id: "keep", label: "Keep editing", primary: true }])
+    : await askChoice(`Save your changes to ${name}?`, "They are lost if you close without saving.", [
+        { id: "discard", label: "Discard", danger: true }, { id: "keep", label: "Keep editing" },
+        { id: "save", label: "Save", primary: true }]);
+  if (answer === "save") saveEdit();
+  else if (answer === "discard") closeEditModal();
+}
+
+// ---------- asking with more than OK and Cancel ----------
+// Resolves with the id of the button pressed. Esc answers with the choice that
+// changes nothing (the non-destructive, non-primary one if there is one) and
+// Enter with the primary.
+let choiceResolve = null;
+
+function askChoice(title, body, choices) {
+  $("#choice-title").textContent = title;
+  $("#choice-body").textContent = body;
+  const wrap = $("#choice-modal .choice-buttons");
+  wrap.innerHTML = "";
+  for (const c of choices) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = c.label;
+    b.dataset.choice = c.id;
+    if (c.primary) b.classList.add("primary");
+    if (c.danger) b.classList.add("danger");
+    b.addEventListener("click", () => answerChoice(c.id));
+    wrap.appendChild(b);
+  }
+  const safe = choices.find((c) => !c.danger && !c.primary) || choices.find((c) => !c.danger) || choices[0];
+  const primary = choices.find((c) => c.primary) || safe;
+  $("#choice-modal").dataset.escape = safe.id;
+  $("#choice-modal").dataset.enter = primary.id;
+  $("#choice-modal").classList.remove("hidden");
+  wrap.querySelector(".primary")?.focus();
+  return new Promise((resolve) => { choiceResolve = resolve; });
+}
+
+function answerChoice(id) {
+  $("#choice-modal").classList.add("hidden");
+  const resolve = choiceResolve;
+  choiceResolve = null;
+  resolve(id);
+}
+
+// A reload or a closed tab would drop an unsaved edit the same way.
+window.addEventListener("beforeunload", (e) => {
+  if (editIsDirty()) { e.preventDefault(); e.returnValue = ""; }
+});
 
 // ---------- colour grading ----------
 // Mirrors grading.ZONES. A wheel is a hue plus a strength; the panel shows them
@@ -6067,6 +6190,15 @@ function toggleCompare() {
 }
 
 // ---------- keyboard ----------
+// The decision a key stands for: null clears it, undefined is not a decision key.
+function decisionForKey(k) {
+  if (k === "1" || k === "r" || k === "R") return "reject";
+  if (k === "2" || k === "v" || k === "V") return "review";
+  if (k === "3" || k === "p" || k === "P" || k === "a" || k === "A") return "pick";
+  if (k === "u" || k === "U") return null;
+  return undefined;
+}
+
 function bindKeys() {
   document.addEventListener("keydown", async (e) => {
     // A tour owns the keyboard while it is up: arrows and Enter walk it, Esc
@@ -6078,10 +6210,25 @@ function bindKeys() {
       e.preventDefault();
       return;
     }
+    // A question on screen takes Esc (the answer that changes nothing) and
+    // Enter (the primary one), and nothing else.
+    if (!$("#choice-modal").classList.contains("hidden")) {
+      if (e.key === "Escape") answerChoice($("#choice-modal").dataset.escape);
+      else if (e.key === "Enter") answerChoice($("#choice-modal").dataset.enter);
+      e.preventDefault();
+      return;
+    }
+    // The shortcut sheet: ? opens it where you are and ? or Esc closes it;
+    // nothing reaches the photos underneath while it is up.
+    if (!$("#keys-sheet").classList.contains("hidden")) {
+      if (e.key === "Escape" || e.key === "?") closeKeysSheet();
+      e.preventDefault();
+      return;
+    }
     if (e.key === "?" && !(e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName))
         && document.body.classList.contains("landing-mode") === false) {
       e.preventDefault();
-      startTour($("#edit-modal").classList.contains("hidden") ? "main" : "editor");
+      openKeysSheet(keyContext());
       return;
     }
     // In the editor, ⌘Z / Ctrl+Z steps back through the edit and ⇧⌘Z or Ctrl+Y
@@ -6176,7 +6323,7 @@ function bindKeys() {
         // Esc backs out one level: armed tool, then mask selection, then modal.
         if (editSession.tool) setEditTool(null);
         else if (editSession.activeMask >= 0) selectMask(-1);
-        else closeEditModal();
+        else leaveEditor("close");
         e.preventDefault(); return;
       }
       if (typing) return;  // let focused sliders / preset picker keep arrows etc.
@@ -6231,15 +6378,10 @@ function bindKeys() {
       if (k === "e" || k === "E") {
         const i = state.modal.idx; closeModal(); openEditModal(i); e.preventDefault(); return;
       }
-      let decision = null, hasDecision = false, advance = true;
-      if (k === "1" || k === "r" || k === "R") { decision = "reject"; hasDecision = true; }
-      else if (k === "2" || k === "v" || k === "V") { decision = "review"; hasDecision = true; }
-      else if (k === "3" || k === "p" || k === "P" || k === "a" || k === "A") { decision = "pick"; hasDecision = true; }
-      else if (k === "u" || k === "U") { decision = null; hasDecision = true; advance = false; }
-      else return;
+      const decision = decisionForKey(k);
+      if (decision === undefined) return;
       e.preventDefault();
-      await decideAt(state.modal.idx, decision);
-      if (advance && hasDecision && decision !== null) modalNav(+1);
+      decideAt(state.modal.idx, decision, { advance: true });
       return;
     }
 
@@ -6286,14 +6428,10 @@ function bindKeys() {
     }
     if (k === "Escape") { if (state.selection.size) { clearSelection(); e.preventDefault(); } return; }
 
-    let decision = null, hasDecision = false;
-    if (k === "1" || k === "r" || k === "R") { decision = "reject"; hasDecision = true; }
-    else if (k === "2" || k === "v" || k === "V") { decision = "review"; hasDecision = true; }
-    else if (k === "3" || k === "p" || k === "P" || k === "a" || k === "A") { decision = "pick"; hasDecision = true; }
-    else if (k === "u" || k === "U") { decision = null; hasDecision = true; }
-    if (hasDecision) {
+    const decision = decisionForKey(k);
+    if (decision !== undefined) {
       e.preventDefault();
-      await decideAt(i, decision);
+      decideAt(i, decision, { advance: true });
     }
   });
 
@@ -6307,6 +6445,8 @@ function bindKeys() {
 
 // ---------- UI bindings ----------
 function bindUi() {
+  bindGridHover();
+  bindKeysSheet();
   $$(".filter").forEach((b) => {
     b.addEventListener("click", () => {
       $$(".filter").forEach((x) => x.classList.toggle("active", x === b));
@@ -6393,8 +6533,8 @@ function bindUi() {
   bindSlots();
   bindWatermarkUi();
   curveInit();
-  $("#edit-modal-close").addEventListener("click", closeEditModal);
-  $("#edit-cancel").addEventListener("click", closeEditModal);
+  $("#edit-modal-close").addEventListener("click", () => leaveEditor("close"));
+  $("#edit-cancel").addEventListener("click", () => leaveEditor("cancel"));
   $("#edit-save").addEventListener("click", saveEdit);
   $("#edit-auto").addEventListener("click", autoEdit);
   $("#edit-undo").addEventListener("click", editUndo);
@@ -6455,6 +6595,7 @@ function bindUi() {
   // back to the projects loses nothing. What can stop it is a task still
   // running, and then it says which.
   $("#switch-project-btn").addEventListener("click", async () => {
+    await decisionSaves;
     await flushViewSave();
     const res = await fetch("/api/close", { method: "POST" });
     if (res.status === 409) {
@@ -7666,6 +7807,7 @@ function bindHelp() {
 // ---------- quit ----------
 async function quitApp() {
   if (!confirm("Quit Picture Classifier?\n\nYour decisions and saved edits are kept.")) return;
+  await decisionSaves;
   await flushViewSave();
   const post = (force) => fetch("/api/quit", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -7683,6 +7825,159 @@ async function quitApp() {
 }
 
 
+// ---------- keyboard shortcuts ----------
+// One list of every key, by where it works. The sheet (?) shows all of it; the
+// bar along the bottom of each screen shows the entries marked `bar`, so the
+// keys for what you are doing are always in sight.
+const MOD = IS_MAC ? "⌘" : "Ctrl";
+const KEYMAP = {
+  grid: [
+    { group: "Decide", note: "Acts on the highlighted photo, then moves to the next.", keys: [
+      { k: ["P"], alt: "A or 3", label: "Pick", bar: true },
+      { k: ["R"], alt: "1", label: "Reject", bar: true },
+      { k: ["V"], alt: "2", label: "Review", bar: true },
+      { k: ["U"], label: "Clear the decision", bar: "Clear" },
+      { k: [MOD, "Z"], label: "Undo a decision made on many photos at once" },
+    ]},
+    { group: "Move", keys: [
+      { k: ["←", "→"], label: "Previous / next photo", bar: "Move" },
+      { k: ["↑", "↓"], label: "Row up / down" },
+      { k: ["[", "]"], alt: "PgUp PgDn", label: "Previous / next page", bar: "Page" },
+    ]},
+    { group: "Open", keys: [
+      { k: ["Enter"], label: "View full screen", bar: "View" },
+      { k: ["E"], label: "Edit", bar: "Edit" },
+    ]},
+    { group: "Select", keys: [
+      { k: ["X"], label: "Select or unselect" },
+      { k: ["⇧", "X"], label: "Select a range" },
+      { k: ["D"], label: "Download the selection" },
+      { k: ["Esc"], label: "Clear the selection" },
+    ]},
+    { group: "Show", keys: [
+      { k: ["B"], label: "Subject boxes" },
+    ]},
+  ],
+  viewer: [
+    { group: "Decide", note: "Acts on the photo shown, then moves to the next.", keys: [
+      { k: ["P"], alt: "A or 3", label: "Pick", bar: true },
+      { k: ["R"], alt: "1", label: "Reject", bar: true },
+      { k: ["V"], alt: "2", label: "Review", bar: true },
+      { k: ["U"], label: "Clear the decision", bar: "Clear" },
+    ]},
+    { group: "Move", keys: [
+      { k: ["←", "→"], alt: "Space", label: "Previous / next photo", bar: "Move" },
+    ]},
+    { group: "Look closer", keys: [
+      { k: ["F"], alt: "Z", label: "Fit or 100%", bar: "100%" },
+      { k: ["L"], label: "Loupe", bar: "Loupe" },
+      { k: ["K"], label: "Focus peaking" },
+      { k: ["B"], label: "Subject boxes" },
+      { k: ["C"], label: "HDR merge or its 0 EV frame" },
+    ]},
+    { group: "Leave", keys: [
+      { k: ["E"], label: "Edit this photo", bar: "Edit" },
+      { k: ["Esc"], label: "Back to the grid", bar: "Close" },
+    ]},
+  ],
+  editor: [
+    { group: "Photo", keys: [
+      { k: ["←", "→"], label: "Previous / next photo", bar: "Photo" },
+      { k: ["C"], label: "Hold to see the original", bar: "Original" },
+      { k: ["F"], label: "Fit or 100%", bar: "Zoom" },
+      { k: ["Enter"], label: "Save", bar: "Save" },
+      { k: ["Esc"], label: "Back out: tool, then mask, then the editor", bar: "Close" },
+    ]},
+    { group: "Undo", keys: [
+      { k: [MOD, "Z"], label: "Undo", bar: "Undo" },
+      { k: IS_MAC ? ["⇧", "⌘", "Z"] : ["Ctrl", "Y"], label: "Redo" },
+    ]},
+    { group: "Masks", keys: [
+      { k: ["R"], label: "Add a radial mask" },
+      { k: ["G"], label: "Add a gradient mask" },
+      { k: ["B"], label: "Add a brush mask", bar: "Brush" },
+      { k: ["[", "]"], label: "Brush size" },
+      { k: ["\\"], label: "Show the mask" },
+      { k: ["Delete"], label: "Delete the selected mask" },
+    ]},
+  ],
+};
+const KEY_CONTEXT_NAMES = { grid: "Culling", viewer: "Viewer", editor: "Editor" };
+
+function keyContext() {
+  if (!$("#edit-modal").classList.contains("hidden")) return "editor";
+  return state.modal.open ? "viewer" : "grid";
+}
+
+function keyCaps(keys) {
+  return keys.map((k) => `<kbd>${escapeHtml(k)}</kbd>`).join("");
+}
+
+// The bar's entries run in the sheet's order. Decisions are the core of
+// culling, so their labels stay; the rest shorten to fit one line.
+function renderKeybars() {
+  const collapsed = keybarCollapsed();
+  $$(".keybar").forEach((bar) => {
+    const ctx = bar.dataset.context;
+    const items = KEYMAP[ctx].flatMap((g) => g.keys).filter((e) => e.bar);
+    bar.classList.toggle("collapsed", collapsed);
+    bar.innerHTML = (collapsed ? "" : items.map((e) =>
+      `<span class="kb-item">${keyCaps(e.k)}<span>${escapeHtml(e.bar === true ? e.label : e.bar)}</span></span>`).join(""))
+      + `<span class="kb-spacer"></span>`
+      + `<button type="button" class="kb-all" title="Every shortcut (?)">${keyCaps(["?"])}<span>All shortcuts</span></button>`
+      + `<button type="button" class="kb-toggle" title="${collapsed ? "Show the key bar" : "Hide the key bar"}">${collapsed ? "Show keys" : "Hide"}</button>`;
+    bar.querySelector(".kb-all").addEventListener("click", () => openKeysSheet(ctx));
+    bar.querySelector(".kb-toggle").addEventListener("click", () => {
+      try { localStorage.setItem("pcls.keybar", collapsed ? "1" : "0"); } catch { /* private */ }
+      renderKeybars();
+    });
+  });
+}
+
+function keybarCollapsed() {
+  try { return localStorage.getItem("pcls.keybar") === "0"; } catch { return false; }
+}
+
+function openKeysSheet(ctx) {
+  $("#keys-sheet").dataset.ctx = ctx;
+  renderKeysSheet(ctx);
+  $("#keys-sheet").classList.remove("hidden");
+}
+
+function closeKeysSheet() {
+  $("#keys-sheet").classList.add("hidden");
+}
+
+function renderKeysSheet(ctx) {
+  $$("#keys-sheet .keys-tabs button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.ctx === ctx);
+    b.setAttribute("aria-selected", b.dataset.ctx === ctx ? "true" : "false");
+  });
+  $("#keys-body").innerHTML = KEYMAP[ctx].map((g) => `
+    <section class="keys-group">
+      <h3>${escapeHtml(g.group)}</h3>
+      ${g.note ? `<p class="keys-note">${escapeHtml(g.note)}</p>` : ""}
+      <dl>${g.keys.map((e) => `
+        <dt>${keyCaps(e.k)}${e.alt ? `<span class="keys-alt">or ${escapeHtml(e.alt)}</span>` : ""}</dt>
+        <dd>${escapeHtml(e.label)}</dd>`).join("")}
+      </dl>
+    </section>`).join("");
+  setBtnLabel($("#keys-tour"), `Replay the ${ctx === "editor" ? "editor" : "culling"} tour`);
+}
+
+function bindKeysSheet() {
+  renderKeybars();
+  $$("#keys-sheet .keys-tabs button").forEach((b) =>
+    b.addEventListener("click", () => { $("#keys-sheet").dataset.ctx = b.dataset.ctx; renderKeysSheet(b.dataset.ctx); }));
+  $("#keys-close").addEventListener("click", closeKeysSheet);
+  $("#keys-sheet").addEventListener("click", (e) => { if (e.target.id === "keys-sheet") closeKeysSheet(); });
+  $("#keys-tour").addEventListener("click", () => {
+    const ctx = $("#keys-sheet").dataset.ctx;
+    closeKeysSheet();
+    startTour(ctx === "editor" ? "editor" : "main");
+  });
+}
+
 // ---------- guided tour ----------
 // A walk-through, game-tutorial style: everything but one control is dimmed,
 // and a card beside it says what it is for. It starts by itself the first time
@@ -7692,13 +7987,13 @@ async function quitApp() {
 const TOURS = {
   main: [
     { title: "Welcome to Picture Classifier",
-      body: "A one-minute tour of the culling screen. Replay it any time with the <b>?</b> button or the <kbd>?</kbd> key." },
+      body: "A one-minute tour of the culling screen. Replay it any time from the <b>?</b> button or the <kbd>?</kbd> key, which also lists every shortcut." },
     { target: "#scene-list", title: "Scenes",
       body: "Your photos, grouped into scenes by folder or by time gaps. Work through them one at a time; the bar under each shows how far you are." },
     { target: () => $(".tile .tile-img"), title: "Every photo has a suggestion",
       body: "The <b>AUTO</b> badge is the app's guess from sharpness, exposure and closed eyes. The number is how bad it looks: lower is better. Click a photo, or press <kbd>Enter</kbd>, to see it large." },
     { target: () => $(".tile .tile-action-bar"), title: "Decide",
-      body: "<b>Reject</b> <kbd>R</kbd> · <b>Review</b> <kbd>V</kbd> · <b>Pick</b> <kbd>A</kbd>. The keys act on the highlighted photo and move on to the next; the arrow keys move without deciding, and <kbd>U</kbd> undoes." },
+      body: "<b>Reject</b> <kbd>R</kbd> · <b>Review</b> <kbd>V</kbd> · <b>Pick</b> <kbd>P</kbd>. The keys act on the highlighted photo and move on to the next; the arrow keys move without deciding, and <kbd>U</kbd> clears a decision. The bar along the bottom always shows the keys for where you are." },
     { target: () => $(".tile .tile-edit-btn"), title: "Edit",
       body: "Opens the editor (<kbd>E</kbd>): light and colour, masks, lens and perspective, looks, healing, and portrait retouching." },
     { target: "#filter-row", title: "Filters",
@@ -7712,7 +8007,7 @@ const TOURS = {
     { target: ".sidebar-top", title: "Back to your projects, or quit",
       body: "<b>Projects</b> goes back to the start screen; everything you decided is already saved. The power button quits the app completely, since closing the browser tab leaves it running." },
     { target: "#tour-main-btn", title: "That's it",
-      body: "Press <b>?</b> whenever you want this again. The editor has its own tour the first time you open it." },
+      body: "Press <kbd>?</kbd> for every keyboard shortcut and to replay this tour. The editor has its own tour the first time you open it." },
   ],
   editor: [
     { title: "The editor",
@@ -7825,8 +8120,8 @@ function bindTour() {
   $("#tour-next").addEventListener("click", () => tourStep(1));
   $("#tour-back").addEventListener("click", () => tourStep(-1));
   $("#tour-skip").addEventListener("click", endTour);
-  $("#tour-main-btn").addEventListener("click", () => startTour("main"));
-  $("#tour-editor-btn").addEventListener("click", () => startTour("editor"));
+  $("#tour-main-btn").addEventListener("click", () => openKeysSheet(keyContext()));
+  $("#tour-editor-btn").addEventListener("click", () => openKeysSheet("editor"));
   window.addEventListener("resize", () => {
     if (tourState.name) placeTour(tourTarget(tourState.steps[tourState.i]));
   });

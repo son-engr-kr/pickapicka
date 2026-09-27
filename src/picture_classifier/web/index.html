@@ -371,9 +371,10 @@
       <button id="boxes-btn" class="hidden" title="Show detected subject boxes (B)" data-icon="boxes">boxes</button>
       <button id="hdr-btn" title="Review and fix auto-detected HDR brackets" data-icon="hdr">HDR</button>
       <button id="rescore-btn" title="Re-run scoring on all photos (preserves decisions)" data-icon="refresh">rescore</button>
-      <button id="tour-main-btn" class="tour-btn" type="button" title="Guided tour (?)" aria-label="Guided tour">?</button>
+      <button id="tour-main-btn" class="tour-btn" type="button" title="Keyboard shortcuts and the guided tour (?)" aria-label="Keyboard shortcuts">?</button>
     </header>
     <div id="grid"></div>
+    <div class="keybar" data-context="grid"></div>
     <div id="next-preview" class="hidden">
       <span class="label">NEXT</span>
       <img id="next-preview-img" alt="" />
@@ -384,6 +385,36 @@
   <div id="help-popover" class="hidden" role="dialog">
     <div id="help-popover-body"></div>
     <button id="help-popover-close" type="button" title="Close" data-icon="close" aria-label="Close"></button>
+  </div>
+
+  <!-- Every key, by where it works. Built from KEYMAP in app.js, the same list
+       the key bars along the bottom of each screen are drawn from. -->
+  <div id="keys-sheet" class="hidden" role="dialog" aria-modal="true" aria-labelledby="keys-title">
+    <div class="keys-box">
+      <header>
+        <h2 id="keys-title">Keyboard shortcuts</h2>
+        <div class="keys-tabs" role="tablist">
+          <button type="button" role="tab" data-ctx="grid">Culling</button>
+          <button type="button" role="tab" data-ctx="viewer">Viewer</button>
+          <button type="button" role="tab" data-ctx="editor">Editor</button>
+        </div>
+        <button id="keys-close" type="button" data-icon="close" title="Close (Esc)" aria-label="Close"></button>
+      </header>
+      <div id="keys-body"></div>
+      <footer>
+        <button id="keys-tour" type="button" data-icon="refresh">Replay the guided tour</button>
+        <span class="keys-foot">Press <kbd>?</kbd> any time to open this.</span>
+      </footer>
+    </div>
+  </div>
+
+  <!-- A question with more answers than OK and Cancel (askChoice in app.js). -->
+  <div id="choice-modal" class="hidden" role="alertdialog" aria-modal="true" aria-labelledby="choice-title" aria-describedby="choice-body">
+    <div class="choice-box">
+      <h2 id="choice-title"></h2>
+      <p id="choice-body"></p>
+      <div class="choice-buttons"></div>
+    </div>
   </div>
 
   <div id="undo-toast" class="hidden">
@@ -700,8 +731,8 @@
       <button id="modal-edit" data-icon="pencil" title="Edit this photo (E)">edit</button>
       <span id="modal-exif"></span>
       <span id="modal-scores"></span>
-      <span id="modal-help">[1/R reject] [2/V review] [3/P/A pick] [C compare] [E edit] [U undo] [F fit/100%] [←→ nav] [Esc close]</span>
     </div>
+    <div class="keybar" data-context="viewer"></div>
   </div>
 
   <div id="edit-modal" class="hidden">
@@ -709,7 +740,7 @@
       <header>
         <h2>Edit</h2>
         <span id="edit-which">—</span>
-        <button id="tour-editor-btn" class="tour-btn" type="button" title="Guided tour of the editor (?)" aria-label="Guided tour of the editor">?</button>
+        <button id="tour-editor-btn" class="tour-btn" type="button" title="Keyboard shortcuts and the guided tour (?)" aria-label="Keyboard shortcuts">?</button>
         <button id="edit-modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
       <div class="edit-body">
@@ -733,6 +764,7 @@
             <span id="edit-zoom-hint">scroll to zoom · drag to pan (space or middle-drag over a mask)</span>
           </div>
           <span id="edit-status"></span>
+          <div class="keybar" data-context="editor"></div>
         </div>
         <div class="edit-controls">
           <div class="edit-actionbar">
