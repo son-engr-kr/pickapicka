@@ -2305,12 +2305,12 @@ function curveMove(e) {
     const lo = pts[i - 1][0] + 0.01, hi = pts[i + 1][0] - 0.01;
     pts[i] = [Math.min(hi, Math.max(lo, x)), y];
   }
-  drawCurve(); setEditDirty(); fetchEditPreview(false);
+  drawCurve(); setEditDirty(); previewDuringDrag();
 }
 function curveUp() {
   if (curveState.drag < 0) return;
   curveState.drag = -1;
-  fetchEditPreview(false);
+  settleDrag();
 }
 function curveDoubleClick(e) {
   const { px, py } = curveEventData(e);
@@ -2506,6 +2506,7 @@ function fetchEditPreview(immediate, draft) {
     // Dragging a mask handle fires these back to back; only the newest response
     // may reach the <img>, otherwise a slow render lands on top of a fresh one.
     const seq = ++previewSeq;
+    const rel = editSession.relPath;
     $("#edit-status").textContent = "rendering…";
     try {
       const res = await fetch("/api/edit/preview", {
@@ -2520,7 +2521,10 @@ function fetchEditPreview(immediate, draft) {
       // better one copy of that arithmetic than a second one here that can drift.
       const frame = res.headers.get("X-Frame-Size");
       const blob = await res.blob();
-      if (seq !== previewSeq) return;
+      // Newest only, and of this photo: stepping to the next photo mid-render
+      // queues its request behind this one, so this one is still the newest
+      // when it lands, and would show the last photo in the frame of the next.
+      if (seq !== previewSeq || rel !== editSession.relPath) return;
       const fullFrame = res.headers.get("X-Frame-Full");
       if (frame) {
         const [fw, fh] = frame.split("x").map(Number);
@@ -3811,13 +3815,16 @@ function renderWatermarkPanel() {
     : "No EXIF on this photo — fill the fields in by hand.";
 }
 
-function updateWatermark(patch, immediate) {
+// `immediate` renders now; `dragging` is for a slider, which gets the drafts
+// a drag does. Neither waits for a pause, which is right for typing.
+function updateWatermark(patch, immediate, dragging) {
   const w = ensureWatermark();
   Object.assign(w, patch);
   if (patch.name != null) rememberWatermarkName(patch.name);
   renderWatermarkPanel();
   setEditDirty();
-  fetchEditPreview(!!immediate);
+  if (dragging) previewDuringDrag();
+  else fetchEditPreview(!!immediate);
 }
 
 function bindWatermarkUi() {
@@ -3844,7 +3851,7 @@ function bindWatermarkUi() {
   }
   for (const k of ["size", "opacity", "margin"]) {
     $(`#wm-${k}`).addEventListener("input", (e) =>
-      updateWatermark({ [k]: parseInt(e.target.value, 10) }));
+      updateWatermark({ [k]: parseInt(e.target.value, 10) }, false, true));
   }
   $("#wm-color").addEventListener("input", (e) => updateWatermark({ color: e.target.value }, true));
   $("#wm-white").addEventListener("click", () => updateWatermark({ color: "#ffffff" }, true));
@@ -5172,7 +5179,13 @@ function previewDuringDrag() {
     fetchEditPreview(true, true);
   }
   if (settleTimer) clearTimeout(settleTimer);
-  settleTimer = setTimeout(() => fetchEditPreview(true, false), 240);
+  settleTimer = setTimeout(() => { settleTimer = null; fetchEditPreview(true, false); }, 240);
+}
+
+// The drag is over: the full render now, not when the pause timer fires.
+function settleDrag() {
+  if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+  fetchEditPreview(true, false);
 }
 
 function overlayUp(e) {
@@ -5298,7 +5311,7 @@ function bindMaskUi() {
       $(`#mask-${key}-val`).textContent = m[key];
       drawOverlay();
       setEditDirty();
-      fetchEditPreview(false);
+      previewDuringDrag();
     });
   }
   $("#mask-brush-size").addEventListener("input", (e) => {
