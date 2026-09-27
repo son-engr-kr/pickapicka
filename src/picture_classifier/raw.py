@@ -33,6 +33,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from . import fsutil
+
 RAW_EXTS = {
     ".cr2", ".cr3", ".crw", ".nef", ".nrw", ".arw", ".sr2", ".srf",
     ".raf", ".rw2", ".orf", ".pef", ".srw", ".dng", ".raw", ".3fr",
@@ -112,10 +114,14 @@ def ensure_cache(raw_path: Path, cache_root: Path, ident: str, max_edge: int = 2
     tmp = dst.with_name(f".{dst.name}.{os.getpid()}.{threading.get_ident()}.tmp.jpg")
     try:
         Image.fromarray(decode_preview(raw_path, max_edge)).save(tmp, "JPEG", quality=92)
-        os.replace(tmp, dst)
+        fsutil.replace(tmp, dst)
     finally:
         tmp.unlink(missing_ok=True)
     return dst
+
+
+# What rawpy builds from a stored 0: `datetime.fromtimestamp(0)`, local time.
+_UNKNOWN_TIME = datetime.fromtimestamp(0)
 
 
 def capture_time(rawpy_handle: Any) -> datetime | None:
@@ -129,9 +135,12 @@ def capture_time(rawpy_handle: Any) -> datetime | None:
 
     A file that does not say reports 0, which rawpy hands over as the Unix
     epoch — the one datetime here that means unknown rather than 1970.
+    It is compared as a datetime: `stamp.timestamp()` raises OSError on
+    Windows for the epoch in any timezone east of UTC, which failed the scan
+    of every folder holding such a file.
     """
     stamp = rawpy_handle.other.timestamp
-    return None if stamp.timestamp() <= 0 else stamp
+    return None if stamp <= _UNKNOWN_TIME else stamp
 
 
 # Most RAW formats are TIFF underneath: ARW, NEF, CR2, DNG and others open with

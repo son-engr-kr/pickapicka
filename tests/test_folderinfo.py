@@ -145,7 +145,7 @@ def test_shots_pair_raw_and_jpeg_as_scoring_does(tmp_path) -> None:
     assert got["folders"] == [{"name": "(none)", "count": 1}, {"name": "day1", "count": 2},
                               {"name": "day2", "count": 1}]
     want = [datetime(2026, 5, 1, 9, 0), datetime(2026, 5, 1, 10, 5), datetime(2026, 5, 2, 8, 0)]
-    assert got["times"] == [t.timestamp() for t in want]
+    assert got["times"] == [(t - datetime(1970, 1, 1)).total_seconds() for t in want]
 
 
 def test_shots_find_raws_in_their_own_subfolder(tmp_path) -> None:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +114,21 @@ def inspect(
     return info
 
 
+_WALL_EPOCH = datetime(1970, 1, 1)
+
+
+def _wall_seconds(t: datetime) -> float:
+    """A camera's wall-clock time as seconds, read as if it were UTC.
+
+    Capture times carry no timezone, and only the gaps between them matter for
+    grouping, so no timezone is applied: the client formats these back as UTC
+    and shows the clock the camera showed. `t.timestamp()` would apply this
+    machine's zone instead, and raises OSError on Windows for a camera whose
+    clock was never set and stamps 1970 or earlier.
+    """
+    return (t - _WALL_EPOCH).total_seconds()
+
+
 def shots(
     root: Path, raw_root: Path | None = None, limit: int = SHOT_LIMIT,
 ) -> dict[str, Any]:
@@ -167,7 +183,7 @@ def shots(
             t = raw.head_capture_time(files["raw"]) or raw.read_capture_time(files["raw"])
         else:
             t = scenes.read_capture_time(files["jpeg"])
-        return t.timestamp() if t is not None else None
+        return _wall_seconds(t) if t is not None else None
 
     keys = sorted(by_key)
     with ThreadPoolExecutor(max_workers=_TIME_WORKERS) as pool:

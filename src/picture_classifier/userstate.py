@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import paths
+from . import fsutil, paths
 
 CONFIG_DIR = paths.DATA_DIR
 STATE_FILE = CONFIG_DIR / "state.json"
@@ -19,7 +19,7 @@ def _load() -> dict[str, Any]:
     if not STATE_FILE.is_file():
         return {"recents": [], "last_db_path": None}
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return json.loads(fsutil.read_text(STATE_FILE))
     except (OSError, json.JSONDecodeError):
         return {"recents": [], "last_db_path": None}
 
@@ -28,7 +28,7 @@ def _save(data: dict[str, Any]) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     tmp = STATE_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(STATE_FILE)
+    fsutil.replace(tmp, STATE_FILE)
 
 
 def get_recents() -> list[dict[str, Any]]:
@@ -165,7 +165,7 @@ def save_lut(key: str, params: dict[str, Any]) -> None:
     dst = _lut_path(key)
     tmp = dst.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(params), encoding="utf-8")
-    tmp.replace(dst)
+    fsutil.replace(tmp, dst)
 
 
 def load_lut(key: str) -> dict[str, Any] | None:

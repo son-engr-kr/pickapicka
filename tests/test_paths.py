@@ -44,9 +44,12 @@ def test_directories_are_platform_specific_not_dotfiles() -> None:
     for d in (paths.DATA_DIR, paths.CACHE_DIR):
         assert not d.name.startswith("."), d
         assert paths.APP_NAME in str(d), d
-    # State and re-downloadable weights are kept apart.
+    # State and re-downloadable weights are kept apart. On Windows the
+    # platform's cache folder is a "Cache" subfolder of the app's local data
+    # folder, so apart means not the same folder, and no state under the cache.
     assert paths.MODEL_DIR.is_relative_to(paths.CACHE_DIR)
-    assert not paths.MODEL_DIR.is_relative_to(paths.DATA_DIR)
+    assert paths.CACHE_DIR != paths.DATA_DIR
+    assert not paths.DATA_DIR.is_relative_to(paths.CACHE_DIR)
 
 
 # ----- migration ----------------------------------------------------------

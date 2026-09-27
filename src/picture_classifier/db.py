@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from . import fsutil
+
 DB_VERSION = 1
 
 
@@ -17,7 +19,7 @@ def load(path: Path) -> dict[str, Any]:
 def save(path: Path, data: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+    fsutil.replace(tmp, path)
 
 
 def init_db(photo_root: Path, jpeg_subdir: str, raw_subdir: str = "") -> dict[str, Any]:

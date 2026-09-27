@@ -17,11 +17,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from . import fsutil
+
 
 def imread(path: str | Path, flags: int = cv2.IMREAD_COLOR) -> np.ndarray | None:
     """`cv2.imread`, except that a missing file raises. None still means the
     file is there but is not an image OpenCV can decode."""
-    data = np.fromfile(path, dtype=np.uint8)
+    data = np.frombuffer(fsutil.read_bytes(path), dtype=np.uint8)
     return cv2.imdecode(data, flags)
 
 

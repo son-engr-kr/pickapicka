@@ -2,6 +2,7 @@
 face crops, and persistence of decisions/clusters/scene-grouping."""
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import platform
@@ -15,6 +16,7 @@ from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
+from email.utils import formatdate
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Literal
 
@@ -27,7 +29,7 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel
 
 from . import (
-    cameras, db, editing, exifinfo, exporting, film as film_mod, folderinfo, hdr, imfile,
+    cameras, db, editing, exifinfo, exporting, film as film_mod, folderinfo, fsutil, hdr, imfile,
     lut as lut_mod, metadata as metadata_mod, portrait as portrait_mod, presets as presets_mod,
     redeye as redeye_mod, transform as transform_mod, raw, relink, scenes, segment as segment_mod,
     userstate, watermark as watermark_mod,
@@ -807,9 +809,9 @@ def _ensure_peak(thumb: Path, peaks_root: Path, rel_path: str, ehash: str,
         lock.release()
 
 
-def _build_peak(thumb: Path, dst: Path, ratio_min: float, grad_floor: float) -> Path:
-    gray = imfile.imread(str(thumb), cv2.IMREAD_GRAYSCALE)
-    assert gray is not None, f"failed to read {thumb}"
+def _peak_fields(gray: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """What the peaking levels threshold: the gradient, edge steepness, and
+    where the gradient is a ridge."""
     # A touch of smoothing first: single-pixel sensor noise would otherwise ace
     # the sharpness test, since blurring wipes it out completely.
     g = cv2.GaussianBlur(gray.astype(np.float32), (0, 0), 0.5)
@@ -819,14 +821,25 @@ def _build_peak(thumb: Path, dst: Path, ratio_min: float, grad_floor: float) -> 
     # however blurred it is, so averaging first would erase the signal.
     sharpness = cv2.dilate(raw, _PEAK_K5) / (cv2.dilate(probed, _PEAK_K5) + 1e-3) - 1.0
     ridge = raw >= cv2.dilate(raw, _PEAK_K3) - 1e-6
+    return raw, sharpness, ridge
 
+
+def _peak_alpha(fields: tuple[np.ndarray, np.ndarray, np.ndarray],
+                ratio_min: float, grad_floor: float) -> np.ndarray:
+    """The overlay's alpha for one level's thresholds."""
+    raw, sharpness, ridge = fields
     hit = (sharpness > ratio_min) & (raw > grad_floor) & ridge
     strength = np.clip((sharpness - ratio_min) / max(ratio_min * 0.8, 1e-3), 0.0, 1.0)
     alpha = np.where(hit, 150 + strength * 105, 0).astype(np.uint8)
     # Widen the ridges: a one-pixel contour vanishes when the browser scales the
     # overlay down to grid-tile size, which is where peaking is most useful.
-    alpha = cv2.dilate(alpha, _PEAK_WIDEN)
+    return cv2.dilate(alpha, _PEAK_WIDEN)
 
+
+def _build_peak(thumb: Path, dst: Path, ratio_min: float, grad_floor: float) -> Path:
+    gray = imfile.imread(str(thumb), cv2.IMREAD_GRAYSCALE)
+    assert gray is not None, f"failed to read {thumb}"
+    alpha = _peak_alpha(_peak_fields(gray), ratio_min, grad_floor)
     rgba = np.zeros((*gray.shape, 4), dtype=np.uint8)
     rgba[..., 0] = 255   # a saturated red-orange reads on paint and asphalt
     rgba[..., 1] = 90
@@ -1194,6 +1207,25 @@ def _cache_lock(key: Path) -> threading.Lock:
     return _CACHE_LOCKS[hash(str(key)) % len(_CACHE_LOCKS)]
 
 
+def _cached_image(path: Path, media_type: str) -> Response:
+    """A file from the app's own caches (thumbnail, focus peaks, face and
+    subject crops), read whole and sent.
+
+    FileResponse keeps the file open while it streams, and on Windows a file
+    that is open cannot be replaced, nor opened while it is being replaced:
+    the grid asks for a thumbnail and its focus peaks at the same instant, one
+    request rebuilds what the other is sending, and either side failed with
+    PermissionError. Reading it in one go with `fsutil`'s retry takes the file
+    out of that race; these files are tens of kilobytes. Last-Modified and ETag
+    are kept as FileResponse sent them, since the browser's caching of grid
+    tiles relies on them.
+    """
+    data, mtime = fsutil.read_stamped(path)
+    etag = hashlib.md5(f"{mtime}-{len(data)}".encode(), usedforsecurity=False).hexdigest()
+    return Response(content=data, media_type=media_type, headers={
+        "last-modified": formatdate(mtime, usegmt=True), "etag": f'"{etag}"'})
+
+
 @contextmanager
 def _atomic_write(dst: Path) -> "Iterator[Path]":
     """Yield a temp path next to `dst`; rename it over `dst` on clean exit."""
@@ -1201,7 +1233,7 @@ def _atomic_write(dst: Path) -> "Iterator[Path]":
     tmp = dst.parent / f".{dst.name}.{threading.get_ident()}.tmp{dst.suffix}"
     try:
         yield tmp
-        os.replace(tmp, dst)
+        fsutil.replace(tmp, dst)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -2648,7 +2680,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         return {"vehicles": ctx.data.get("vehicles", [])}
 
     @app.get("/subject/{rel_path:path}")
-    def get_subject_crop(rel_path: str, idx: int = 0) -> FileResponse:
+    def get_subject_crop(rel_path: str, idx: int = 0) -> Response:
         """Cropped thumbnail of one detected object — the subject equivalent of
         /face, reusing the same on-disk crop cache."""
         _require_loaded()
@@ -2662,7 +2694,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         crop_path = _ensure_face_crop(
             crop_src, ctx.faces_root, rel_path, obj_list[idx]["bbox_xywh"],
             f"obj{idx}", ctx.db_path, padding=0.12, square=False)
-        return FileResponse(crop_path, media_type="image/jpeg")
+        return _cached_image(crop_path, "image/jpeg")
 
     # ----- scene grouping --------------------------------------------
 
@@ -2885,7 +2917,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         return FileResponse(path, media_type=media)
 
     @app.get("/thumb/{rel_path:path}")
-    def get_thumb(rel_path: str) -> FileResponse:
+    def get_thumb(rel_path: str) -> Response:
         _require_loaded()
         photo = ctx.photo_index.get(rel_path)
         src = _thumb_source(ctx, rel_path, photo).resolve()
@@ -2900,7 +2932,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                               range_src=lambda: ctx.range_src(rel_path, edit),
                               luts=lambda: _lut_tables(ctx, edit),
                               faces=lambda: ctx.portrait_faces(rel_path, edit))
-        return FileResponse(thumb, media_type="image/jpeg")
+        return _cached_image(thumb, "image/jpeg")
 
     @app.get("/peak/{rel_path:path}")
     def get_focus_peak(rel_path: str, level: str = "normal") -> Response:
@@ -2929,7 +2961,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=f"unknown level: {level}")
         out = _ensure_peak(thumb, ctx.peaks_root, rel_path,
                            editing.edit_hash(edit), level)
-        return FileResponse(out, media_type="image/png")
+        return _cached_image(out, "image/png")
 
     # ----- automatic masks -------------------------------------------
 
@@ -3011,7 +3043,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                         headers={"Cache-Control": "no-store"})
 
     @app.get("/face/{rel_path:path}")
-    def get_face(rel_path: str, idx: int = 0) -> FileResponse:
+    def get_face(rel_path: str, idx: int = 0) -> Response:
         _require_loaded()
         photo = ctx.photo_index.get(rel_path)
         if photo is None:
@@ -3026,7 +3058,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         crop_src = _thumb_source(ctx, rel_path, photo)
         crop_path = _ensure_face_crop(
             crop_src, ctx.faces_root, rel_path, bbox, idx, ctx.db_path)
-        return FileResponse(crop_path, media_type="image/jpeg")
+        return _cached_image(crop_path, "image/jpeg")
 
     return app
 

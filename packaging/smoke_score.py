@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -72,6 +73,8 @@ def main() -> None:
     exe = Path(sys.argv[1]).resolve()
     assert exe.is_file(), f"no executable at {exe}"
     top = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()) / "스모크 테스트"
+    if top.exists():
+        shutil.rmtree(top)      # this script's own folder, left by a previous run
     home = top / "사용자 홈"
     photos = home / "OneDrive" / "바탕 화면" / "그리스"
     workspace = home / "사진 프로젝트"

@@ -288,10 +288,22 @@ def test_peaking_lands_on_the_sharp_half(tmp_path) -> None:
 
 
 def test_peak_levels_are_ordered(tmp_path) -> None:
-    from picture_classifier.server import PEAK_LEVELS
-    img = _textured()
-    cov = {lvl: _peak_coverage(img, tmp_path, lvl) for lvl in PEAK_LEVELS}
-    assert cov["tight"] <= cov["normal"] <= cov["loose"], cov
+    """A looser level marks a superset of a stricter one.
+
+    Checked on one set of gradients: on Windows (x86, OpenCV with IPP) the
+    same gradient computed twice differs in its last bits, which flips a few
+    edge pixels at a threshold. Invisible, but two separate builds of levels
+    whose coverage differs by 0.01% could then come out in either order.
+    """
+    from picture_classifier.server import PEAK_LEVELS, _peak_alpha, _peak_fields
+    fields = _peak_fields(_textured())
+    marked = {lvl: _peak_alpha(fields, *PEAK_LEVELS[lvl]) > 0 for lvl in PEAK_LEVELS}
+    assert not (marked["tight"] & ~marked["normal"]).any()
+    assert not (marked["normal"] & ~marked["loose"]).any()
+    assert marked["tight"].sum() < marked["normal"].sum() < marked["loose"].sum()
+    # And the files the endpoint serves follow the same order.
+    cov = {lvl: _peak_coverage(_textured(), tmp_path, lvl) for lvl in ("tight", "loose")}
+    assert cov["tight"] < cov["loose"], cov
 
 
 def test_derived_caches_are_never_served_half_written(tmp_path) -> None:
@@ -304,8 +316,9 @@ def test_derived_caches_are_never_served_half_written(tmp_path) -> None:
     """
     import os
     import threading
+    import time
     import cv2
-    from picture_classifier.server import _atomic_write, _ensure_thumb
+    from picture_classifier.server import _atomic_write, _cached_image, _ensure_thumb
 
     src = tmp_path / "src.jpg"
     cv2.imwrite(str(src), _textured(600, 900))
@@ -330,10 +343,14 @@ def test_derived_caches_are_never_served_half_written(tmp_path) -> None:
         try:
             while not done.is_set():
                 if dst.exists():
-                    # Size then read, the way a FileResponse does it.
-                    declared = dst.stat().st_size
-                    got = len(dst.read_bytes())
-                    sizes.append(declared - got)
+                    # Read the way the server sends a cached file. A thumbnail
+                    # cut short is missing its end-of-image marker.
+                    body = _cached_image(dst, "image/jpeg").body
+                    sizes.append(0 if body[:2] == b"\xff\xd8" and body[-2:] == b"\xff\xd9" else 1)
+                # Requests come apart, as the browser's do. Windows cannot
+                # rename over a file anyone has open, so four readers holding
+                # it back to back would starve the writer rather than test it.
+                time.sleep(0.002)
         except Exception as exc:            # pragma: no cover - failure path
             errors.append(exc)
 

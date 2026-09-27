@@ -7966,8 +7966,10 @@ function fmtDuration(sec) {
   return r ? `${h} h ${r} min` : `${h} h`;
 }
 
+// Capture times come as the camera's wall clock counted as if it were UTC
+// (folderinfo._wall_seconds), so they are formatted back in UTC to show it.
 function fmtClock(sec) {
-  return new Date(sec * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(sec * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
 }
 
 function renderScenePreview() {
