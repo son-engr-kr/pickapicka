@@ -629,19 +629,37 @@ class AppContext:
         assert self.jpeg_root is not None
         return self.jpeg_root / rel_path
 
-    def _decode_scaled(self, rel_path: str, max_edge: int | None) -> np.ndarray:
+    def _decode_scaled(self, rel_path: str, max_edge: int | None,
+                       quick: bool = False) -> np.ndarray:
         """Oriented RGB uint8 for a photo, optionally downscaled so its long edge
         is <= max_edge. Handles JPEG/PNG and merged HDR results; RAW is decoded
-        via rawpy (already oriented by libraw — no exif_transpose)."""
+        via rawpy (already oriented by libraw — no exif_transpose).
+
+        `quick` is for the editor's preview base, which is shown at screen size
+        and re-graded on every drag: a JPEG is then decoded at the largest DCT
+        scale (1/2, 1/4, 1/8) that still covers `max_edge` before it is resized,
+        and a RAW is binned at half size (`raw.decode_preview`) rather than
+        demosaiced: 0.1 s instead of 0.2 for a JPEG and 0.37 s instead of 0.95
+        for a RAW, on 33 MP Sony files. Against the full decode the preview moves by about
+        a level on average and by up to 5 on 99% of pixels; what is left is on
+        fine detail, where the two resamplings alias differently. The 1:1 view
+        and the export still decode in full.
+        """
         photo = self.photo_index.get(rel_path)
         if photo is not None and photo.get("type") == "raw":
             from . import raw
+            if quick and max_edge:
+                # A sensor whose half is shorter than max_edge gives a base that
+                # long; everything reads the base as fractions of the frame.
+                return np.ascontiguousarray(raw.decode_preview(self.source_path(rel_path), max_edge))
             arr = raw.decode_raw(self.source_path(rel_path))
             if max_edge and max(arr.shape[:2]) > max_edge:
                 arr = raw.fit_within(arr, max_edge)
             return np.ascontiguousarray(arr)
         src = self.source_path(rel_path)
         with Image.open(src) as im:
+            if quick and max_edge:
+                im.draft("RGB", (max_edge, max_edge))   # a no-op for anything but JPEG
             im = ImageOps.exif_transpose(im).convert("RGB")
             if max_edge and max(im.size) > max_edge:
                 im.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
@@ -660,7 +678,8 @@ class AppContext:
         """Cached downscaled (~EDIT_PREVIEW_EDGE) original RGB — the array the
         live editor re-grades on each slider drag (decode happens once)."""
         return self.edit_base_cache.get(
-            rel_path, PhotoArrays.BASE, lambda: self._decode_scaled(rel_path, EDIT_PREVIEW_EDGE))
+            rel_path, PhotoArrays.BASE,
+            lambda: self._decode_scaled(rel_path, EDIT_PREVIEW_EDGE, quick=True))
 
     def auto_fields(self, rel_path: str,
                     edit: dict[str, Any] | None) -> dict[str, np.ndarray] | None:

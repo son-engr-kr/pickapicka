@@ -98,6 +98,22 @@ def test_a_fit_sized_base_is_the_corrected_frame_scaled(tmp_path):
     assert ctx.get_fit_base("a.jpg", edit, 4000) is corrected
 
 
+def test_the_quick_preview_decode_is_the_full_one_smaller(tmp_path):
+    """The editor's base is decoded at a reduced DCT scale: same orientation,
+    same size, and close to what a full decode resized gives."""
+    ctx = _project(tmp_path)
+    # Rotated by its EXIF, which must still be applied after the scaled decode.
+    with Image.open(tmp_path / "a.jpg") as im:
+        exif = Image.Exif()
+        exif[0x0112] = 6
+        im.save(tmp_path / "a.jpg", exif=exif.tobytes(), quality=95)
+    full = ctx._decode_scaled("a.jpg", 120)
+    quick = ctx._decode_scaled("a.jpg", 120, quick=True)
+    assert quick.shape == full.shape and quick.shape[0] > quick.shape[1]
+    d = np.abs(quick.astype(int) - full.astype(int))
+    assert d.mean() < 3.0, d.mean()
+
+
 def test_a_reload_forgets_both(tmp_path):
     ctx = _project(tmp_path)
     ctx.analysis_edit("a.jpg", {"lens": {"distortion": 10}}, draft=False)
