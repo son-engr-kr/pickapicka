@@ -451,9 +451,36 @@ def _normalize_adj(raw: Any) -> dict[str, Any]:
     return out
 
 
+# Strokes already normalized, by the identity of the list they came from.
+# Every draft of a brush stroke carries every point painted so far, and one
+# preview request normalizes its edit a dozen times over (render, the optics
+# key, the analyses, the frame headers): at 36 000 points that was 15 ms a
+# time. The list is held by its entry, so its id cannot be reused while the
+# entry lives, and a normalized list maps to itself, so normalizing a
+# normalized edit is free. Both are shared: treat them as read-only.
+_STROKES_MEMO: "OrderedDict[int, tuple[Any, list[dict[str, Any]]]]" = OrderedDict()
+_STROKES_MEMO_MAX = 8
+_STROKES_LOCK = threading.Lock()
+
+
 def _normalize_strokes(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, (list, tuple)):
         return []
+    with _STROKES_LOCK:
+        hit = _STROKES_MEMO.get(id(raw))
+        if hit is not None and hit[0] is raw:
+            _STROKES_MEMO.move_to_end(id(raw))
+            return hit[1]
+    out = _clean_strokes(raw)
+    with _STROKES_LOCK:
+        _STROKES_MEMO[id(raw)] = (raw, out)
+        _STROKES_MEMO[id(out)] = (out, out)
+        while len(_STROKES_MEMO) > _STROKES_MEMO_MAX:
+            _STROKES_MEMO.popitem(last=False)
+    return out
+
+
+def _clean_strokes(raw: list[Any] | tuple[Any, ...]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for item in raw[:STROKE_MAX]:
         if not isinstance(item, dict):
@@ -1381,15 +1408,69 @@ def _linear_alpha(m: dict[str, Any], sh: int, sw: int,
     return 1.0 - _smoothstep(np.clip((t - 0.5) / f + 0.5, 0.0, 1.0))
 
 
+# Chained digests of a stroke list, by the identity of the (normalized, shared)
+# list: entry k names strokes[:k + 1]. Worked out once a request rather than
+# once for the alpha cache's key and again for the brush's own.
+_DIGEST_MEMO: "OrderedDict[int, tuple[Any, list[bytes]]]" = OrderedDict()
+_DIGEST_MEMO_MAX = 8
+
+
+def _stroke_digests(strokes: list[dict[str, Any]]) -> list[bytes]:
+    with _ALPHA_LOCK:
+        hit = _DIGEST_MEMO.get(id(strokes))
+        if hit is not None and hit[0] is strokes:
+            return hit[1]
+    h = hashlib.blake2b(digest_size=16)
+    out = []
+    for st in strokes:
+        h.update(f"{st['radius']}|{st['erase']}".encode())
+        h.update(np.asarray(st["points"], dtype=np.float64).tobytes())
+        out.append(h.copy().digest())
+    with _ALPHA_LOCK:
+        _DIGEST_MEMO[id(strokes)] = (strokes, out)
+        while len(_DIGEST_MEMO) > _DIGEST_MEMO_MAX:
+            _DIGEST_MEMO.popitem(last=False)
+    return out
+
+
+# A brush's alpha after its first k strokes, for the k a later render starts
+# from. While a stroke is painted, every draft carries the same finished strokes
+# and one more point on the last; replaying all of them cost 12 ms a stroke on
+# every draft, so painting got slower with every stroke laid down. Now a draft
+# replays only the stroke under the pointer. Kept read-only; a render that
+# continues from one works on a copy.
+_BRUSH_PREFIX: "OrderedDict[bytes, np.ndarray]" = OrderedDict()
+_BRUSH_PREFIX_MAX = 6
+
+
 def _brush_alpha(m: dict[str, Any], sh: int, sw: int,
                  roi: tuple[float, float, float, float]) -> np.ndarray:
     """Replay the strokes in order: paint strokes union in, erase strokes take
     out, each softened by its own radius so feather scales with brush size."""
-    alpha = np.zeros((sh, sw), dtype=np.float32)
+    strokes = m["strokes"]
+    n = len(strokes)
+    digests = _stroke_digests(strokes)
+    head = f"{m['feather']}|{sh}x{sw}|{roi}|".encode()
+
+    def after(k: int) -> bytes:
+        return head + digests[k - 1]
+
+    alpha, start = np.zeros((sh, sw), dtype=np.float32), 0
+    with _ALPHA_LOCK:
+        # All of them (nothing about the strokes changed), else all but the
+        # last (the last is being painted).
+        for k in (n, n - 1):
+            hit = _BRUSH_PREFIX.get(after(k)) if k >= 1 else None
+            if hit is not None:
+                _BRUSH_PREFIX.move_to_end(after(k))
+                alpha, start = hit.copy(), k
+                break
+    keep: list[tuple[bytes, np.ndarray]] = []
     f = m["feather"] / 100.0
     x0, y0, rw, rh = roi
     # Stroke coords are whole-frame fractions; map them into this window.
-    for stroke in m["strokes"]:
+    for i in range(start, n):
+        stroke = strokes[i]
         r_px = max(1.0, stroke["radius"] * sw / rw)
         layer = np.zeros((sh, sw), dtype=np.uint8)
         pts = np.array([[(p[0] - x0) / rw * sw, (p[1] - y0) / rh * sh]
@@ -1425,6 +1506,14 @@ def _brush_alpha(m: dict[str, Any], sh: int, sw: int,
             alpha *= 1.0 - soft
         else:
             alpha = np.maximum(alpha, soft)
+        if i >= n - 2:   # after all but the last, and after all
+            keep.append((after(i + 1), alpha.copy()))
+    with _ALPHA_LOCK:
+        for key, arr in keep:
+            arr.flags.writeable = False
+            _BRUSH_PREFIX[key] = arr
+        while len(_BRUSH_PREFIX) > _BRUSH_PREFIX_MAX:
+            _BRUSH_PREFIX.popitem(last=False)
     return alpha
 
 
@@ -1527,9 +1616,7 @@ def _alpha_key(mask: dict[str, Any], sh: int, sw: int,
         raise AssertionError(
             f"{mask['type']} masks depend on the pixels and are not cached here")
     else:
-        for s in mask["strokes"]:
-            h.update(f"{s['radius']}|{s['erase']}".encode())
-            h.update(np.asarray(s["points"], dtype=np.float64).tobytes())
+        h.update(_stroke_digests(mask["strokes"])[-1])
     return h.digest()
 
 
@@ -1624,11 +1711,25 @@ def _full_edit_from_adj(adj: dict[str, Any]) -> dict[str, Any]:
 def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
                  roi: tuple[float, float, float, float],
                  auto: dict[str, np.ndarray] | None = None,
-                 src: np.ndarray | None = None) -> np.ndarray:
+                 src: np.ndarray | None = None,
+                 frame_size: tuple[int, int] | None = None) -> np.ndarray:
     """Blend a locally graded copy through each mask, in order. `img` is float32
-    RGB clipped to [0,1] and is modified in place."""
+    RGB clipped to [0,1] and is modified in place.
+
+    `frame_size` (w, h) is the photo's own size, for a render of the whole
+    frame at any scale: the mask grid is then the photo's, not this array's.
+    Worked out from the array, a 1100 px draft got a grid a row shorter than
+    the 2048 px preview it stands in for, so the cached masks of the one never
+    served the other, and a brush was drawn again from nothing on every settle.
+    """
     h, w = img.shape[:2]
-    sh, sw = _work_size(h, w)
+    if frame_size is not None and roi == FULL_ROI:
+        fw, fh = frame_size
+        assert abs(fh / fw - h / w) < 0.01, \
+            f"frame_size {frame_size} is not the shape of this {w}x{h} frame"
+        sh, sw = _work_size(fh, fw)
+    else:
+        sh, sw = _work_size(h, w)
     for m in masks:
         if not mask_is_active(m):
             continue
@@ -2021,7 +2122,8 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
            optics: bool = True,
            faces: list[dict[str, Any]] | None = None,
            cache_key: str | None = None,
-           ca: tuple[float, float] | None = None) -> np.ndarray:
+           ca: tuple[float, float] | None = None,
+           frame_size: tuple[int, int] | None = None) -> np.ndarray:
     """Apply `edit` to an RGB uint8 image and return a new RGB uint8 image.
     A neutral edit returns the input array unchanged (no copy).
 
@@ -2066,6 +2168,10 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     `faces` is `portrait.analyze` of the whole corrected frame, for the skin
     smoothing: the caller's to compute and cache, like `auto`, and required
     whenever the edit smooths skin (an empty list says there are no faces).
+
+    `frame_size` is the photo's (w, h), for a caller that renders the whole
+    frame at several scales, as the editor does: masks are then built on the
+    photo's own grid at every scale (see `_apply_masks`).
 
     `ca` hands the optics an automatic chromatic-aberration estimate the
     caller already has (see `lens.apply_lens`), rather than one made afresh
@@ -2123,7 +2229,7 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         img = _grade(img, e, roi, seed)
         img = np.clip(img, 0.0, 1.0)
         if e["masks"]:
-            img = _apply_masks(img, e["masks"], roi, auto, src)
+            img = _apply_masks(img, e["masks"], roi, auto, src, frame_size)
         out = _to_u8(img)
     if do_geom:
         out = apply_geometry(out, e)

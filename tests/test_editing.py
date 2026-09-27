@@ -1399,6 +1399,90 @@ def _check_the_pregrade_cache(calls: list) -> None:
     assert np.array_equal(got, editing.render(img, {**moved, "exposure": 0.6}))
 
 
+def _strokes(n: int, pts: int, seed: int = 0, erase_every: int = 3) -> list:
+    rng = np.random.default_rng(seed)
+    out = []
+    for i in range(n):
+        x0, y0 = rng.uniform(0.2, 0.8, 2)
+        out.append({"radius": 0.03, "erase": i % erase_every == erase_every - 1,
+                    "points": [[float(x0 + 0.2 * np.sin(t / 9 + i)), float(y0 + 0.1 * np.cos(t / 7))]
+                               for t in range(pts)]})
+    return out
+
+
+def _clear_brush_caches() -> None:
+    for cache in (editing._ALPHA_CACHE, editing._BRUSH_PREFIX, editing._DIGEST_MEMO,
+                  editing._STROKES_MEMO):
+        cache.clear()
+
+
+def test_painting_replays_only_the_stroke_being_painted() -> None:
+    """While a stroke is painted every draft carries the finished strokes and
+    a longer last one. The finished ones are not drawn again, and the result is
+    the one a full replay gives."""
+    import cv2
+    strokes = _strokes(6, 40)
+
+    def draft(end: int) -> np.ndarray:
+        # A fresh copy each time, as each request parses the edit afresh.
+        live = [dict(s, points=list(s["points"])) for s in strokes[:-1]] \
+            + [dict(strokes[-1], points=strokes[-1]["points"][:end])]
+        m = editing.normalize_mask({"type": "brush", "feather": 40, "strokes": live})
+        return editing._brush_alpha(m, 120, 180, editing.FULL_ROI)
+
+    drawn = []
+    real = cv2.polylines
+    editing.cv2.polylines = lambda *a, **k: drawn.append(1) or real(*a, **k)
+    try:
+        _clear_brush_caches()
+        draft(10)
+        draft(20)
+        drawn.clear()
+        got = draft(30).copy()
+        assert len(drawn) == 1, f"drew {len(drawn)} strokes for the one being painted"
+        _clear_brush_caches()
+        assert np.array_equal(got, draft(30)), "the cached replay differs from a full one"
+    finally:
+        editing.cv2.polylines = real
+
+
+def test_a_draft_and_the_preview_share_the_photos_mask_grid() -> None:
+    """Rendered with the photo's size, a draft and the settled preview build
+    their masks on the same grid, so the settle reuses what the drafts drew."""
+    import cv2
+    rng = np.random.default_rng(2)
+    preview = rng.integers(0, 256, (1366, 2048, 3), dtype=np.uint8)
+    draft = cv2.resize(preview, (1100, 733), interpolation=cv2.INTER_AREA)
+    assert editing._work_size(733, 1100) != editing._work_size(1366, 2048)   # what went wrong
+    brush = {"type": "brush", "feather": 40, "strokes": _strokes(3, 30), "adj": {"exposure": 0.5}}
+    edit = {"masks": [brush]}
+    drawn = []
+    real = cv2.polylines
+    editing.cv2.polylines = lambda *a, **k: drawn.append(1) or real(*a, **k)
+    try:
+        _clear_brush_caches()
+        editing.render(draft, edit, frame_size=(7028, 4688))
+        drawn.clear()
+        editing.render(preview, edit, frame_size=(7028, 4688))
+        assert drawn == [], f"the settle drew {len(drawn)} strokes again"
+    finally:
+        editing.cv2.polylines = real
+    with pytest.raises(AssertionError, match="not the shape"):
+        editing.render(preview, edit, frame_size=(4688, 7028))
+
+
+def test_normalized_strokes_are_the_same_whoever_asks() -> None:
+    raw = _strokes(4, 30) + [{"radius": 9, "points": [[5, -3], "x", [0.2]]}, "junk"]
+    _clear_brush_caches()
+    first = editing._normalize_strokes(raw)
+    again = editing._normalize_strokes(raw)
+    assert again is first
+    assert editing._normalize_strokes(first) is first
+    _clear_brush_caches()
+    assert editing._normalize_strokes(raw) == first
+    assert first[-1]["points"] == [[2.0, -1.0]] and first[-1]["radius"] == 0.5
+
+
 def _main() -> None:
     import re
     from pathlib import Path

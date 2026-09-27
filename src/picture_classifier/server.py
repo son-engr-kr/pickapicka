@@ -2375,6 +2375,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             else:
                 base, which = ctx.get_corrected_base(rel, fit_edit), "corrected"
             analysis = ctx.analysis_edit(rel, fit_edit, draft)
+            photo = ctx.photo_index[rel]
+            frame = (int(photo["width"]), int(photo["height"])) \
+                if photo.get("width") and photo.get("height") else None
             out = editing.render(base, fit_edit,
                                  meta=ctx.photo_meta(rel),
                                  auto=ctx.auto_fields(rel, analysis),
@@ -2383,7 +2386,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                                  optics=draft,
                                  faces=ctx.portrait_faces(rel, analysis),
                                  cache_key=f"{rel}|{which}",
-                                 ca=ctx.ca_for(rel, fit_edit))
+                                 ca=ctx.ca_for(rel, fit_edit),
+                                 frame_size=frame)
         else:
             out = _render_roi(ctx, payload)
         buf = io.BytesIO()
