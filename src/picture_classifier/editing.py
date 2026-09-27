@@ -1306,13 +1306,25 @@ def _apply_color(rgb: np.ndarray, vibrance: int, saturation: int) -> np.ndarray:
     extra push weighted by (1 - current saturation), so already-vivid pixels
     (and skin) move less. No HSV round-trip, so no hue shift."""
     # Plane by plane with OpenCV: the channel max and min over an (h, w, 3)
-    # array were two thirds of the basic panel's render time.
+    # array were two thirds of the basic panel's render time. In place on the
+    # split planes, which are copies, so a 33 MP export holds one frame's worth
+    # of temporaries here rather than three: the same operations in the same
+    # order as y + factor * (c - y), so the same floats.
     y = _luma(rgb)
     r, g, b = cv2.split(rgb)
-    sat_proxy = cv2.subtract(cv2.max(cv2.max(r, g), b), cv2.min(cv2.min(r, g), b))
-    np.clip(sat_proxy, 0.0, 1.0, out=sat_proxy)
-    factor = (1.0 + saturation / 100.0) + (vibrance / 100.0) * (1.0 - sat_proxy)
-    return cv2.merge([y + factor * (c - y) for c in (r, g, b)])
+    factor = cv2.max(cv2.max(r, g), b)
+    low = cv2.min(cv2.min(r, g), b)
+    cv2.subtract(factor, low, dst=factor)
+    del low
+    np.clip(factor, 0.0, 1.0, out=factor)             # the saturation proxy
+    np.subtract(1.0, factor, out=factor)
+    factor *= vibrance / 100.0
+    factor += 1.0 + saturation / 100.0
+    for c in (r, g, b):
+        c -= y
+        c *= factor
+        c += y
+    return cv2.merge([r, g, b])
 
 
 def _sharpen_params(e: dict[str, Any]) -> dict[str, int]:
