@@ -32,6 +32,14 @@ whole job: decide, filter, move on.
   and a **filmstrip** of the scene along the bottom. The editor has the same
   filmstrip; moving to another photo there saves the edit.
 
+- **Scoring shows how long is left**: the steps (find photos, score, group
+  faces, open), how many are done, the time left, and **Stop**. Stopping a new
+  project leaves nothing listed (its RAW previews stay cached for the next
+  try); stopping a re-score leaves the project as it was.
+- **Preferences** (the gear, or `⌘,`) hold the app's settings (key bar, info
+  panel, loupe, what is behind photos, the tours), the workspaces, and a way to
+  each of the project's own settings.
+
 ## Scoring and suggestions
 
 - **Per-photo scoring**: Laplacian blur, brightness exposure, optional
@@ -60,6 +68,21 @@ show at once and are saved in the background in the order made, so keys can be
 pressed as fast as you can judge. The bar along the bottom always shows the
 keys for where you are, `?` lists every one (also in the
 [README](../README.md#keyboard)), and hovering any button shows its shortcut.
+
+- **Stars and colour labels**, set apart from the decision, with Lightroom's
+  keys: `1`–`5` stars and `0` none, `6`–`9` a red, yellow, green or blue label
+  (the same key again removes it). They show on the tiles, the filmstrip, the
+  viewer and the info panel, where they can be clicked, and the filter bar
+  filters on them. Exports carry them as `xmp:Rating` and `xmp:Label`, which
+  Lightroom and Bridge read, and the EXIF Rating Windows shows; a copied
+  original gets them in its own XMP, its image data untouched. The number keys
+  used to be aliases for the decisions: those are `P`, `R` and `V` (and `A`).
+- **Compare** (`C`): two to four photos side by side, the selection or the
+  highlighted photo and the next. One pane is active (`Tab` or a click); the
+  arrows swap its photo for the one before or after, and the decision, star and
+  label keys act on it. `Z`, or a click, takes every pane to 100% at the same
+  place, and dragging one pans them all, to see which frame of a burst is
+  sharpest. `Esc` returns to the grid on the active photo.
 
 The keyboard cursor follows the mouse only when the mouse moves: a pointer
 resting on the grid does not pull the cursor when the page turns under it.
