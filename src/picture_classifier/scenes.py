@@ -1,6 +1,7 @@
 """Scene grouping: from folder structure or from EXIF capture-time gaps."""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -34,9 +35,14 @@ def _scene_ref(photo: dict[str, Any]) -> str:
 
 def group_by_folder(photos: list[dict[str, Any]]) -> None:
     """Set photo['scene'] from the first directory component of rel_path.
-    Loose files (no subdir) become '(none)'."""
+    Loose files (no subdir) become '(none)'.
+
+    Either separator: a rel_path is written by str(Path), so a project scored on
+    Windows has backslashes in it. Splitting on "/" alone put every photo of such
+    a project into '(none)' the moment grouping was switched back to by folder.
+    """
     for p in photos:
-        parts = _scene_ref(p).split("/", 1)
+        parts = re.split(r"[\\/]", _scene_ref(p), maxsplit=1)
         p["scene"] = parts[0] if len(parts) > 1 else "(none)"
 
 
