@@ -2438,3 +2438,38 @@ body.inspector-off #inspector { display: none; }
 #filter-bar { gap: 12px; }
 .filter-extra { margin-left: auto; display: flex; gap: 6px; flex-shrink: 0; }
 .filter-extra select { height: 26px; font-size: var(--fs-sm); }
+
+/* ----- compare ----- */
+#compare { position: fixed; top: var(--topbar-h); left: 0; right: 0; bottom: 0; z-index: 100;
+  display: flex; flex-direction: column; background: #0b0b0d; }
+#compare.hidden { display: none; }
+#compare-top { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 14px;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+#compare-title { font-weight: 600; font-size: var(--fs-md); }
+#compare-hint { flex: 1; color: var(--ink-faint); font-size: var(--fs-sm); }
+#compare-panes { flex: 1 1 auto; min-height: 0; display: grid; gap: 6px; padding: 6px; }
+#compare-panes[data-n="2"] { grid-template-columns: 1fr 1fr; }
+#compare-panes[data-n="3"] { grid-template-columns: 1fr 1fr 1fr; }
+#compare-panes[data-n="4"] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.cmp-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; border: 2px solid var(--line);
+  border-radius: var(--r2); background: #000; overflow: hidden; }
+.cmp-pane.active { border-color: var(--accent); }
+.cmp-pane header { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: var(--panel);
+  font-size: var(--fs-sm); }
+.cmp-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-marks { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
+.cmp-decision { padding: 1px 8px; border-radius: 999px; font-size: var(--fs-xs); font-weight: 600;
+  background: var(--raised); color: var(--ink-dim); }
+.cmp-decision.pick { background: var(--pick); color: #fff; }
+.cmp-decision.review { background: var(--review); color: #fff; }
+.cmp-decision.reject { background: var(--reject); color: #fff; }
+.cmp-view { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; align-items: center;
+  justify-content: center; cursor: zoom-in; }
+.cmp-view img { max-width: 100%; max-height: 100%; display: block; user-select: none; }
+#compare-panes.zoomed .cmp-view { overflow: auto; display: block; cursor: grab; }
+#compare-panes.zoomed .cmp-view img { max-width: none; max-height: none; }
+.cmp-why { padding: 5px 10px; font-size: var(--fs-xs); color: var(--ink-dim); background: var(--panel);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The photo takes what the name and the reasons leave, zoomed or not. */
+.cmp-view { flex: 1 1 0; }
+.cmp-pane header, .cmp-why { flex-shrink: 0; }

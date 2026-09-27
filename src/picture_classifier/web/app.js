@@ -640,9 +640,7 @@ function starsHtml(rating, cls = "stars") {
     + [1, 2, 3, 4, 5].map((n) => `<i data-star="${n}" class="${n <= r ? "on" : ""}">★</i>`).join("") + "</span>";
 }
 
-function markAt(absIdx, marks) {
-  const photo = state.filteredPhotos[absIdx];
-  if (!photo) return;
+function applyMarks(photo, marks) {
   if (marks.rating !== undefined) {
     if (marks.rating) photo.rating = marks.rating; else delete photo.rating;
   }
@@ -650,6 +648,12 @@ function markAt(absIdx, marks) {
     if (marks.label) photo.label = marks.label; else delete photo.label;
   }
   saveMarks(photo, marks);
+}
+
+function markAt(absIdx, marks) {
+  const photo = state.filteredPhotos[absIdx];
+  if (!photo) return;
+  applyMarks(photo, marks);
   recomputeFilter();
   const at = state.filteredPhotos.indexOf(photo);
   // A filter on stars or a label can drop the photo; the next one is then in
@@ -1587,14 +1591,19 @@ function makeTile(p, absIdx) {
 // Hovering a tile focuses it, but only when the pointer really moves. A page
 // turn re-renders the tiles under a resting pointer and the browser reports it
 // entering whichever tile landed there, which pulled the cursor off the photo
-// the arrow key had just moved to (the 5th photo became the 6th).
-let lastPointer = null;
+// the arrow key had just moved to (the 5th photo became the 6th). Closing the
+// viewer or compare over a resting pointer does the same, so the position is
+// the last one seen anywhere, not only over the grid.
+let pointerBefore = null, pointerNow = null;
 
 function bindGridHover() {
   const grid = $("#grid");
+  document.addEventListener("pointermove", (e) => {
+    pointerBefore = pointerNow;
+    pointerNow = { x: e.clientX, y: e.clientY };
+  }, true);
   grid.addEventListener("pointermove", (e) => {
-    if (lastPointer && lastPointer.x === e.clientX && lastPointer.y === e.clientY) return;
-    lastPointer = { x: e.clientX, y: e.clientY };
+    if (pointerBefore && pointerBefore.x === e.clientX && pointerBefore.y === e.clientY) return;
     const tile = e.target.closest(".tile");
     if (tile && tile.dataset.idx !== undefined) focusAt(Number(tile.dataset.idx), false);
   });
@@ -1769,12 +1778,16 @@ function saveDecision(photo, decision) {
 // `advance` is for the keyboard: the key acts on the highlighted photo and
 // the cursor moves on to the next. A click on a tile's own button decides that
 // tile and leaves the cursor alone.
-function decideAt(absIdx, decision, { advance = false } = {}) {
-  const photo = state.filteredPhotos[absIdx];
-  if (!photo) return;
+function applyDecision(photo, decision) {
   photo.decision = decision;
   photo.decided_at = decision ? new Date().toISOString() : null;
   saveDecision(photo, decision);
+}
+
+function decideAt(absIdx, decision, { advance = false } = {}) {
+  const photo = state.filteredPhotos[absIdx];
+  if (!photo) return;
+  applyDecision(photo, decision);
   recomputeFilter();
   renderSidebar();
   const n = state.filteredPhotos.length;
@@ -6773,6 +6786,24 @@ function bindKeys() {
       return;
     }
 
+    if (compareOpen()) {
+      const n = compare.photos.length;
+      if (k === "Escape") { closeCompare(); e.preventDefault(); return; }
+      if (k === "Tab") { setCompareActive((compare.active + (e.shiftKey ? n - 1 : 1)) % n); e.preventDefault(); return; }
+      if (k === "ArrowRight" || k === "ArrowLeft") { compareStep(k === "ArrowRight" ? 1 : -1); e.preventDefault(); return; }
+      if (k === "z" || k === "Z" || k === "f" || k === "F") { compareToggleZoom(); e.preventDefault(); return; }
+      if (k === "e" || k === "E") {
+        const at = state.filteredPhotos.indexOf(compare.photos[compare.active]);
+        if (at >= 0) { closeCompare(); openEditModal(at); }
+        e.preventDefault(); return;
+      }
+      const mark = markForKey(k, compare.photos[compare.active]);
+      if (mark) { compareMark(mark); e.preventDefault(); return; }
+      const decision = decisionForKey(k);
+      if (decision !== undefined) { compareDecide(decision); e.preventDefault(); }
+      return;
+    }
+
     if (state.modal.open) {
       if (k === "Escape") { closeModal(); e.preventDefault(); return; }
       if (k === "ArrowRight" || k === " ") { modalNav(+1); e.preventDefault(); return; }
@@ -6823,6 +6854,7 @@ function bindKeys() {
     if (k === "b" || k === "B") { toggleBoxes(); e.preventDefault(); return; }
     if (k === "k" || k === "K") { togglePeak(); e.preventDefault(); return; }
     if (k === "i" || k === "I") { toggleInspector(); e.preventDefault(); return; }
+    if (k === "c" || k === "C") { openCompare(); e.preventDefault(); return; }
     if (k === "x" || k === "X") { toggleSelect(state.cursorIdx, e.shiftKey); e.preventDefault(); return; }
     if ((k === "d" || k === "D") && state.selection.size) {
       downloadSelection(); e.preventDefault(); return;
@@ -7000,6 +7032,190 @@ function bindInspector() {
   }
 }
 
+// ---------- compare ----------
+// Two to four photos side by side, to choose between frames of a burst: the
+// selection if two or more are selected, else the highlighted photo and the
+// next. One pane is active; the arrows swap its photo for the one before or
+// after it (skipping those already up), and the decision, star and label keys
+// act on it. Z zooms every pane to 100% at the same place and panning one
+// pans them all, since sharpness is what a burst differs in.
+const COMPARE_MAX = 4;
+const compare = { photos: [], list: [], active: 0, zoom: false, syncing: false };
+
+function compareOpen() { return !$("#compare").classList.contains("hidden"); }
+
+function openCompare() {
+  const list = state.filteredPhotos;
+  if (list.length < 2) return;
+  const picked = list.filter((p) => state.selection.has(p.rel_path));
+  const i = state.cursorIdx;
+  compare.photos = picked.length >= 2 ? picked.slice(0, COMPARE_MAX)
+    : [list[i], list[i + 1] || list[i - 1]];
+  compare.list = list.slice();   // the order to step through, fixed while comparing
+  compare.active = 0;
+  compare.zoom = false;
+  $("#compare-hint").textContent = picked.length > COMPARE_MAX
+    ? `The first ${COMPARE_MAX} of the ${picked.length} selected` : "";
+  $("#compare").classList.remove("hidden");
+  buildComparePanes();
+}
+
+function closeCompare() {
+  const photo = compare.photos[compare.active];
+  $("#compare").classList.add("hidden");
+  const at = state.filteredPhotos.indexOf(photo);
+  if (at >= 0) state.cursorIdx = at;
+  showCursor();
+}
+
+function buildComparePanes() {
+  const wrap = $("#compare-panes");
+  wrap.dataset.n = compare.photos.length;
+  wrap.classList.toggle("zoomed", compare.zoom);
+  wrap.innerHTML = compare.photos.map((_, i) => `<section class="cmp-pane" data-i="${i}">
+      <header><span class="cmp-name"></span><span class="cmp-marks"></span><span class="cmp-decision"></span></header>
+      <div class="cmp-view"><img alt="" draggable="false" /></div>
+      <footer class="cmp-why"></footer>
+    </section>`).join("");
+  wrap.querySelectorAll(".cmp-pane").forEach((pane, i) => {
+    pane.addEventListener("pointerdown", () => setCompareActive(i));
+    const view = pane.querySelector(".cmp-view");
+    view.addEventListener("scroll", () => syncCompareScroll(view));
+    bindComparePan(view);
+    loadComparePhoto(i);
+  });
+  renderCompare();
+}
+
+// The thumbnail at once, the full image when it arrives, as in the viewer.
+function loadComparePhoto(i) {
+  const pane = $(`#compare-panes .cmp-pane[data-i="${i}"]`);
+  const photo = compare.photos[i];
+  const img = pane.querySelector("img");
+  pane.dataset.rel = photo.rel_path;
+  img.src = thumbUrl(photo);
+  const full = new Image();
+  // Late, and the pane has moved on to another photo: not this one's to show.
+  full.onload = () => { if (pane.dataset.rel === photo.rel_path) img.src = full.src; };
+  full.src = "/img/" + enc(photo.rel_path);
+}
+
+function renderCompare() {
+  $$("#compare-panes .cmp-pane").forEach((pane, i) => {
+    const p = compare.photos[i];
+    pane.classList.toggle("active", i === compare.active);
+    pane.querySelector(".cmp-name").textContent = basename(p.rel_path);
+    pane.querySelector(".cmp-name").title = p.rel_path;
+    pane.querySelector(".cmp-marks").innerHTML = starsHtml(p.rating)
+      + (p.label ? `<span class="label-dot ${p.label}"></span>` : "");
+    const d = pane.querySelector(".cmp-decision");
+    d.className = "cmp-decision" + (p.decision ? ` ${p.decision}` : "");
+    d.textContent = p.decision ? AUTO_LABEL[p.decision] : "Undecided";
+    const suggestion = p.auto_suggestion ? `Suggested: ${AUTO_LABEL[p.auto_suggestion]}` : "";
+    pane.querySelector(".cmp-why").textContent = [suggestion, ...explainScores(p)].filter(Boolean).join("  ·  ");
+  });
+  $("#compare-title").textContent = `Compare ${compare.photos.length}`;
+  setBtnLabel($("#compare-zoom"), compare.zoom ? "Fit" : "100%");
+}
+
+function setCompareActive(i) {
+  if (i === compare.active) return;
+  compare.active = i;
+  renderCompare();
+}
+
+function compareStep(delta) {
+  const list = compare.list, shown = new Set(compare.photos);
+  let j = list.indexOf(compare.photos[compare.active]) + delta;
+  while (j >= 0 && j < list.length && shown.has(list[j])) j += delta;
+  if (j < 0 || j >= list.length) return;
+  compare.photos[compare.active] = list[j];
+  loadComparePhoto(compare.active);
+  renderCompare();
+}
+
+// Zoom every pane to 100% around the same point, given as a fraction of the
+// photo, or back to fit.
+function compareToggleZoom(fx = 0.5, fy = 0.5) {
+  compare.zoom = !compare.zoom;
+  $("#compare-panes").classList.toggle("zoomed", compare.zoom);
+  renderCompare();
+  if (!compare.zoom) return;
+  requestAnimationFrame(() => {
+    compare.syncing = true;
+    $$("#compare-panes .cmp-view").forEach((v) => {
+      v.scrollLeft = fx * v.scrollWidth - v.clientWidth / 2;
+      v.scrollTop = fy * v.scrollHeight - v.clientHeight / 2;
+    });
+    requestAnimationFrame(() => { compare.syncing = false; });
+  });
+}
+
+// Panning one pane pans the others to the same place, as a fraction of each
+// photo, so frames of different sizes still line up.
+function syncCompareScroll(src) {
+  if (compare.syncing || !compare.zoom) return;
+  compare.syncing = true;
+  const fx = (src.scrollLeft + src.clientWidth / 2) / src.scrollWidth;
+  const fy = (src.scrollTop + src.clientHeight / 2) / src.scrollHeight;
+  $$("#compare-panes .cmp-view").forEach((v) => {
+    if (v === src) return;
+    v.scrollLeft = fx * v.scrollWidth - v.clientWidth / 2;
+    v.scrollTop = fy * v.scrollHeight - v.clientHeight / 2;
+  });
+  requestAnimationFrame(() => { compare.syncing = false; });
+}
+
+// A click on a fitted photo zooms in there; on a zoomed one, a drag pans.
+function bindComparePan(view) {
+  let drag = null;
+  view.addEventListener("pointerdown", (e) => {
+    if (!compare.zoom) return;
+    drag = { x: e.clientX, y: e.clientY, left: view.scrollLeft, top: view.scrollTop, moved: false };
+    view.setPointerCapture(e.pointerId);
+  });
+  view.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+    view.scrollLeft = drag.left - dx;
+    view.scrollTop = drag.top - dy;
+  });
+  view.addEventListener("pointerup", (e) => {
+    const was = drag;
+    drag = null;
+    if (was && was.moved) return;
+    const img = view.querySelector("img").getBoundingClientRect();
+    const fx = Math.min(1, Math.max(0, (e.clientX - img.left) / img.width));
+    const fy = Math.min(1, Math.max(0, (e.clientY - img.top) / img.height));
+    compareToggleZoom(fx, fy);
+  });
+}
+
+function compareDecide(decision) {
+  applyDecision(compare.photos[compare.active], decision);
+  afterCompareChange();
+}
+
+function compareMark(marks) {
+  applyMarks(compare.photos[compare.active], marks);
+  afterCompareChange();
+}
+
+// The grid behind is kept current, so closing lands on what was decided.
+function afterCompareChange() {
+  recomputeFilter();
+  renderSidebar();
+  renderMain();
+  renderCompare();
+}
+
+function bindCompare() {
+  $("#compare-btn").addEventListener("click", openCompare);
+  $("#compare-close").addEventListener("click", closeCompare);
+  $("#compare-zoom").addEventListener("click", () => compareToggleZoom());
+}
+
 // ---------- filmstrip ----------
 // The photos of the list you are working through, along the bottom of the
 // viewer and the editor. Built once per list and only re-marked as you move,
@@ -7057,7 +7273,15 @@ async function goToModule(mod) {
     if (now === "edit") await leaveEditor("close");
     return;
   }
-  // Edit: the photo in the viewer, else the highlighted one in the grid.
+  // Edit: the photo in the viewer or the active compare pane, else the
+  // highlighted one in the grid.
+  if (compareOpen()) {
+    const at = state.filteredPhotos.indexOf(compare.photos[compare.active]);
+    if (at < 0) return;
+    closeCompare();
+    openEditModal(at);
+    return;
+  }
   const i = state.modal.open ? state.modal.idx : state.cursorIdx;
   if (state.modal.open) closeModal();
   openEditModal(i);
@@ -7131,6 +7355,7 @@ function closeMenus() {
 
 // ---------- UI bindings ----------
 function bindUi() {
+  bindCompare();
   bindInspector();
   bindTopbar();
   bindMenu("#workspace-btn", "#workspace-menu");
@@ -8575,6 +8800,7 @@ const KEYMAP = {
     ]},
     { group: "Open", keys: [
       { k: ["Enter"], label: "View full screen", bar: "View" },
+      { k: ["C"], label: "Compare the selection, or this photo and the next" },
       { k: ["E"], label: "Edit", bar: "Edit" },
     ]},
     { group: "Select", keys: [
@@ -8616,6 +8842,26 @@ const KEYMAP = {
       { k: ["Esc"], label: "Back to the grid", bar: "Close" },
     ]},
   ],
+  compare: [
+    { group: "Choose", note: "Acts on the active pane, framed in blue.", keys: [
+      { k: ["Tab"], alt: "a click", label: "Next pane", bar: "Pane" },
+      { k: ["←", "→"], label: "The photo before or after, in the active pane", bar: "Swap" },
+      { k: ["P"], label: "Pick", bar: true },
+      { k: ["R"], label: "Reject", bar: true },
+      { k: ["V"], label: "Review", bar: true },
+      { k: ["U"], label: "Clear the decision" },
+      { k: ["1", "–", "5"], label: "Stars", bar: "Stars" },
+      { k: ["6", "7", "8", "9"], label: "Colour label" },
+    ]},
+    { group: "Look closer", keys: [
+      { k: ["Z"], alt: "F or a click", label: "Every pane to 100% at the same place, or back to fit", bar: "100%" },
+      { k: ["drag"], label: "Pan, all panes together" },
+    ]},
+    { group: "Leave", keys: [
+      { k: ["E"], label: "Edit the active photo" },
+      { k: ["Esc"], label: "Back to the grid, on the active photo", bar: "Close" },
+    ]},
+  ],
   editor: [
     { group: "Photo", keys: [
       { k: ["←", "→"], label: "Previous / next photo", bar: "Photo" },
@@ -8638,10 +8884,11 @@ const KEYMAP = {
     ]},
   ],
 };
-const KEY_CONTEXT_NAMES = { grid: "Culling", viewer: "Viewer", editor: "Editor" };
+const KEY_CONTEXT_NAMES = { grid: "Culling", viewer: "Viewer", compare: "Compare", editor: "Editor" };
 
 function keyContext() {
   if (!$("#edit-modal").classList.contains("hidden")) return "editor";
+  if (compareOpen()) return "compare";
   return state.modal.open ? "viewer" : "grid";
 }
 

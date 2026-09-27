@@ -404,6 +404,7 @@
                   data-peak-level="loose">loose</button>
         </span>
         <button id="boxes-btn" class="hidden" title="Show detected subject boxes (B)" data-icon="boxes">Boxes</button>
+        <button id="compare-btn" type="button" title="Compare the selected photos, or this one and the next, side by side (C)" data-icon="swap">Compare</button>
         <button id="inspector-btn" type="button" title="Photo info (I)" data-icon="info">Info</button>
         <div class="menu-wrap">
           <button id="more-btn" type="button" data-icon="more" aria-haspopup="menu" aria-expanded="false">More</button>
@@ -506,6 +507,7 @@
         <div class="keys-tabs" role="tablist">
           <button type="button" role="tab" data-ctx="grid">Culling</button>
           <button type="button" role="tab" data-ctx="viewer">Viewer</button>
+          <button type="button" role="tab" data-ctx="compare">Compare</button>
           <button type="button" role="tab" data-ctx="editor">Editor</button>
         </div>
         <button id="keys-close" type="button" data-icon="close" title="Close (Esc)" aria-label="Close"></button>
@@ -850,6 +852,19 @@
       <button id="modal-edit" data-icon="pencil" title="Edit this photo (E)">Edit</button>
     </div>
     <div class="keybar" data-context="viewer"></div>
+  </div>
+
+  <!-- Two to four photos side by side, zoomed and panned together, to choose
+       between frames of a burst. -->
+  <div id="compare" class="hidden" role="dialog" aria-label="Compare photos">
+    <div id="compare-top">
+      <span id="compare-title">Compare</span>
+      <span id="compare-hint"></span>
+      <button id="compare-zoom" type="button" title="Fit or 100%, in every pane (Z)">100%</button>
+      <button id="compare-close" type="button" data-icon="close" title="Back to the grid (Esc)" aria-label="Close"></button>
+    </div>
+    <div id="compare-panes"></div>
+    <div class="keybar" data-context="compare"></div>
   </div>
 
   <div id="edit-modal" class="hidden">
