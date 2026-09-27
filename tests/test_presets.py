@@ -134,7 +134,7 @@ def _main() -> None:
     import re
     from pathlib import Path
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    declared = len(re.findall(r"^def test_", Path(__file__).read_text(), re.M))
+    declared = len(re.findall(r"^def test_", Path(__file__).read_text(encoding="utf-8"), re.M))
     assert len(fns) == declared, (
         f"collected {len(fns)} of {declared} tests — the runner has to be the "
         f"last thing in the file")
