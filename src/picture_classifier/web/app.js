@@ -2499,6 +2499,7 @@ function openEditModal(absIdx) {
   resizeOverlay();
   fetchEditPreview(true);
   fetchOriginalPreview();
+  renderFilmstrip($("#edit-filmstrip"), absIdx, (i) => editGoTo(i));
   // After layout, so the controls it points at have their places.
   if (!tourSeen("editor")) setTimeout(() => maybeStartTour("editor"), 400);
 }
@@ -2967,7 +2968,10 @@ async function saveEdit() {
 // dropped without a word, and ← → are what you press to look at the next one.
 async function editNav(delta) {
   if (!state.filteredPhotos.length) return;
-  const i = Math.max(0, Math.min(state.filteredPhotos.length - 1, editSession.idx + delta));
+  await editGoTo(Math.max(0, Math.min(state.filteredPhotos.length - 1, editSession.idx + delta)));
+}
+
+async function editGoTo(i) {
   if (i === editSession.idx) return;
   const kept = editIsDirty() ? basename(editSession.relPath) : null;
   if (kept && !(await persistEdit())) return;
@@ -6301,6 +6305,15 @@ function renderModal() {
   syncModalBoxes();
   syncModalPeak();
   drawLoupe();
+  renderFilmstrip($("#modal-filmstrip"), state.modal.idx, (i) => {
+    if (i === state.modal.idx) return;
+    state.modal.idx = i;
+    state.cursorIdx = i;
+    state.modal.fit = true;
+    state.modal.compare = false;
+    renderModal();
+    scheduleViewSave();
+  });
 }
 
 // What the scores say, in words. The sharpness rank and exposure distance are
@@ -6656,6 +6669,32 @@ async function leaveProject(next) {
   if (!res.ok) { alert("Could not close the project: " + res.status); return; }
   if (next) sessionStorage.setItem("pcls.openNext", next);
   location.reload();
+}
+
+// ---------- filmstrip ----------
+// The photos of the list you are working through, along the bottom of the
+// viewer and the editor. Built once per list and only re-marked as you move,
+// so a scene of a thousand photos costs one render, not one per keypress.
+function renderFilmstrip(el, current, onPick) {
+  const list = state.filteredPhotos;
+  const sig = `${state.selectedScene}|${state.filter}|${list.length}|${list[0]?.rel_path || ""}|${list[list.length - 1]?.rel_path || ""}`;
+  if (el.dataset.sig !== sig) {
+    el.dataset.sig = sig;
+    el.innerHTML = list.map((p, i) =>
+      `<button type="button" class="film-cell" data-i="${i}" title="${escapeAttr(basename(p.rel_path))}">`
+      + `<img loading="lazy" alt="" src="${thumbUrl(p)}" /></button>`).join("");
+  }
+  el.onclick = (e) => {
+    const cell = e.target.closest(".film-cell");
+    if (cell) onPick(Number(cell.dataset.i));
+  };
+  el.querySelectorAll(".film-cell").forEach((cell, i) => {
+    const p = list[i];
+    cell.className = "film-cell" + (i === current ? " current" : "") + (p.decision ? ` d-${p.decision}` : "");
+    const img = cell.firstElementChild, src = thumbUrl(p);
+    if (!img.src.endsWith(src)) img.src = src;   // an edit saved since
+  });
+  el.querySelector(".film-cell.current")?.scrollIntoView({ block: "nearest", inline: "center" });
 }
 
 // ---------- the top bar ----------
