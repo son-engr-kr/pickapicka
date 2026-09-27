@@ -54,6 +54,20 @@ jobs:
           test -d "$APP"
           "$APP/Contents/MacOS/picture-classifier" --help | head -3
 
+      - name: Smoke-test that the app starts and serves
+        run: |
+          # --help proves the CLI imports; this proves the server comes up.
+          "dist/Picture Classifier.app/Contents/MacOS/picture-classifier" serve --port 8799 &
+          PID=$!
+          OK=0
+          for i in $(seq 1 120); do
+            if curl -sf -m 2 http://127.0.0.1:8799/api/state > /dev/null; then OK=1; break; fi
+            kill -0 "$PID" 2>/dev/null || break
+            sleep 1
+          done
+          kill "$PID" 2>/dev/null || true
+          test "$OK" = 1 || { echo "the app never answered on /api/state"; exit 1; }
+
       - name: Create .pkg installer
         run: |
           PKG="dist/Picture-Classifier-${{ steps.ver.outputs.tag }}-macos-arm64.pkg"

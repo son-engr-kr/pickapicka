@@ -61,6 +61,31 @@ jobs:
           Write-Host "bundle size: $mb MB"
           if ($mb -lt 100) { throw "bundle is only $mb MB — heavy deps likely missing" }
 
+      - name: Smoke-test that the app starts and serves
+        shell: pwsh
+        run: |
+          # The structural check above cannot catch a crash at startup, and
+          # 0.6.0 shipped one: the exe is windowed, so it starts with no stdout
+          # or stderr, and uvicorn's log formatter died asking stdout isatty().
+          # Launched with Start-Process it runs exactly as a user's double-click
+          # does. A crash there raises a dialog and never exits, so the loop
+          # times out rather than hanging.
+          $exe = "dist\picture-classifier\picture-classifier.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList "serve","--port","8799" -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 120; $i++) {
+            Start-Sleep -Seconds 1
+            if ($p.HasExited) { break }
+            try {
+              $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:8799/api/state"
+              if ($r.StatusCode -eq 200) { $ok = $true; break }
+            } catch {}
+          }
+          $log = Join-Path $env:LOCALAPPDATA "picture-classifier\app.log"
+          if (Test-Path $log) { Write-Host "--- app.log"; Get-Content $log }
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          if (-not $ok) { throw "the app never answered on /api/state (exited: $($p.HasExited))" }
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 

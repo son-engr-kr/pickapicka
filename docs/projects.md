@@ -71,8 +71,12 @@ view, and saved edit presets.
 | --- | --- | --- | --- |
 | `state.json` | `~/Library/Application Support/picture-classifier/` | `%LOCALAPPDATA%\picture-classifier\` | `~/.local/share/picture-classifier/` |
 | model weights | `~/Library/Caches/picture-classifier/models/` | `%LOCALAPPDATA%\picture-classifier\Cache\models\` | `~/.cache/picture-classifier/models/` |
+| `app.log` (Windows) | | `%LOCALAPPDATA%\picture-classifier\app.log` | |
 
 Linux honours `$XDG_DATA_HOME` and `$XDG_CACHE_HOME` if they are set.
+
+The Windows app runs with no console, so what it would have printed goes to
+`app.log` instead. If it misbehaves, that file says why.
 
 The split is by what it costs to lose. `state.json` cannot be regenerated, so it
 sits in the data directory and gets backed up. The YOLOX weights (~20 MB)
