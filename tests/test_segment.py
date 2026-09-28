@@ -13,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from picture_classifier import segment
+from pickapicka import segment
 
 
 def _sample(h: int = 240, w: int = 360) -> np.ndarray:

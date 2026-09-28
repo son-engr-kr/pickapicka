@@ -47,7 +47,7 @@ Base = ExifTags.Base
 
 MetadataMode = Literal["all", "no_location", "none"]
 
-SOFTWARE = f"Picture Classifier {__version__}"
+SOFTWARE = f"Pickapicka {__version__}"
 
 # Carried from the original, in IFD0. Software and Orientation are written
 # fresh instead; the resolution tags are the print size a lab will read.

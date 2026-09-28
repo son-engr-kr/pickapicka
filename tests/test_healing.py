@@ -9,7 +9,7 @@ import time
 import cv2
 import numpy as np
 
-from picture_classifier import healing
+from pickapicka import healing
 
 
 def _weave(h: int = 240, w: int = 320, seed: int = 3) -> np.ndarray:

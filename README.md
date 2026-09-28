@@ -1,4 +1,4 @@
-# Picture Classifier
+# Pickapicka
 
 Cull and edit a shoot on your own machine. Scores every frame for sharpness and
 exposure, groups them into scenes, suggests what to keep — then gives you a
@@ -6,6 +6,8 @@ non-destructive editor for the ones you do.
 
 Built for post-shoot triage on a few hundred to a few thousand frames. Runs
 entirely locally; nothing is uploaded.
+
+Called Picture Classifier up to 0.9.0; [upgrading from it](docs/install.md#upgrading-from-picture-classifier).
 
 https://github.com/user-attachments/assets/f769de65-c167-4066-bd4e-7550f7f193d2
 
@@ -27,22 +29,22 @@ non-destructive, and all previewed at the resolution you will export at.
 ## Install
 
 Prebuilt installers for **macOS** (Apple Silicon) and **Windows** (x64) are on
-the [Releases page](https://github.com/son-engr-kr/picture-classifier/releases)
+the [Releases page](https://github.com/son-engr-kr/pickapicka/releases)
 — download, run, launch. Both are unsigned, so the first launch needs
 right-click → Open on macOS, or More info → Run anyway on Windows.
 
 With [uv](https://github.com/astral-sh/uv), on any platform including Linux:
 
 ```bash
-uv tool install git+https://github.com/son-engr-kr/picture-classifier
-pcls serve
+uv tool install git+https://github.com/son-engr-kr/pickapicka
+pickapicka serve
 ```
 
 Homebrew, from source, and the CLI are in [docs/install.md](docs/install.md).
 
 ## First run
 
-`pcls serve` opens a landing page. The first time, it asks where to keep your
+`pickapicka serve` opens a landing page. The first time, it asks where to keep your
 projects, a workspace folder kept apart from your photos, and offers a default.
 Then create a project by name, point it at your photos (the wizard says how many
 it found there), and say what the shoot is *of* if it has a subject. Scoring

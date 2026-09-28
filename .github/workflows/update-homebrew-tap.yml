@@ -54,10 +54,10 @@ jobs:
         run: |
           set -eu
           # Embed the token in the remote URL so `git push` is authenticated.
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/son-engr-kr/homebrew-picture-classifier.git" tap
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/son-engr-kr/homebrew-pickapicka.git" tap
           cd tap
-          sed -i -E "s|/refs/tags/v[^\"]+\.tar\.gz|/refs/tags/${TAG}.tar.gz|" Formula/picture-classifier.rb
-          sed -i -E "s|sha256 \"[a-f0-9]+\"|sha256 \"${SHA}\"|" Formula/picture-classifier.rb
+          sed -i -E "s|/refs/tags/v[^\"]+\.tar\.gz|/refs/tags/${TAG}.tar.gz|" Formula/pickapicka.rb
+          sed -i -E "s|sha256 \"[a-f0-9]+\"|sha256 \"${SHA}\"|" Formula/pickapicka.rb
 
           if git diff --quiet; then
             echo "Formula already up to date for ${TAG}"
@@ -66,6 +66,6 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/picture-classifier.rb
-          git commit -m "picture-classifier ${VERSION}"
+          git add Formula/pickapicka.rb
+          git commit -m "pickapicka ${VERSION}"
           git push

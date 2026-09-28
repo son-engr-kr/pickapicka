@@ -15,7 +15,7 @@ from pathlib import Path
 
 def _fresh(home: Path):
     """A userstate module writing inside `home`."""
-    from picture_classifier import userstate
+    from pickapicka import userstate
     importlib.reload(userstate)
     userstate.CONFIG_DIR = home / "app-data"
     userstate.STATE_FILE = userstate.CONFIG_DIR / "state.json"

@@ -11,7 +11,7 @@ import time
 import numpy as np
 import pytest
 
-from picture_classifier.server import PhotoArrays
+from pickapicka.server import PhotoArrays
 
 
 def _arr(v: int = 0) -> np.ndarray:

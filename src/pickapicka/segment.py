@@ -45,7 +45,7 @@ from . import paths
 
 MODEL_NAME = "selfie_multiclass_256x256.onnx"
 MODEL_URL = (
-    "https://github.com/son-engr-kr/picture-classifier/releases/download/"
+    "https://github.com/son-engr-kr/pickapicka/releases/download/"
     "models-0.1.0/selfie_multiclass_256x256.onnx"
 )
 MODEL_SHA256 = "46532ed4d2f36a60038b729042d8f01acf4f6e7a6a0b016ddc0e6782c217ce66"

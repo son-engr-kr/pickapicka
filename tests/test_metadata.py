@@ -56,7 +56,7 @@ def _reopen(exif: bytes | None, icc: bytes | None = None) -> Image.Image:
 
 
 def test_all_keeps_the_shot_and_rewrites_the_file_tags(tmp_path) -> None:
-    from picture_classifier import metadata
+    from pickapicka import metadata
     src = tmp_path / "a.jpg"
     _camera_jpeg(src)
     exif, icc = metadata.read_source(src, is_raw=False)
@@ -73,7 +73,7 @@ def test_all_keeps_the_shot_and_rewrites_the_file_tags(tmp_path) -> None:
     # The pixels are exported upright, so the flag that says "rotate me" goes.
     assert out[B.Orientation] == 1
     assert (e[B.ExifImageWidth], e[B.ExifImageHeight]) == (2048, 1365)
-    assert out[B.Software].startswith("Picture Classifier ")
+    assert out[B.Software].startswith("Pickapicka ")
     assert B.MakerNote not in e
     g = out.get_ifd(GPS)
     assert g[1] == "N" and [float(v) for v in g[2]] == [42.0, 20.0, 12.34]
@@ -82,7 +82,7 @@ def test_all_keeps_the_shot_and_rewrites_the_file_tags(tmp_path) -> None:
 def test_a_makernote_too_big_for_a_jpeg_does_not_stop_the_export(tmp_path) -> None:
     """70 KB of MakerNote makes the EXIF block too long for a JPEG, and Pillow
     refuses to save it. Leaving the MakerNote out is what makes this work."""
-    from picture_classifier import metadata
+    from pickapicka import metadata
     src = tmp_path / "a.jpg"
     _camera_jpeg(src, makernote=38_000)
     exif, _ = metadata.read_source(src, is_raw=False)
@@ -95,7 +95,7 @@ def test_a_makernote_too_big_for_a_jpeg_does_not_stop_the_export(tmp_path) -> No
 
 
 def test_no_location_drops_gps_only(tmp_path) -> None:
-    from picture_classifier import metadata
+    from pickapicka import metadata
     src = tmp_path / "a.jpg"
     _camera_jpeg(src)
     exif, _ = metadata.read_source(src, is_raw=False)
@@ -108,7 +108,7 @@ def test_no_location_drops_gps_only(tmp_path) -> None:
 
 
 def test_none_writes_nothing(tmp_path) -> None:
-    from picture_classifier import metadata
+    from pickapicka import metadata
     src = tmp_path / "a.jpg"
     _camera_jpeg(src)
     exif, _ = metadata.read_source(src, is_raw=False)
@@ -119,7 +119,7 @@ def test_none_writes_nothing(tmp_path) -> None:
 def test_capture_time_fills_in_only_when_missing(tmp_path) -> None:
     """Sony RAW previews leave DateTimeOriginal out; the time libraw read is
     used then, and never over one the file does have."""
-    from picture_classifier import metadata
+    from pickapicka import metadata
     src = tmp_path / "a.jpg"
     _camera_jpeg(src)
     exif, _ = metadata.read_source(src, is_raw=False)
@@ -135,7 +135,7 @@ def test_capture_time_fills_in_only_when_missing(tmp_path) -> None:
 
 
 def test_the_source_profile_is_carried_and_none_is_not_invented(tmp_path) -> None:
-    from picture_classifier import metadata
+    from pickapicka import metadata
     tagged, bare = tmp_path / "t.jpg", tmp_path / "b.jpg"
     profile = metadata.srgb_profile()
     _camera_jpeg(tagged, icc=profile)

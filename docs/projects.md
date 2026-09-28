@@ -3,7 +3,7 @@
 - **Workspaces & projects**: pick a workspace folder, then create projects
   inside it *by name* (DaVinci-Resolve style). The landing page lists the
   projects in each workspace. On first launch it explains the workspace and
-  offers `PictureClassifier-Projects` in your home folder; choosing a folder
+  offers `Pickapicka-Projects` in your home folder; choosing a folder
   that already holds photos gets a warning, since the workspace should be
   separate from them. The new-project wizard counts the photos in the folder
   you pick and stops you at a folder with none. Photos are referenced by path; if a photo folder
@@ -74,9 +74,9 @@ view, and saved edit presets.
 
 | | macOS | Windows | Linux |
 | --- | --- | --- | --- |
-| `state.json` | `~/Library/Application Support/picture-classifier/` | `%LOCALAPPDATA%\picture-classifier\` | `~/.local/share/picture-classifier/` |
-| model weights | `~/Library/Caches/picture-classifier/models/` | `%LOCALAPPDATA%\picture-classifier\Cache\models\` | `~/.cache/picture-classifier/models/` |
-| `app.log` (Windows) | | `%LOCALAPPDATA%\picture-classifier\app.log` | |
+| `state.json` | `~/Library/Application Support/pickapicka/` | `%LOCALAPPDATA%\pickapicka\` | `~/.local/share/pickapicka/` |
+| model weights | `~/Library/Caches/pickapicka/models/` | `%LOCALAPPDATA%\pickapicka\Cache\models\` | `~/.cache/pickapicka/models/` |
+| `app.log` (Windows) | | `%LOCALAPPDATA%\pickapicka\app.log` | |
 
 Linux honours `$XDG_DATA_HOME` and `$XDG_CACHE_HOME` if they are set.
 
@@ -88,10 +88,13 @@ sits in the data directory and gets backed up. The YOLOX weights (~20 MB)
 re-download on demand, so they sit in the cache directory and stay out of every
 Time Machine snapshot — deleting them only costs one download.
 
-Versions up to 0.5.0 kept both in `~/.picture-classifier/`. The first run of any
-`pcls` command moves an old install across and prints what it moved. It will not
-overwrite anything already at the destination, and it leaves the old directory in
-place if there is anything in it that it did not move.
+Versions up to 0.5.0 kept both in `~/.picture-classifier/`, and 0.6.0 through
+0.9.0, when the app was called Picture Classifier, in the directories above with
+`picture-classifier` in place of `pickapicka`. The first run of any `pickapicka`
+command, which includes launching the app, moves either kind of old install
+across and prints what it moved. It will not overwrite anything already at the
+destination, and it leaves an old directory in place if there is anything in it
+that it did not move.
 
 InsightFace's face models are the one exception: they stay in `~/.insightface/`,
 which is that library's own location, shared with any other tool on the machine

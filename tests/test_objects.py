@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from picture_classifier.scoring import appearance, blur, objects
+from pickapicka.scoring import appearance, blur, objects
 
 
 # ----- class resolution ---------------------------------------------------
@@ -157,7 +157,7 @@ def test_crop_of_clamps_and_rejects_tiny_boxes() -> None:
 
 def test_subject_scores_use_the_biggest_box(tmp_path) -> None:
     import cv2
-    from picture_classifier import scorer
+    from pickapicka import scorer
     rng = np.random.default_rng(2)
     img = rng.integers(0, 256, (400, 600, 3), dtype=np.uint8)
     path = tmp_path / "p.png"
@@ -191,7 +191,7 @@ def _photo(name: str, blur_v: float, **subject) -> dict:
 
 
 def test_missing_subject_is_penalized() -> None:
-    from picture_classifier import scorer
+    from pickapicka import scorer
     # The car-less frame is the *sharper* of the two, so it wins the blur rank
     # outright. Having no subject still has to sink it.
     items = [
@@ -206,7 +206,7 @@ def test_missing_subject_is_penalized() -> None:
 
 
 def test_subject_sharpness_outranks_frame_sharpness() -> None:
-    from picture_classifier import scorer
+    from pickapicka import scorer
     # "bokeh" is soft frame-wide but tack sharp on the subject; "flat" is the
     # reverse. The subject-aware ranking must prefer the bokeh shot.
     items = [
@@ -218,7 +218,7 @@ def test_subject_sharpness_outranks_frame_sharpness() -> None:
 
 
 def test_subject_terms_are_off_without_detection() -> None:
-    from picture_classifier import scorer
+    from pickapicka import scorer
     items = [_photo("a.jpg", 100.0), _photo("b.jpg", 900.0)]
     scorer.apply_scene_suggestions(items)
     # No subject data anywhere: badness is the plain blur + exposure formula.
@@ -231,7 +231,7 @@ def test_subject_terms_are_off_without_detection() -> None:
 def _peak_coverage(gray, tmp_path, level: str = "normal") -> float:
     """Fraction of the frame the peaking overlay marks."""
     import cv2
-    from picture_classifier.server import _ensure_peak
+    from pickapicka.server import _ensure_peak
     src = tmp_path / f"{level}-src.jpg"
     cv2.imwrite(str(src), gray)
     out = _ensure_peak(src, tmp_path, f"{level}-src", "", level)
@@ -276,7 +276,7 @@ def test_peaking_follows_focus_not_contrast(tmp_path) -> None:
 
 def test_peaking_lands_on_the_sharp_half(tmp_path) -> None:
     import cv2
-    from picture_classifier.server import _ensure_peak
+    from pickapicka.server import _ensure_peak
     img = _textured(400, 600)
     img[:, 300:] = cv2.GaussianBlur(img[:, 300:], (0, 0), 5.0)   # right half soft
     src = tmp_path / "half.jpg"
@@ -295,7 +295,7 @@ def test_peak_levels_are_ordered(tmp_path) -> None:
     edge pixels at a threshold. Invisible, but two separate builds of levels
     whose coverage differs by 0.01% could then come out in either order.
     """
-    from picture_classifier.server import PEAK_LEVELS, _peak_alpha, _peak_fields
+    from pickapicka.server import PEAK_LEVELS, _peak_alpha, _peak_fields
     fields = _peak_fields(_textured())
     marked = {lvl: _peak_alpha(fields, *PEAK_LEVELS[lvl]) > 0 for lvl in PEAK_LEVELS}
     assert not (marked["tight"] & ~marked["normal"]).any()
@@ -318,7 +318,7 @@ def test_derived_caches_are_never_served_half_written(tmp_path) -> None:
     import threading
     import time
     import cv2
-    from picture_classifier.server import _atomic_write, _cached_image, _ensure_thumb
+    from pickapicka.server import _atomic_write, _cached_image, _ensure_thumb
 
     src = tmp_path / "src.jpg"
     cv2.imwrite(str(src), _textured(600, 900))
@@ -384,7 +384,7 @@ def test_derived_caches_are_never_served_half_written(tmp_path) -> None:
 def test_peak_cache_is_versioned(tmp_path) -> None:
     """A detector change must not keep serving overlays built by the old one."""
     import cv2
-    from picture_classifier.server import _ensure_peak, _PEAK_VERSION
+    from pickapicka.server import _ensure_peak, _PEAK_VERSION
     src = tmp_path / "c.jpg"
     cv2.imwrite(str(src), _textured(120, 160))
     out = _ensure_peak(src, tmp_path, "c", "", "normal")
@@ -396,7 +396,7 @@ def test_peak_cache_is_versioned(tmp_path) -> None:
 
 def test_download_never_overwrites(tmp_path) -> None:
     """Two photos with the same filename must both survive the trip."""
-    from picture_classifier.server import _unique_name
+    from pickapicka.server import _unique_name
     (tmp_path / "DSC01.jpg").write_bytes(b"already here")
     seen: set[str] = set()
     first = _unique_name(tmp_path, "DSC01.jpg", seen)
@@ -411,7 +411,7 @@ def test_only_raw_and_edited_photos_are_re_encoded() -> None:
     from pathlib import Path
     from types import SimpleNamespace
 
-    from picture_classifier.server import ExportSettings, _baked_name, _needs_render
+    from pickapicka.server import ExportSettings, _baked_name, _needs_render
     ctx = SimpleNamespace(source_path=lambda rel: Path(rel))
     default = ExportSettings()
     plain = {"rel_path": "a/DSC01.jpg"}
@@ -450,7 +450,7 @@ def test_detect_on_a_real_photo() -> None:
     # clamping), not detection quality.
     img = np.full((480, 640, 3), 200, dtype=np.uint8)
     cv2.rectangle(img, (100, 200), (400, 380), (120, 60, 40), -1)
-    path = "/tmp/pcls-detect-smoke.jpg"
+    path = "/tmp/pickapicka-detect-smoke.jpg"
     cv2.imwrite(path, img)
     found, w, h = objects.detect(path, classes=["car"])
     assert (w, h) == (640, 480)

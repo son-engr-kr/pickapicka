@@ -14,7 +14,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from picture_classifier import cameras, exifinfo, raw
+from pickapicka import cameras, exifinfo, raw
 
 
 def _jpeg(stamp: str | None = None, lens: str | None = None) -> bytes:

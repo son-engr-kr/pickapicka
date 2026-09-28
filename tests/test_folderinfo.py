@@ -27,7 +27,7 @@ def _project(root: Path, name: str) -> Path:
 
 
 def test_counts_photos_raws_and_scenes(tmp_path) -> None:
-    from picture_classifier import folderinfo
+    from pickapicka import folderinfo
     _touch(tmp_path, "Scene_1/a.JPG", "Scene_1/a.CR3", "Scene_2/b.jpeg",
            "Scene_2/deep/c.png", "loose.jpg", "notes.txt", "Scene_1/._a.JPG")
 
@@ -45,7 +45,7 @@ def test_counts_photos_raws_and_scenes(tmp_path) -> None:
 def test_project_thumbnails_are_not_photos(tmp_path) -> None:
     """A workspace holds projects full of cached JPEGs. Counting those as photos
     would warn someone off the very folder they meant to pick."""
-    from picture_classifier import folderinfo
+    from pickapicka import folderinfo
     _project(tmp_path, "wedding")
     _project(tmp_path, "trip")
 
@@ -56,7 +56,7 @@ def test_project_thumbnails_are_not_photos(tmp_path) -> None:
 
 
 def test_legacy_caches_beside_photos_are_skipped(tmp_path) -> None:
-    from picture_classifier import folderinfo
+    from pickapicka import folderinfo
     _touch(tmp_path, "a.jpg", "picks.json", "picks.json.thumbs/a.jpg",
            "picks.json.peaks/a.png", "picks.json.hdr/m.jpg")
 
@@ -66,7 +66,7 @@ def test_legacy_caches_beside_photos_are_skipped(tmp_path) -> None:
 
 
 def test_a_project_folder_is_flagged_and_not_counted(tmp_path) -> None:
-    from picture_classifier import folderinfo
+    from pickapicka import folderinfo
     d = _project(tmp_path, "wedding")
 
     info = folderinfo.inspect(d)
@@ -78,7 +78,7 @@ def test_a_project_folder_is_flagged_and_not_counted(tmp_path) -> None:
 def test_a_folder_holding_the_workspace_is_flagged(tmp_path) -> None:
     """Photos chosen at or above the workspace would put the project among
     them, which create refuses; the wizard says so before that."""
-    from picture_classifier import folderinfo
+    from pickapicka import folderinfo
     ws = tmp_path / "Projects"
     ws.mkdir()
     _touch(tmp_path, "shoot/a.jpg")
@@ -89,7 +89,7 @@ def test_a_folder_holding_the_workspace_is_flagged(tmp_path) -> None:
 
 
 def test_missing_and_relative_paths(tmp_path) -> None:
-    from picture_classifier import folderinfo
+    from pickapicka import folderinfo
     gone = folderinfo.inspect(tmp_path / "nope")
     assert gone["absolute"] and not gone["exists"]
     # Relative to whatever directory the server started in, which is never
@@ -99,7 +99,7 @@ def test_missing_and_relative_paths(tmp_path) -> None:
 
 
 def test_counting_stops_at_the_limit(tmp_path) -> None:
-    from picture_classifier import folderinfo
+    from pickapicka import folderinfo
     _touch(tmp_path, *[f"s/{i}.jpg" for i in range(12)])
 
     info = folderinfo.inspect(tmp_path, limit=5)
@@ -131,7 +131,7 @@ def _tiff_raw(path: Path, stamp: str) -> None:
 def test_shots_pair_raw_and_jpeg_as_scoring_does(tmp_path) -> None:
     from datetime import datetime
 
-    from picture_classifier import folderinfo
+    from pickapicka import folderinfo
     _jpeg(tmp_path / "day1" / "DSC1.JPG", "2026:05:01 10:00:00")
     _tiff_raw(tmp_path / "day1" / "DSC1.ARW", "2026:05:01 09:00:00")   # one shot, RAW's time
     _jpeg(tmp_path / "day1" / "DSC2.jpg", "2026:05:01 10:05:00")
@@ -149,7 +149,7 @@ def test_shots_pair_raw_and_jpeg_as_scoring_does(tmp_path) -> None:
 
 
 def test_shots_find_raws_in_their_own_subfolder(tmp_path) -> None:
-    from picture_classifier import folderinfo
+    from pickapicka import folderinfo
     _jpeg(tmp_path / "JPEG" / "a" / "DSC1.JPG", "2026:05:01 10:00:00")
     _tiff_raw(tmp_path / "RAW" / "a" / "DSC1.ARW", "2026:05:01 09:00:00")
     _tiff_raw(tmp_path / "RAW" / "a" / "DSC2.ARW", "2026:05:01 09:30:00")   # RAW only

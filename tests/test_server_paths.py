@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from picture_classifier.server import _lexical, _within_roots
+from pickapicka.server import _lexical, _within_roots
 
 
 def _ctx(root: Path) -> SimpleNamespace:

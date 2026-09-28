@@ -1761,7 +1761,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     if initial_db_path is not None:
         ctx.load_db(initial_db_path)
 
-    app = FastAPI(title="Picture Classifier")
+    app = FastAPI(title="Pickapicka")
 
     @app.middleware("http")
     async def _no_cache_for_web_assets(request: Request, call_next):
@@ -3413,7 +3413,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     return app
 
 
-def _is_picture_classifier_running(host: str, port: int) -> bool:
+def _is_pickapicka_running(host: str, port: int) -> bool:
     """Best-effort check: is *our* app already serving on this port?"""
     import json
     import urllib.error
@@ -3449,9 +3449,9 @@ def serve(db_path: Path | None, host: str, port: int, open_browser: bool = False
 
     # If our app is already serving on the requested port, just point the
     # browser at it instead of failing with EADDRINUSE.
-    if _is_picture_classifier_running(host, port):
+    if _is_pickapicka_running(host, port):
         url = f"http://{host}:{port}"
-        print(f"\n  Picture Classifier is already running — opening {url}\n")
+        print(f"\n  Pickapicka is already running — opening {url}\n")
         if open_browser:
             import webbrowser
             webbrowser.open(url)
@@ -3463,7 +3463,7 @@ def serve(db_path: Path | None, host: str, port: int, open_browser: bool = False
 
     app = create_app(db_path)
     url = f"http://{host}:{actual_port}"
-    print(f"\n  Picture Classifier — open {url}\n")
+    print(f"\n  Pickapicka — open {url}\n")
     if open_browser:
         import threading
         import time

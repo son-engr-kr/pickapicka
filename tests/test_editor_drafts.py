@@ -12,8 +12,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from picture_classifier import db, editing, lens
-from picture_classifier.server import AppContext
+from pickapicka import db, editing, lens
+from pickapicka.server import AppContext
 
 
 def _project(tmp_path: Path) -> AppContext:

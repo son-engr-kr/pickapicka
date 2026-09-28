@@ -8,9 +8,9 @@ import threading
 import time
 from pathlib import Path
 
-from picture_classifier import fsutil
+from pickapicka import fsutil
 
-PKG = Path(__file__).resolve().parents[1] / "src" / "picture_classifier"
+PKG = Path(__file__).resolve().parents[1] / "src" / "pickapicka"
 
 
 def test_replace_waits_out_a_reader(tmp_path):

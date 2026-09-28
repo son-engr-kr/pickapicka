@@ -7,7 +7,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from picture_classifier import sharpening
+from pickapicka import sharpening
 
 
 # ----- builders -----------------------------------------------------------

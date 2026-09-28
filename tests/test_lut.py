@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from picture_classifier import editing, lut
+from pickapicka import editing, lut
 
 
 # ----- helpers ------------------------------------------------------------

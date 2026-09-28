@@ -27,7 +27,7 @@ def _run_windowed(code: str, home: Path) -> subprocess.CompletedProcess:
 def test_a_windowed_start_gets_a_log_instead_of_none() -> None:
     with tempfile.TemporaryDirectory() as d:
         out = _run_windowed(
-            "from picture_classifier import app_entry, paths\n"
+            "from pickapicka import app_entry, paths\n"
             "print('to stdout'); sys.stderr.write('to stderr\\n')\n"
             "assert sys.stdout.isatty() is False   # what uvicorn asks\n"
             "sys.__stdout__.write(str(paths.DATA_DIR / app_entry.LOG_NAME))\n",
@@ -43,7 +43,7 @@ def test_uvicorn_logging_configures_once_output_exists() -> None:
     """The exact call that failed: uvicorn building its default formatter."""
     with tempfile.TemporaryDirectory() as d:
         out = _run_windowed(
-            "from picture_classifier import app_entry\n"
+            "from pickapicka import app_entry\n"
             "import logging.config, uvicorn.config\n"
             "logging.config.dictConfig(uvicorn.config.LOGGING_CONFIG)\n",
             Path(d))
@@ -53,7 +53,7 @@ def test_uvicorn_logging_configures_once_output_exists() -> None:
 def test_a_console_start_is_left_alone() -> None:
     out = subprocess.run([sys.executable, "-c",
                           "import sys; before = sys.stdout\n"
-                          "from picture_classifier import app_entry\n"
+                          "from pickapicka import app_entry\n"
                           "assert sys.stdout is before"],
                          capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr

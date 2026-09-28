@@ -8255,7 +8255,7 @@ const EXPLAINER_SCENES = [
   { title: "Your photos stay where they are",
     text: "In a folder on your computer, a memory card or an external drive. The app reads them and never moves, renames or changes them." },
   { title: "A workspace is a folder for projects",
-    text: "One folder the app writes its own files into, kept apart from your photos. By default it is PictureClassifier-Projects in your home folder." },
+    text: "One folder the app writes its own files into, kept apart from your photos. By default it is Pickapicka-Projects in your home folder." },
   { title: "Each shoot is a project",
     text: "A project points at the folder of one shoot. Nothing is copied: it only remembers where the photos are." },
   { title: "The project keeps your work",
@@ -8291,7 +8291,7 @@ const EXPLAINER_HTML = `
     </div>
 
     <div class="ex-ws" data-from="1">
-      <div class="ex-name">${icon("folder")}<span>PictureClassifier-Projects</span></div>
+      <div class="ex-name">${icon("folder")}<span>Pickapicka-Projects</span></div>
       <div class="ex-project ex-project-a" data-from="2">
         <div class="ex-name">${icon("open")}<span>2026-05-wedding</span></div>
         <div class="ex-chips">
@@ -8940,7 +8940,7 @@ function bindHelp() {
 
 // ---------- quit ----------
 async function quitApp() {
-  if (!confirm("Quit Picture Classifier?\n\nYour decisions and saved edits are kept.")) return;
+  if (!confirm("Quit Pickapicka?\n\nYour decisions and saved edits are kept.")) return;
   await decisionSaves;
   await flushViewSave();
   const post = (force) => fetch("/api/quit", {
@@ -9154,7 +9154,7 @@ function bindKeysSheet() {
 // skipped rather than pointing at nothing.
 const TOURS = {
   main: [
-    { title: "Welcome to Picture Classifier",
+    { title: "Welcome to Pickapicka",
       body: "A one-minute tour of the culling screen. Replay it any time from the <b>?</b> button or the <kbd>?</kbd> key, which also lists every shortcut." },
     { target: "#scene-list", title: "Scenes",
       body: "Your photos, grouped into scenes by folder or by time gaps. Work through them one at a time; the bar under each shows how far you are." },

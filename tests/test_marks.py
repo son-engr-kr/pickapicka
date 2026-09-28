@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from picture_classifier import exporting, metadata, scorer
+from pickapicka import exporting, metadata, scorer
 
 SONY_XMP = ("<?xpacket begin='﻿' id='W5M0MpCehiHzreSzNTczkc9d'?>\n"
             "<x:xmpmeta xmlns:x='adobe:ns:meta/' x:xmptk=''>\n"

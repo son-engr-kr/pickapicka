@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 import pytest
 
-from picture_classifier import redeye
+from pickapicka import redeye
 
 SIZE = 200          # every fixture is this square, eye at the centre
 SKIN = (0.78, 0.60, 0.50)

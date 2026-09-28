@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from picture_classifier import editing, film as film_mod, presets
+from pickapicka import editing, film as film_mod, presets
 
 # Every group the library is meant to ship, so deleting one is a failing test
 # rather than a quiet hole in the picker.

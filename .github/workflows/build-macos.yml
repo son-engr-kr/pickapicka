@@ -46,18 +46,18 @@ jobs:
         run: |
           uv run --with pyinstaller pyinstaller \
             --noconfirm --clean \
-            packaging/picture-classifier.spec
+            packaging/pickapicka.spec
 
       - name: Verify .app launches its CLI
         run: |
-          APP="dist/Picture Classifier.app"
+          APP="dist/Pickapicka.app"
           test -d "$APP"
-          "$APP/Contents/MacOS/picture-classifier" --help | head -3
+          "$APP/Contents/MacOS/pickapicka" --help | head -3
 
       - name: Smoke-test that the app starts and serves
         run: |
           # --help proves the CLI imports; this proves the server comes up.
-          "dist/Picture Classifier.app/Contents/MacOS/picture-classifier" serve --port 8799 &
+          "dist/Pickapicka.app/Contents/MacOS/pickapicka" serve --port 8799 &
           PID=$!
           OK=0
           for i in $(seq 1 120); do
@@ -72,17 +72,17 @@ jobs:
         run: |
           # Creates and scores a project the way the UI does, with the home
           # folder, the workspace and the photos on Korean paths with spaces.
-          uv run python packaging/smoke_score.py "dist/Picture Classifier.app/Contents/MacOS/picture-classifier"
+          uv run python packaging/smoke_score.py "dist/Pickapicka.app/Contents/MacOS/pickapicka"
 
       - name: Create .pkg installer
         run: |
-          PKG="dist/Picture-Classifier-${{ steps.ver.outputs.tag }}-macos-arm64.pkg"
+          PKG="dist/Pickapicka-${{ steps.ver.outputs.tag }}-macos-arm64.pkg"
           # A component pkg that installs the .app into /Applications; opens in
           # Installer.app on double-click.
           pkgbuild \
             --install-location /Applications \
-            --component "dist/Picture Classifier.app" \
-            --identifier kr.son-engr.picture-classifier \
+            --component "dist/Pickapicka.app" \
+            --identifier kr.son-engr.pickapicka \
             --version "${{ steps.ver.outputs.version }}" \
             "$PKG"
           ls -lh "$PKG"
@@ -91,13 +91,13 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Picture-Classifier-*.pkg
+          files: dist/Pickapicka-*.pkg
           fail_on_unmatched_files: true
 
       - name: Upload artifact (workflow_dispatch fallback)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: picture-classifier-${{ steps.ver.outputs.tag }}-macos-arm64
-          path: dist/Picture-Classifier-*.pkg
+          name: pickapicka-${{ steps.ver.outputs.tag }}-macos-arm64
+          path: dist/Pickapicka-*.pkg
           retention-days: 14

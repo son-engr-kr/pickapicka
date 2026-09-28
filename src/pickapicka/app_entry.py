@@ -2,7 +2,7 @@
 
 When launched from Finder/Dock or the Start menu there are no CLI arguments, so
 we default to `serve --open`. When run from the command line, all the regular
-`pcls` subcommands still work.
+`pickapicka` subcommands still work.
 
 Eagerly imports the package's heavy submodules so that PyInstaller's static
 analysis pulls in their transitive native dependencies (opencv, onnxruntime,
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import sys
 
-from picture_classifier import paths
+from pickapicka import paths
 
 LOG_NAME = "app.log"
 LOG_MAX_BYTES = 2_000_000   # past this the last run's log is kept as app.log.1
@@ -54,8 +54,8 @@ give_output_somewhere()
 # the entire dependency graph. Lazy-imported in cli.py at runtime, but bundled
 # here at build time. Absolute imports — PyInstaller runs this script as
 # __main__ with no package context, so relative imports would fail.
-from picture_classifier import cli, cluster, db, editing, hdr, raw, scenes, scorer, server, userstate  # noqa: E402, F401
-from picture_classifier.scoring import blur, exposure, faces  # noqa: E402, F401
+from pickapicka import cli, cluster, db, editing, hdr, raw, scenes, scorer, server, userstate  # noqa: E402, F401
+from pickapicka.scoring import blur, exposure, faces  # noqa: E402, F401
 import rawpy  # noqa: E402, F401  # anchor the native libraw dependency into the bundle
 
 

@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from picture_classifier import cluster, db
+from pickapicka import cluster, db
 
 
 # ----- settings -----------------------------------------------------------

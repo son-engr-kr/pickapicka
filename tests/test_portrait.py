@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from picture_classifier import editing, portrait
+from pickapicka import editing, portrait
 
 # A 300 px face: at much less the pores are sub-pixel and there is nothing
 # for a texture split to keep.

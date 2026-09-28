@@ -18,7 +18,7 @@ import time
 import cv2
 import numpy as np
 
-from picture_classifier import editing, transform
+from pickapicka import editing, transform
 
 
 # ----- fixtures -----------------------------------------------------------

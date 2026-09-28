@@ -54,7 +54,7 @@ def run_clustering(
 
     emb_path = db_path.with_suffix(db_path.suffix + ".embeddings.npy")
     assert emb_path.is_file(), (
-        f"embeddings sidecar not found at {emb_path}; run `pcls score` first"
+        f"embeddings sidecar not found at {emb_path}; run `pickapicka score` first"
     )
     embeddings = np.load(emb_path)
     n = embeddings.shape[0]

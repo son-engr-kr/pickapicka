@@ -44,15 +44,15 @@ jobs:
       - name: Build onedir bundle with PyInstaller
         env:
           APP_VERSION: ${{ steps.ver.outputs.version }}
-        run: uv run --with pyinstaller pyinstaller --noconfirm --clean packaging/picture-classifier.spec
+        run: uv run --with pyinstaller pyinstaller --noconfirm --clean packaging/pickapicka.spec
 
       - name: Verify the bundle
         shell: pwsh
         run: |
           # A windowed (no-console) exe has no stdout, so `--help` can't be
           # checked; verify the bundle structurally instead.
-          $dir = "dist\picture-classifier"
-          if (-not (Test-Path "$dir\picture-classifier.exe")) { throw "exe missing" }
+          $dir = "dist\pickapicka"
+          if (-not (Test-Path "$dir\pickapicka.exe")) { throw "exe missing" }
           if (-not (Test-Path "$dir\_internal")) { throw "_internal/ missing" }
           if (-not (Get-ChildItem "$dir\_internal" -Recurse -Filter "onnxruntime*" -ErrorAction SilentlyContinue)) {
             throw "onnxruntime not bundled — PyInstaller missed a dependency"
@@ -70,7 +70,7 @@ jobs:
           # Launched with Start-Process it runs exactly as a user's double-click
           # does. A crash there raises a dialog and never exits, so the loop
           # times out rather than hanging.
-          $exe = "dist\picture-classifier\picture-classifier.exe"
+          $exe = "dist\pickapicka\pickapicka.exe"
           $p = Start-Process -FilePath $exe -ArgumentList "serve","--port","8799" -PassThru
           $ok = $false
           for ($i = 0; $i -lt 120; $i++) {
@@ -81,7 +81,7 @@ jobs:
               if ($r.StatusCode -eq 200) { $ok = $true; break }
             } catch {}
           }
-          $log = Join-Path $env:LOCALAPPDATA "picture-classifier\app.log"
+          $log = Join-Path $env:LOCALAPPDATA "pickapicka\app.log"
           if (Test-Path $log) { Write-Host "--- app.log"; Get-Content $log }
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
           if (-not $ok) { throw "the app never answered on /api/state (exited: $($p.HasExited))" }
@@ -93,9 +93,9 @@ jobs:
           # not score any folder with Korean in its path. This creates and
           # scores a project the way the UI does, with the home folder, the
           # workspace and the photos all on such paths.
-          uv run python packaging/smoke_score.py "dist\picture-classifier\picture-classifier.exe"
+          uv run python packaging/smoke_score.py "dist\pickapicka\pickapicka.exe"
           $code = $LASTEXITCODE
-          $log = Join-Path $env:LOCALAPPDATA "picture-classifier\app.log"
+          $log = Join-Path $env:LOCALAPPDATA "pickapicka\app.log"
           if (Test-Path $log) { Write-Host "--- app.log"; Get-Content $log -Tail 200 }
           if ($code -ne 0) { throw "the scoring smoke test failed ($code)" }
 
@@ -109,7 +109,7 @@ jobs:
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
           & $iscc "/DMyAppVersion=${{ steps.ver.outputs.version }}" `
                   "/DRepoRoot=${{ github.workspace }}" `
-                  packaging\picture-classifier.iss
+                  packaging\pickapicka.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed with code $LASTEXITCODE" }
           Get-ChildItem dist\installer
 
@@ -117,13 +117,13 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/installer/Picture-Classifier-*.exe
+          files: dist/installer/Pickapicka-*.exe
           fail_on_unmatched_files: true
 
       - name: Upload artifact (workflow_dispatch fallback)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: picture-classifier-${{ steps.ver.outputs.tag }}-windows-x64
-          path: dist/installer/Picture-Classifier-*.exe
+          name: pickapicka-${{ steps.ver.outputs.tag }}-windows-x64
+          path: dist/installer/Pickapicka-*.exe
           retention-days: 14

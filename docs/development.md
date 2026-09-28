@@ -84,7 +84,7 @@ all attach their output to the **same** GitHub Release:
 - **Build Windows app** — builds the PyInstaller bundle and wraps it in an
   Inno Setup installer (`setup.exe`).
 - **Update Homebrew tap** — refreshes the
-  [tap](https://github.com/son-engr-kr/homebrew-picture-classifier) formula.
+  [tap](https://github.com/son-engr-kr/homebrew-pickapicka) formula.
 
 ```bash
 # 1. bump "version" in pyproject.toml, then:
@@ -99,4 +99,4 @@ GitHub Release automatically — no manual upload. To dry-run a platform build
 (workflow_dispatch); it uploads an artifact instead of publishing a release.
 
 The Homebrew workflow needs a `TAP_TOKEN` repository secret — a fine-grained
-PAT with `Contents: Write` on `son-engr-kr/homebrew-picture-classifier`.
+PAT with `Contents: Write` on `son-engr-kr/homebrew-pickapicka`.

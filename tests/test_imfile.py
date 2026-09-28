@@ -12,10 +12,10 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from picture_classifier import imfile
-from picture_classifier.scoring import blur, exposure
+from pickapicka import imfile
+from pickapicka.scoring import blur, exposure
 
-PKG = Path(__file__).resolve().parents[1] / "src" / "picture_classifier"
+PKG = Path(__file__).resolve().parents[1] / "src" / "pickapicka"
 
 
 def test_reads_and_writes_under_a_korean_folder(tmp_path):

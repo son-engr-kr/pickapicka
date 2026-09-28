@@ -12,7 +12,7 @@ import math
 
 import numpy as np
 
-from picture_classifier import editing
+from pickapicka import editing
 
 
 # ----- schema -------------------------------------------------------------

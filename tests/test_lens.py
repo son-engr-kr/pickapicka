@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 import pytest
 
-from picture_classifier import lens
+from pickapicka import lens
 
 
 # ----- synthetic scenes ---------------------------------------------------

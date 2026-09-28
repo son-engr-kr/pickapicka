@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from picture_classifier import editing, film
+from pickapicka import editing, film
 
 
 # ----- schema -------------------------------------------------------------

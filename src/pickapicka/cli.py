@@ -1,4 +1,4 @@
-"""CLI entry point: `pcls score`, `pcls serve`, `pcls report`."""
+"""CLI entry point: `pickapicka score`, `pickapicka serve`, `pickapicka report`."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,7 +10,7 @@ from . import paths
 
 @click.group()
 def main() -> None:
-    """Picture classifier — score photos and cull via web viewer."""
+    """Pickapicka — score, cull and edit a shoot in a local web viewer."""
     # One-shot, on whichever subcommand runs first after an upgrade.
     for note in paths.migrate_legacy():
         click.echo(f"Moved app data: {note}")

@@ -9,7 +9,7 @@ no trace on the photo.
 """
 from __future__ import annotations
 
-from picture_classifier.server import EDIT_SLOTS, _write_slot
+from pickapicka.server import EDIT_SLOTS, _write_slot
 
 
 def _entry(tag: str) -> dict:

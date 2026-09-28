@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from picture_classifier import cameras, editing, exifinfo, raw, watermark
+from pickapicka import cameras, editing, exifinfo, raw, watermark
 
 
 # ----- camera names -------------------------------------------------------

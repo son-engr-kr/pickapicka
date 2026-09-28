@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from picture_classifier import grading
+from pickapicka import grading
 
 _LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 

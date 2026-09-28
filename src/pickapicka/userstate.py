@@ -214,7 +214,7 @@ def set_view(key: str, view: dict[str, Any]) -> None:
 # its own picks.json). DaVinci-Resolve-style: pick a workspace, create projects
 # by name inside it, list projects per workspace.
 
-DEFAULT_WORKSPACE = Path.home() / "PictureClassifier-Projects"
+DEFAULT_WORKSPACE = Path.home() / "Pickapicka-Projects"
 
 # Deleting a project only renames its folder — the photos are never touched and
 # the project data stays on disk. A folder carrying this marker is skipped when

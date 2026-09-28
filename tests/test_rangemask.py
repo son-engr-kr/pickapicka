@@ -10,7 +10,7 @@ import time
 import cv2
 import numpy as np
 
-from picture_classifier import rangemask
+from pickapicka import rangemask
 
 
 # Three colours that make the point about metrics: a dark red, a bright red of

@@ -1,11 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for Picture Classifier — cross-platform.
+"""PyInstaller spec for Pickapicka — cross-platform.
 
 macOS wraps the bundle in a .app; on Windows the COLLECT tree
-(dist/picture-classifier/) is the distributable, wrapped by Inno Setup.
+(dist/pickapicka/) is the distributable, wrapped by Inno Setup.
 
 Run from the project root:
-    uvx --with-requirements pyproject.toml pyinstaller packaging/picture-classifier.spec
+    uvx --with-requirements pyproject.toml pyinstaller packaging/pickapicka.spec
 """
 import os
 import sys
@@ -14,8 +14,8 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 ROOT = Path(SPECPATH).parent
-WEB_DIR = ROOT / "src" / "picture_classifier" / "web"
-ENTRY = ROOT / "src" / "picture_classifier" / "app_entry.py"
+WEB_DIR = ROOT / "src" / "pickapicka" / "web"
+ENTRY = ROOT / "src" / "pickapicka" / "app_entry.py"
 APP_VERSION = os.environ.get("APP_VERSION", "0.0.0-dev")
 
 block_cipher = None
@@ -28,7 +28,7 @@ a = Analysis(
     # The two Haar cascades redeye.py finds faces and eyes with. PyInstaller's
     # cv2 hook collects cv2's config files but not cv2/data/, so without these
     # "Find red eyes" fails in the bundle with the cascade missing.
-    datas=[(str(WEB_DIR), "picture_classifier/web")] + collect_data_files(
+    datas=[(str(WEB_DIR), "pickapicka/web")] + collect_data_files(
         "cv2", includes=["data/haarcascade_frontalface_default.xml",
                          "data/haarcascade_eye.xml"]),
     hiddenimports=[
@@ -87,7 +87,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="picture-classifier",
+    name="pickapicka",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -108,22 +108,22 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="picture-classifier",
+    name="pickapicka",
 )
 
 # macOS wraps the COLLECT tree in a .app bundle; on Windows/Linux the COLLECT
-# directory (dist/picture-classifier/) is itself the distributable.
+# directory (dist/pickapicka/) is itself the distributable.
 if sys.platform == "darwin":
     app = BUNDLE(
         coll,
-        name="Picture Classifier.app",
+        name="Pickapicka.app",
         icon=None,
-        bundle_identifier="kr.son-engr.picture-classifier",
+        bundle_identifier="kr.son-engr.pickapicka",
         version=APP_VERSION,
         info_plist={
-            "CFBundleName": "Picture Classifier",
-            "CFBundleDisplayName": "Picture Classifier",
-            "CFBundleIdentifier": "kr.son-engr.picture-classifier",
+            "CFBundleName": "Pickapicka",
+            "CFBundleDisplayName": "Pickapicka",
+            "CFBundleIdentifier": "kr.son-engr.pickapicka",
             "CFBundleVersion": APP_VERSION,
             "CFBundleShortVersionString": APP_VERSION,
             "LSMinimumSystemVersion": "12.0",

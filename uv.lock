@@ -920,7 +920,7 @@ wheels = [
 ]
 
 [[package]]
-name = "picture-classifier"
+name = "pickapicka"
 version = "0.9.0"
 source = { editable = "." }
 dependencies = [
