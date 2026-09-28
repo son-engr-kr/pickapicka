@@ -9,7 +9,11 @@ entirely locally; nothing is uploaded.
 
 Called Picture Classifier up to 0.9.0; [upgrading from it](docs/install.md#upgrading-from-picture-classifier).
 
-https://github.com/user-attachments/assets/f769de65-c167-4066-bd4e-7550f7f193d2
+
+
+https://github.com/user-attachments/assets/0e347ade-1275-46f8-acc5-1e2b6cb20fc5
+
+
 
 [![Video guide: getting started with v0.9.0 (2:51)](docs/images/guide.jpg)](https://youtu.be/y_Lt25yDufM)
 
