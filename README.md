@@ -11,7 +11,7 @@ Called Picture Classifier up to 0.9.0; [upgrading from it](docs/install.md#upgra
 
 https://github.com/user-attachments/assets/f769de65-c167-4066-bd4e-7550f7f193d2
 
-[![Video guide: getting started with v0.9.0 (2:52)](docs/images/guide.jpg)](https://youtu.be/_gH5AK2H-oA)
+[![Video guide: getting started with v0.9.0 (2:51)](docs/images/guide.jpg)](https://youtu.be/y_Lt25yDufM)
 
 ![The grid](docs/images/grid.jpg)
 
