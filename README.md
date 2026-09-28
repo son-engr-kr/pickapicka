@@ -7,11 +7,9 @@ non-destructive editor for the ones you do.
 Built for post-shoot triage on a few hundred to a few thousand frames. Runs
 entirely locally; nothing is uploaded.
 
-
-
 https://github.com/user-attachments/assets/f769de65-c167-4066-bd4e-7550f7f193d2
 
-
+[![Video guide: getting started with v0.9.0 (2:52)](docs/images/guide.jpg)](https://youtu.be/_gH5AK2H-oA)
 
 ![The grid](docs/images/grid.jpg)
 
@@ -43,8 +41,6 @@ pcls serve
 Homebrew, from source, and the CLI are in [docs/install.md](docs/install.md).
 
 ## First run
-
-[![Getting started with v0.9.0 (2:52)](docs/images/guide.jpg)](https://youtu.be/_gH5AK2H-oA)
 
 `pcls serve` opens a landing page. The first time, it asks where to keep your
 projects, a workspace folder kept apart from your photos, and offers a default.
