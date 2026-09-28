@@ -7,7 +7,11 @@ non-destructive editor for the ones you do.
 Built for post-shoot triage on a few hundred to a few thousand frames. Runs
 entirely locally; nothing is uploaded.
 
-<!-- promo video -->
+
+
+https://github.com/user-attachments/assets/f769de65-c167-4066-bd4e-7550f7f193d2
+
+
 
 ![The grid](docs/images/grid.jpg)
 
