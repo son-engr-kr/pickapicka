@@ -53,6 +53,9 @@ runs once; after that the project opens where you left it.
 Your photos are never moved or modified. Everything the app decides lives in the
 project's own folder, in a `picks.json` that points at them.
 
+Launched as an app, it opens with a short intro and a chime; Preferences turns
+the sound off.
+
 ## What it does
 
 **One window, three places**: a bar across the top names the project (click it

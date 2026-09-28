@@ -7,6 +7,15 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <!-- The launch intro. The app opens the browser at /?launch (launch.py), and
+       this class goes on before anything is painted, so the page underneath
+       never shows for a frame first. -->
+  <script>if (new URLSearchParams(location.search).has("launch")) document.documentElement.classList.add("launching");</script>
+  <div id="intro" aria-hidden="true">
+    <div class="intro-logo"><div class="intro-glow"></div><div class="intro-mark"></div></div>
+    <div class="intro-name">Pickapicka</div>
+  </div>
+
   <!-- The bar every screen shares: which project, which part of the work you
        are in, what is running, and the way out. -->
   <header id="topbar">
@@ -544,6 +553,8 @@
               <input type="checkbox" id="pref-inspector" /></label>
             <label class="prefs-row"><span><b>Loupe in the viewer</b><small>A magnified view under the pointer. Also <kbd>L</kbd>.</small></span>
               <input type="checkbox" id="pref-loupe" /></label>
+            <label class="prefs-row"><span><b>Launch sound</b><small>A short chime as the app opens, on macOS and Windows.</small></span>
+              <input type="checkbox" id="pref-launch-sound" /></label>
             <div class="prefs-row"><span><b>Behind photos</b><small>What the grid, the viewer and the editor show around a photo.</small></span>
               <div class="prefs-seg" id="pref-photo-bg" role="group">
                 <button type="button" data-bg="black">Black</button><button type="button" data-bg="dark">Dark grey</button><button type="button" data-bg="grey">Medium grey</button>

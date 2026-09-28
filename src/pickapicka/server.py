@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 
 from . import (
     cameras, db, editing, exifinfo, exporting, film as film_mod, folderinfo, fsutil, hdr, imfile,
-    lut as lut_mod, metadata as metadata_mod, portrait as portrait_mod, presets as presets_mod,
+    launch, lut as lut_mod, metadata as metadata_mod, portrait as portrait_mod, presets as presets_mod,
     redeye as redeye_mod, transform as transform_mod, raw, relink, scenes, segment as segment_mod,
     userstate, watermark as watermark_mod,
 )
@@ -1815,6 +1815,12 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         userstate.set_view(_view_key(), view)
         return view
 
+    @app.post("/api/launch-sound")
+    def launch_sound() -> dict[str, Any]:
+        """The chime, for the page's intro: see launch.py for why the page
+        cannot play it itself."""
+        return {"played": launch.play_sound()}
+
     @app.post("/api/quit")
     def quit_app(payload: QuitPayload | None = None) -> dict[str, Any]:
         """Stop the server, which is the whole app: the page is only a view of
@@ -3471,7 +3477,7 @@ def serve(db_path: Path | None, host: str, port: int, open_browser: bool = False
 
         def _open() -> None:
             time.sleep(1.0)
-            webbrowser.open(url)
+            webbrowser.open(launch.intro_url(url))
 
         threading.Thread(target=_open, daemon=True).start()
     # A Server object rather than uvicorn.run, so /api/quit has something to stop.

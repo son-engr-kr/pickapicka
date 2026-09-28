@@ -7367,6 +7367,7 @@ async function openPrefs(pane = "general") {
   $("#pref-keybar").checked = !keybarCollapsed();
   $("#pref-inspector").checked = inspectorOn();
   $("#pref-loupe").checked = loupe.on;
+  $("#pref-launch-sound").checked = launchSoundOn();
   applyPhotoBg(photoBg());
   renderPrefWorkspaces();
   showPrefsPane(pane);
@@ -7421,6 +7422,9 @@ function bindPrefs() {
   });
   $("#pref-inspector").addEventListener("change", (e) => { if (e.target.checked !== inspectorOn()) toggleInspector(); });
   $("#pref-loupe").addEventListener("change", (e) => { if (e.target.checked !== loupe.on) toggleLoupe(); });
+  $("#pref-launch-sound").addEventListener("change", (e) => {
+    try { localStorage.setItem("pcls.launchSound", e.target.checked ? "1" : "0"); } catch { /* private */ }
+  });
   $$("#pref-photo-bg button").forEach((b) => b.addEventListener("click", () => {
     try { localStorage.setItem("pcls.photoBg", b.dataset.bg); } catch { /* private */ }
     applyPhotoBg(b.dataset.bg);
@@ -9783,8 +9787,45 @@ async function applySceneGrouping() {
   await bootMain();
 }
 
+// ---------- launch intro ----------
+// Plays when the app opens the browser at /?launch (launch.py), over whatever
+// the boot below puts up, then fades to show it. Any click or key skips it.
+const INTRO_HOLD_MS = 1500;   // start to fade, a little inside the chime
+const INTRO_FADE_MS = 420;    // #intro.leaving in style.css
+
+function launchSoundOn() {
+  try { return localStorage.getItem("pcls.launchSound") !== "0"; } catch { return true; }
+}
+
+function playIntro() {
+  // A reload is not a launch.
+  history.replaceState(null, "", location.pathname);
+  const intro = $("#intro");
+  // Not awaited: the round trip is a few milliseconds, and a failed request
+  // should cost the sound, not leave the page covered.
+  if (launchSoundOn()) {
+    fetch("/api/launch-sound", { method: "POST" }).then((res) => {
+      if (!res.ok) throw new Error(`launch sound failed: ${res.status}`);
+    });
+  }
+  intro.classList.add("play");
+  let done = false;
+  function onKey(e) { e.preventDefault(); e.stopPropagation(); leave(); }
+  function leave() {
+    if (done) return;
+    done = true;
+    window.removeEventListener("keydown", onKey, true);
+    intro.classList.add("leaving");
+    setTimeout(() => document.documentElement.classList.remove("launching"), INTRO_FADE_MS);
+  }
+  setTimeout(leave, INTRO_HOLD_MS);
+  intro.addEventListener("pointerdown", leave, { once: true });
+  window.addEventListener("keydown", onKey, true);
+}
+
 // ---------- boot ----------
 (async () => {
+  if (document.documentElement.classList.contains("launching")) playIntro();
   bindUi();
   bindKeys();
   bindHelp();
