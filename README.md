@@ -7,6 +7,8 @@ non-destructive editor for the ones you do.
 Built for post-shoot triage on a few hundred to a few thousand frames. Runs
 entirely locally; nothing is uploaded.
 
+<!-- promo video -->
+
 ![The grid](docs/images/grid.jpg)
 
 Decide with one key per frame, filter by decision, and let the per-scene
@@ -37,6 +39,8 @@ pcls serve
 Homebrew, from source, and the CLI are in [docs/install.md](docs/install.md).
 
 ## First run
+
+[![Getting started with v0.9.0 (2:52)](docs/images/guide.jpg)](https://youtu.be/_gH5AK2H-oA)
 
 `pcls serve` opens a landing page. The first time, it asks where to keep your
 projects, a workspace folder kept apart from your photos, and offers a default.
