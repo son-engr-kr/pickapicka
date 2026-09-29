@@ -16,6 +16,9 @@ from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 ROOT = Path(SPECPATH).parent
 WEB_DIR = ROOT / "src" / "pickapicka" / "web"
 ENTRY = ROOT / "src" / "pickapicka" / "app_entry.py"
+# Drawn by packaging/make_icon.py. Without them PyInstaller puts its own icon on
+# the app, which is what the Dock and the taskbar showed up to 0.10.0.
+ICON_DIR = ROOT / "packaging" / "icons"
 APP_VERSION = os.environ.get("APP_VERSION", "0.0.0-dev")
 
 block_cipher = None
@@ -98,6 +101,9 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # The exe's own icon is what Windows shows for it everywhere; on macOS the
+    # bundle's icon below is the one that counts.
+    icon=str(ICON_DIR / "pickapicka.ico") if sys.platform == "win32" else None,
 )
 
 coll = COLLECT(
@@ -117,7 +123,7 @@ if sys.platform == "darwin":
     app = BUNDLE(
         coll,
         name="Pickapicka.app",
-        icon=None,
+        icon=str(ICON_DIR / "pickapicka.icns"),
         bundle_identifier="kr.son-engr.pickapicka",
         version=APP_VERSION,
         info_plist={

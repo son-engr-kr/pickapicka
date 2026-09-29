@@ -37,6 +37,8 @@ ArchitecturesInstallIn64BitMode=x64
 WizardStyle=modern
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
+; The installer's own icon; the app's comes with the exe (pickapicka.spec).
+SetupIconFile={#RepoRoot}\packaging\icons\pickapicka.ico
 ; Installs from before the rename (Picture Classifier, 0.9.0 and earlier) have
 ; this AppId too, so they upgrade in place: into the folder they already use,
 ; with the Start menu entries moved to the new name.
