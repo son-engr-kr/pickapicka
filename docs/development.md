@@ -34,6 +34,7 @@ uv run python tests/test_exporting.py    # export names, sizes, formats, copying
 uv run python tests/test_portrait.py     # skin smoothing
 uv run python tests/test_app_entry.py    # the bundled app starting with no console
 uv run python tests/test_launch.py       # the launch intro's address and chime
+uv run pytest tests/test_updater.py     # update checks, checksums, the install scripts
 uv run pytest tests/test_imfile.py      # image files on Korean and other non-ASCII paths
 uv run pytest tests/test_scenes.py      # folder and time-gap scene grouping
 ```

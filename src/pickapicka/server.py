@@ -32,7 +32,7 @@ from . import (
     cameras, db, editing, exifinfo, exporting, film as film_mod, folderinfo, fsutil, hdr, imfile,
     launch, lut as lut_mod, metadata as metadata_mod, portrait as portrait_mod, presets as presets_mod,
     redeye as redeye_mod, transform as transform_mod, raw, relink, scenes, segment as segment_mod,
-    userstate, watermark as watermark_mod,
+    updater as updater_mod, userstate, watermark as watermark_mod,
 )
 from .scoring import objects as objects_mod
 from . import lens as lens_mod
@@ -284,6 +284,10 @@ class UprightPayload(BaseModel):
 
 class QuitPayload(BaseModel):
     force: bool = False   # quit even with a task still running
+
+
+class UpdateAutoPayload(BaseModel):
+    auto: bool
 
 
 class OpenPayload(BaseModel):
@@ -1762,6 +1766,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         ctx.load_db(initial_db_path)
 
     app = FastAPI(title="Pickapicka")
+    # Checks only once serve() starts it, so building an app (the tests) stays offline.
+    updater = updater_mod.Updater()
+    app.state.updater = updater
 
     @app.middleware("http")
     async def _no_cache_for_web_assets(request: Request, call_next):
@@ -1821,22 +1828,65 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         cannot play it itself."""
         return {"played": launch.play_sound()}
 
+    def _running_tasks() -> list[str]:
+        return [what for what, st in (
+            ("an export", ctx.export_state), ("scoring", ctx.scoring_state),
+            ("grouping", ctx.cluster_state), ("opening a project", ctx.opening_state),
+        ) if st["running"]]
+
+    def _stop_server() -> None:
+        server = getattr(app.state, "server", None)
+        assert server is not None, "stopping needs the uvicorn server that serve() started"
+        # A beat later, so this response reaches the page before the socket goes.
+        threading.Timer(0.3, lambda: setattr(server, "should_exit", True)).start()
+
     @app.post("/api/quit")
     def quit_app(payload: QuitPayload | None = None) -> dict[str, Any]:
         """Stop the server, which is the whole app: the page is only a view of
         it. Without this, closing the tab left it running in the background,
         and on Windows there was no console to close either."""
-        busy = [what for what, st in (
-            ("an export", ctx.export_state), ("scoring", ctx.scoring_state),
-            ("grouping", ctx.cluster_state), ("opening a project", ctx.opening_state),
-        ) if st["running"]]
+        busy = _running_tasks()
         if busy and not (payload and payload.force):
             raise HTTPException(status_code=409, detail=" and ".join(busy) + " is still running")
-        server = getattr(app.state, "server", None)
-        assert server is not None, "quit needs the uvicorn server that serve() started"
-        # A beat later, so this response reaches the page before the socket goes.
-        threading.Timer(0.3, lambda: setattr(server, "should_exit", True)).start()
+        _stop_server()
         return {"quitting": True}
+
+    # ----- updates (updater.py) ------------------------------------------
+
+    def _update_state() -> dict[str, Any]:
+        return {**updater.snapshot(), "auto": userstate.get_update_auto(), "boot": updater.boot}
+
+    @app.get("/api/update")
+    def get_update() -> dict[str, Any]:
+        return _update_state()
+
+    @app.post("/api/update/check")
+    def check_update() -> dict[str, Any]:
+        threading.Thread(target=updater.check, daemon=True, name="update-check").start()
+        return _update_state()
+
+    @app.post("/api/update/auto")
+    def set_update_auto(payload: UpdateAutoPayload) -> dict[str, Any]:
+        userstate.set_update_auto(payload.auto)
+        if payload.auto:
+            threading.Thread(target=updater.check, daemon=True, name="update-check").start()
+        return _update_state()
+
+    @app.post("/api/update/install")
+    def install_update(payload: QuitPayload | None = None) -> dict[str, Any]:
+        """Quit into the installer. The script updater.py starts waits for
+        this process to exit, installs, and opens the app again on this port,
+        where the page finds it."""
+        busy = _running_tasks()
+        if busy and not (payload and payload.force):
+            raise HTTPException(status_code=409, detail=" and ".join(busy) + " is still running")
+        if updater.snapshot()["status"] != "ready":
+            raise HTTPException(status_code=400, detail="there is no downloaded update to install")
+        server = getattr(app.state, "server", None)
+        assert server is not None, "an update needs the uvicorn server that serve() started"
+        updater.start_install(port=server.config.port)
+        _stop_server()
+        return {"restarting": True}
 
     @app.post("/api/close")
     def close_project() -> dict[str, Any]:
@@ -3436,10 +3486,19 @@ def _is_pickapicka_running(host: str, port: int) -> bool:
 
 
 def _pick_free_port(host: str, preferred: int, attempts: int = 20) -> int:
-    """Try sequential ports starting at `preferred`; fall back to an OS-assigned one."""
+    """Try sequential ports starting at `preferred`; fall back to an OS-assigned one.
+
+    Probed the way uvicorn will bind it: with SO_REUSEADDR on macOS and Linux
+    (asyncio's default there). Without it, the connections a just-quit app
+    leaves in TIME_WAIT made its own port look taken for a minute, so the app
+    reopened after an update came up on another port, where the page waiting
+    for it never looked. Not on Windows, where the flag means sharing a port
+    that is really in use."""
     import socket
     for candidate in range(preferred, preferred + attempts):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if os.name == "posix":
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind((host, candidate))
                 return candidate
@@ -3483,4 +3542,5 @@ def serve(db_path: Path | None, host: str, port: int, open_browser: bool = False
     # A Server object rather than uvicorn.run, so /api/quit has something to stop.
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=actual_port, log_level="warning"))
     app.state.server = server
+    app.state.updater.start_background(userstate.get_update_auto)
     server.run()

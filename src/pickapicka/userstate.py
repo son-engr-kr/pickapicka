@@ -132,6 +132,20 @@ def set_export_settings(settings: dict[str, Any]) -> None:
     _save(data)
 
 
+# ----- updates (app-global) --------------------------------------------------
+# Whether the app looks for a new version by itself (updater.py). On unless
+# turned off in Preferences; "Check now" works either way.
+
+def get_update_auto() -> bool:
+    return bool(_load().get("update_auto", True))
+
+
+def set_update_auto(on: bool) -> None:
+    data = _load()
+    data["update_auto"] = bool(on)
+    _save(data)
+
+
 # ----- look library (app-global) -------------------------------------------
 # Imported .cube files and fitted colour matches, one JSON file each, named by
 # `lut.table_key`. Global like presets, so a look imported once is there in
