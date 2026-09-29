@@ -5,7 +5,9 @@ exposure, groups them into scenes, suggests what to keep — then gives you a
 non-destructive editor for the ones you do.
 
 Built for post-shoot triage on a few hundred to a few thousand frames. Runs
-entirely locally; nothing is uploaded.
+entirely locally; nothing is uploaded. The installed app checks GitHub for new
+versions and updates itself in one click ([Updating](docs/install.md#updating));
+Preferences turns the check off.
 
 Called Picture Classifier up to 0.9.0; [upgrading from it](docs/install.md#upgrading-from-picture-classifier).
 
@@ -92,6 +94,9 @@ labels · `←` `→` move · `[` `]` a screen on or back · `Enter` viewer ·
 `C` compare · `E` edit · `I` photo info · `X` select · `D` download the
 selection · `B` subject boxes · `K` focus peaking · `L` loupe · `?` every
 shortcut · `⌘,` / `Ctrl+,` preferences
+
+In the viewer: a click zooms to 100% there · scroll or pinch zooms · drag pans ·
+`F` fit ↔ 100% · `+` `-` zoom · `Tab` hide the bars
 
 In the editor: `R` `G` `B` add a radial, gradient or brush mask · `\` show the
 mask · `Del` remove it · `C` hold the original · `F` fit ↔ 100% ·

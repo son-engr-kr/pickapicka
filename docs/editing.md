@@ -403,6 +403,15 @@ noise actually lives, and negative texture can be brushed onto skin alone.
   renders the visible window from the **full-resolution original**, so you can
   judge real sharpness while grading. Scroll to zoom, drag to pan (space or
   middle-drag to pan past a mask).
+- **Typed values**: click a slider's number to type the value instead of
+  dragging to it. Enter (or clicking away) sets it, Esc leaves it as it was, and
+  the arrow keys step it (with Shift, ten steps at a time). It is clamped to the
+  slider's range and rounded to its step, exactly as a drag would be.
+- **A panel as wide as you want it**: drag the divider between the photo and the
+  adjustments (or focus it and use the arrow keys); double-click it for the
+  default width. The width is kept for next time. Save, Cancel and Apply to
+  more sit under the adjustments, so the photo runs to the bottom of the
+  window.
 - **RAW support**: RAW files are first-class in the grid. When a shot exists as
   both a RAW and a JPEG, the RAW is preferred; edit it and export a JPEG.
   Grid, editor and export all show the same decode — camera white balance, no

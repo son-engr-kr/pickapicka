@@ -68,6 +68,30 @@ uv sync
 uv run pickapicka serve
 ```
 
+## Updating
+
+The installed app keeps itself current. A little after it opens, and every few
+hours while it runs, it asks GitHub for the newest release, downloads the
+installer in the background, and checks it against the SHA-256 checksum GitHub
+publishes for it; a download that does not match is thrown away. When one is
+ready, **Update to …** appears in the top bar. Clicking it restarts the app into
+the installer, which asks for the system's consent once: your password on
+macOS, the "allow this app to make changes" prompt on Windows. The app then
+opens again by itself, back in the project you were in, and says whether the
+update took. Say no to the prompt and the version you had opens again.
+
+Because the app downloads the installer itself rather than through a browser,
+the unsigned-app warnings (Gatekeeper's right-click → Open, SmartScreen's Run
+anyway) do not come back for updates.
+
+The check sends a request to GitHub and nothing else; nothing about your photos
+or projects leaves the machine. **Preferences → Updates** turns automatic checks
+off, and **Check now** works either way.
+
+A `uv tool` or Homebrew install is told when a new version is out, with the
+command that updates it (`uv tool upgrade pickapicka`, `brew upgrade
+pickapicka`).
+
 ### Upgrading from Picture Classifier
 
 Up to 0.9.0 the app was called Picture Classifier. Your projects, workspaces,

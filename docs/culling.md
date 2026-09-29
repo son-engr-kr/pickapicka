@@ -30,7 +30,16 @@ whole job: decide, filter, move on.
 - **The viewer** (`Enter`) shows the photo at once from its thumbnail while the
   full image loads, with the decision buttons, the reasons for the suggestion,
   and a **filmstrip** of the scene along the bottom. The editor has the same
-  filmstrip; moving to another photo there saves the edit.
+  filmstrip; moving to another photo there saves the edit. Preferences can turn
+  the filmstrip off, which gives its height to the photo.
+- **Zoom in the viewer**: a click goes to 100% where it lands and a second one
+  back to fit; scroll or pinch zooms about the pointer (up to 400%), `+` and `-`
+  zoom about the middle, `F` or `Z` toggles fit and 100%, and a drag pans.
+  Fit / 100% / 200% and the current scale are in the top bar. The zoom and the
+  place are kept as you move to the next photo, so a burst is checked frame
+  after frame at the same spot. `Tab` hides every bar, leaving only the photo
+  (the keys still decide and move), which matters most for a portrait frame on
+  a landscape screen.
 
 - **Scoring shows how long is left**: the steps (find photos, score, group
   faces, open), how many are done, the time left, and **Stop**. Stopping a new
@@ -142,7 +151,9 @@ resting on the grid does not pull the cursor when the page turns under it.
   panel of whatever is under the cursor, parked in the letterbox margin so it
   stays off the photo (and dodging to the other side when it can't). 1:1 / 2:1 /
   4:1 against the source pixels, nearest-neighbour — the point is to see the
-  softness, not to smooth it away.
+  softness, not to smooth it away. It is for the fitted photo, and steps aside
+  while the viewer is zoomed; the scroll wheel zooms the photo, and the loupe's
+  magnification is the 1:1 / 2:1 / 4:1 buttons.
 
 ## Subjects
 
