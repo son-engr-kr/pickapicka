@@ -102,3 +102,21 @@ GitHub Release automatically — no manual upload. To dry-run a platform build
 
 The Homebrew workflow needs a `TAP_TOKEN` repository secret — a fine-grained
 PAT with `Contents: Write` on `son-engr-kr/homebrew-pickapicka`.
+
+## The website
+
+The landing page at <https://son-engr-kr.github.io/pickapicka/> lives in
+`site/`: `index.html` and `style.css` are the page, and `build.py` fills in the
+latest release (version, date, a direct link and size for each installer) and
+copies in the screenshots, icons and font from the rest of the repository, so
+none of them is kept twice. It uses only the standard library:
+
+```bash
+python3 site/build.py /tmp/site && python3 -m http.server -d /tmp/site 8000
+```
+
+The **Website** workflow (`.github/workflows/pages.yml`) builds and deploys it
+to GitHub Pages on a push that touches any of those files, and after each
+release build. A release published by the build workflows' own token fires no
+`release` event, so it follows the builds instead, and waits until the release
+has both installers.

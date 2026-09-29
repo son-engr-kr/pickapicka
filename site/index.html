@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pickapicka: cull and edit a photo shoot on your own machine</title>
+  <meta name="description" content="Pickapicka scores every frame for sharpness and exposure, groups the shoot into scenes and suggests what to keep, then edits the keepers non-destructively. Free, open source, and nothing is uploaded." />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Pickapicka" />
+  <meta property="og:description" content="Cull and edit a photo shoot on your own machine. Free, open source, nothing uploaded." />
+  <meta property="og:url" content="{{SITE_URL}}" />
+  <meta property="og:image" content="{{SITE_URL}}images/grid.jpg" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="preload" href="fonts/Poppins-SemiBold.ttf" as="font" type="font/ttf" crossorigin />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <!-- The app's mark, as its icon draws it (packaging/make_icon.py). -->
+    <symbol id="mark" viewBox="0 0 100 100">
+      <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+        <path stroke-width="6" d="M21.5 36.5V21.5H36.5M63.5 21.5H78.5V36.5M21.5 63.5V78.5H36.5M63.5 78.5H78.5V63.5"/>
+        <path stroke-width="10.4" d="M34.5 51.5L45.5 62.5L66.5 39.5"/>
+      </g>
+    </symbol>
+    <symbol id="i-apple" viewBox="0 0 24 24"><path fill="currentColor" d="M16.37 12.62c-.02-2.2 1.8-3.26 1.88-3.31-1.03-1.5-2.62-1.7-3.19-1.73-1.36-.14-2.65.8-3.34.8-.69 0-1.75-.78-2.88-.76-1.48.02-2.85.86-3.61 2.19-1.54 2.67-.39 6.62 1.11 8.79.73 1.06 1.6 2.25 2.74 2.21 1.1-.04 1.52-.71 2.85-.71 1.33 0 1.7.71 2.87.69 1.18-.02 1.93-1.08 2.66-2.14.84-1.23 1.18-2.42 1.2-2.48-.03-.01-2.3-.88-2.32-3.49zM14.2 6.13c.6-.73 1.01-1.75.9-2.76-.87.04-1.92.58-2.55 1.31-.56.65-1.05 1.69-.92 2.68.97.08 1.96-.49 2.57-1.23z"/></symbol>
+    <symbol id="i-windows" viewBox="0 0 24 24"><path fill="currentColor" d="M3 5.1l7.4-1v7.2H3V5.1zm0 13.8l7.4 1v-7.1H3v6.1zm8.3 1.1L21 21.4v-8.6h-9.7V20zm0-15.9v7.3H21V2.6l-9.7 1.5z"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02a9.58 9.58 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></symbol>
+  </svg>
+
+  <header class="top">
+    <a class="brand" href="#top" aria-label="Pickapicka">
+      <span class="brand-mark"><svg><use href="#mark"/></svg></span>
+      <span class="brand-name">Pickapicka</span>
+    </a>
+    <nav class="top-nav" aria-label="Sections">
+      <a href="#cull">Culling</a>
+      <a href="#edit">Editing</a>
+      <a href="#download">Download</a>
+      <a class="gh" href="{{REPO_URL}}" aria-label="Pickapicka on GitHub"><svg class="ico"><use href="#i-github"/></svg></a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <p class="eyebrow">Free and open source · macOS, Windows, Linux</p>
+      <h1>Cull and edit a shoot on your own machine.</h1>
+      <p class="lead">Pickapicka scores every frame for sharpness and exposure, groups the shoot
+        into scenes and suggests what to keep. Then it edits the keepers, non-destructively.
+        Your photos never leave the computer they are on.</p>
+      <div class="cta" id="cta">
+        <a class="btn primary" data-os="mac" href="{{MAC_URL}}">
+          <svg class="ico"><use href="#i-apple"/></svg><span>Download for macOS</span></a>
+        <a class="btn" data-os="win" href="{{WIN_URL}}">
+          <svg class="ico"><use href="#i-windows"/></svg><span>Download for Windows</span></a>
+      </div>
+      <p class="cta-meta">Version {{VERSION}} · <a href="#download">Linux and other ways to install</a> · <a href="{{RELEASE_URL}}">What's new</a></p>
+
+      <figure class="showcase">
+        <div class="glow" aria-hidden="true"></div>
+        <video controls playsinline preload="none" poster="media/promo-poster.jpg"
+               width="1280" height="720" aria-label="A 26-second tour of Pickapicka">
+          <source src="media/promo.mp4" type="video/mp4" />
+        </video>
+      </figure>
+    </section>
+
+    <section class="pillars" aria-label="In short">
+      <div class="pillar">
+        <h2>Scores every frame</h2>
+        <p>Sharpness and exposure for each photo, weighed against the rest of its scene, and a
+          pick, review or reject suggestion to start from.</p>
+      </div>
+      <div class="pillar">
+        <h2>One key per photo</h2>
+        <p><kbd>P</kbd> pick, <kbd>R</kbd> reject, <kbd>V</kbd> review, and on to the next.
+          Stars and colour labels as in Lightroom, kept in every export.</p>
+      </div>
+      <div class="pillar">
+        <h2>Nothing is uploaded</h2>
+        <p>It runs on your machine and leaves your photos where they are, untouched. Every
+          decision lives in the project's own folder.</p>
+      </div>
+    </section>
+
+    <section class="feature" id="cull">
+      <div class="feature-text">
+        <p class="kicker pick">Culling</p>
+        <h2>The first pass, done for you.</h2>
+        <p>Point it at a folder of a few hundred or a few thousand frames. It groups them into
+          scenes, by folder or by the pauses in the capture times, and suggests the keepers in
+          each. You decide, one key at a time.</p>
+        <ul>
+          <li>Subject detection sorts down the frames that missed the car, and measures
+            sharpness on the subject rather than on the whole frame.</li>
+          <li>Faces grouped into people; focus peaking that measures edge steepness, not
+            contrast; a loupe at real pixels.</li>
+          <li>Compare two to four frames of a burst side by side, zoomed and panned together.</li>
+          <li>HDR brackets found from EXIF and merged into one frame to cull.</li>
+        </ul>
+      </div>
+      <figure class="shot">
+        <img src="images/grid.jpg" width="1800" height="1035" loading="lazy"
+             alt="The culling grid: four photos of cars, each with a suggestion and pick, review and reject buttons, the scenes on the left and the photo's details on the right." />
+      </figure>
+    </section>
+
+    <section class="feature flip" id="edit">
+      <div class="feature-text">
+        <p class="kicker review">Editing</p>
+        <h2>An editor for the keepers.</h2>
+        <p>Everything is non-destructive and previewed at the resolution you export at, down to
+          the original pixels at 100%. RAW files are first-class.</p>
+        <ul>
+          <li>The full slider set and a tone curve, colour mixer and grading.</li>
+          <li>Up to 16 local masks: radial, gradient, brush and tonal range, or selected for you:
+            subject, background, skin, face, hair, clothes.</li>
+          <li>Crop and straighten, lens and perspective correction, film emulation built as a
+            chain rather than a filter.</li>
+          <li>Watermarks from EXIF templates, and presets that stack.</li>
+        </ul>
+      </div>
+      <figure class="shot">
+        <img src="images/editor.jpg" width="1800" height="1035" loading="lazy"
+             alt="The editor: a photo of a car with the adjustment sliders beside it." />
+      </figure>
+    </section>
+
+    <section class="guide" aria-labelledby="guide-title">
+      <h2 id="guide-title">Getting started, in three minutes.</h2>
+      <p>A video guide from a first launch to exported picks.</p>
+      <!-- A thumbnail until clicked: YouTube is only contacted by someone who
+           chooses to watch. -->
+      <button class="guide-video" type="button" data-youtube="{{GUIDE_YOUTUBE_ID}}"
+              aria-label="Play the getting-started video guide (2:51)">
+        <img src="images/guide.jpg" width="1600" height="900" loading="lazy" alt="" />
+      </button>
+    </section>
+
+    <section class="download" id="download" aria-labelledby="download-title">
+      <h2 id="download-title">Download</h2>
+      <p class="download-lead">Version {{VERSION}}, released {{RELEASE_DATE}}. Install it once: after that
+        the app finds new versions itself and updates in one click.</p>
+      <div class="cards">
+        <div class="card">
+          <h3><svg class="ico"><use href="#i-apple"/></svg>macOS</h3>
+          <p class="card-sub">Apple Silicon (M1 and later) · {{MAC_SIZE}}</p>
+          <a class="btn primary" href="{{MAC_URL}}">Download the .pkg</a>
+          <p class="note">The app is not signed, so the first launch needs
+            <b>right-click → Open → Open</b>.</p>
+        </div>
+        <div class="card">
+          <h3><svg class="ico"><use href="#i-windows"/></svg>Windows</h3>
+          <p class="card-sub">64-bit (x64) · {{WIN_SIZE}}</p>
+          <a class="btn primary" href="{{WIN_URL}}">Download the installer</a>
+          <p class="note">The installer is not signed, so SmartScreen asks once:
+            <b>More info → Run anyway</b>.</p>
+        </div>
+        <div class="card">
+          <h3>Linux, and anywhere else</h3>
+          <p class="card-sub">With <a href="https://github.com/astral-sh/uv">uv</a> and Python 3.12</p>
+          <pre><code>uv tool install git+{{REPO_URL}}
+pickapicka serve</code></pre>
+          <p class="note">Or Homebrew: <code>brew tap son-engr-kr/pickapicka</code>, then
+            <code>brew install pickapicka</code>. <a href="{{REPO_URL}}/blob/main/docs/install.md">Every install route</a>.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="bottom">
+    <span class="brand-mark small"><svg><use href="#mark"/></svg></span>
+    <span>Pickapicka is free software under the MIT licence.</span>
+    <nav aria-label="More">
+      <a href="{{REPO_URL}}">GitHub</a>
+      <a href="{{REPO_URL}}/tree/main/docs">Docs</a>
+      <a href="{{REPO_URL}}/releases">Releases</a>
+      <a href="{{REPO_URL}}/issues">Report a problem</a>
+    </nav>
+  </footer>
+
+  <script>
+    // The download for this computer goes first. Nothing else depends on it:
+    // both buttons are there either way.
+    (() => {
+      const p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+      if (/win/i.test(p)) {
+        const cta = document.getElementById("cta");
+        const win = cta.querySelector('[data-os="win"]'), mac = cta.querySelector('[data-os="mac"]');
+        win.classList.add("primary");
+        mac.classList.remove("primary");
+        cta.prepend(win);
+      }
+    })();
+    // The guide loads YouTube's player only when asked to play.
+    for (const b of document.querySelectorAll("[data-youtube]")) {
+      b.addEventListener("click", () => {
+        const f = document.createElement("iframe");
+        f.src = `https://www.youtube-nocookie.com/embed/${b.dataset.youtube}?autoplay=1&rel=0`;
+        f.title = "Pickapicka: getting started";
+        f.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen";
+        f.allowFullscreen = true;
+        b.replaceWith(f);
+      }, { once: true });
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,72 @@
+name: Website
+
+# The landing page at https://son-engr-kr.github.io/pickapicka/, built by
+# site/build.py with the latest release's links baked in.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/images/**'
+      - 'src/pickapicka/web/icons/**'
+      - 'src/pickapicka/web/fonts/**'
+      - '.github/workflows/pages.yml'
+  # A new release is published by the two build workflows, with their own
+  # token, and a release made that way fires no `release` event. So the site
+  # follows the builds, and goes up once the release has both installers.
+  workflow_run:
+    workflows: ['Build macOS app', 'Build Windows app']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Does the latest release have both installers yet?
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          names=$(gh api "repos/${{ github.repository }}/releases/latest" --jq '[.assets[].name] | join(" ")')
+          echo "assets: $names"
+          if echo "$names" | grep -q -- '-macos-arm64.pkg' && echo "$names" | grep -q -- '-windows-x64.exe'; then
+            echo "complete=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::The latest release is missing an installer; the site goes up when the other build finishes."
+            echo "complete=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the site
+        if: steps.release.outputs.complete == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 site/build.py _site
+
+      - uses: actions/configure-pages@v5
+        if: steps.release.outputs.complete == 'true'
+
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.release.outputs.complete == 'true'
+        with:
+          path: _site
+
+      - name: Deploy
+        id: deployment
+        if: steps.release.outputs.complete == 'true'
+        uses: actions/deploy-pages@v4

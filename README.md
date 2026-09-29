@@ -1,5 +1,7 @@
 # Pickapicka
 
+**[son-engr-kr.github.io/pickapicka](https://son-engr-kr.github.io/pickapicka/)** · [Download](https://son-engr-kr.github.io/pickapicka/#download)
+
 Cull and edit a shoot on your own machine. Scores every frame for sharpness and
 exposure, groups them into scenes, suggests what to keep — then gives you a
 non-destructive editor for the ones you do.
