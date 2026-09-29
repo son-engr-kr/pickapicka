@@ -1,3 +1,7 @@
+/* The typeface the app's name is set in, on its icon and here (fonts/OFL.txt). */
+@font-face { font-family: "Pickapicka Brand"; src: url("/static/fonts/Poppins-SemiBold.ttf") format("truetype");
+  font-weight: 600; font-style: normal; font-display: block; }
+
 :root {
   /* ---- surfaces ---------------------------------------------------------
      Four steps, each one used for one thing, so depth reads consistently:
@@ -551,13 +555,35 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
 #modal-title { font-weight: 600; flex: 1; }
 #modal-meta { color: var(--fg-dim); }
 #modal-close { margin-left: auto; font-size: 20px; padding: 2px 10px; }
-/* position: relative so the detection-box layer can be placed over the image
-   and scroll with it at 100% zoom. */
-#modal-image-wrap { flex: 1; overflow: auto; display: flex; position: relative;
-  align-items: center; justify-content: center; background: #000; }
-#modal-image { display: block; }
+/* The stage keeps the loading note and the zoom readout in place; the wrap
+   inside it scrolls. position: relative on the wrap so the detection-box and
+   peaking layers can be placed over the image and scroll with it. */
+#modal-stage { flex: 1; min-height: 0; position: relative; display: flex; }
+#modal-image-wrap { flex: 1; min-width: 0; overflow: auto; display: flex; position: relative;
+  background: #000; scrollbar-width: none; }
+#modal-image.fit { cursor: zoom-in; }
+#modal-image-wrap::-webkit-scrollbar { display: none; }
+#modal-image-wrap.zoomed { cursor: grab; }
+#modal-image-wrap.panning { cursor: grabbing; }
+/* Centred by auto margins rather than by the container: a centred flex item
+   that outgrows its scroller overflows on both sides, and the top and left of
+   a zoomed photo could not be scrolled to. Auto margins collapse to zero
+   instead, so all of the overflow is on the scrollable side. */
+#modal-image { display: block; flex: none; margin: auto; user-select: none; -webkit-user-drag: none; }
 #modal-image.fit { max-width: 100%; max-height: 100%; width: auto; height: auto; }
-#modal-image.actual { max-width: none; max-height: none; }
+#modal-image.zoomed { max-width: none; max-height: none; }
+#modal-hud { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 5;
+  padding: 4px 12px; border-radius: 999px; background: rgba(0, 0, 0, 0.7); color: #fff;
+  font-size: 12px; line-height: 1.4; pointer-events: none; border: 1px solid rgba(255, 255, 255, 0.16);
+  font-variant-numeric: tabular-nums; }
+#modal-hud.hidden { display: none; }
+#modal-zoom { display: inline-flex; align-items: center; flex-shrink: 0; }
+#modal-zoom button { padding: 2px 8px; font-size: 11px; border-radius: 0; margin-left: -1px; }
+#modal-zoom button:first-child { border-radius: 4px 0 0 4px; margin-left: 0; }
+#modal-zoom button:nth-child(3) { border-radius: 0 4px 4px 0; }
+#modal-zoom button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+#modal-zoom-val { min-width: 40px; margin-left: 8px; color: var(--fg-dim); text-align: right;
+  font-variant-numeric: tabular-nums; }
 #modal-decision { padding: 2px 10px; border-radius: 3px; font-weight: 700; }
 #modal-decision.pick { background: var(--pick); color: #fff; }
 #modal-decision.review { background: var(--review); color: #fff; }
@@ -706,7 +732,7 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
 #edit-which { color: var(--fg-dim); font-family: "SF Mono", Menlo, monospace;
   font-size: 11px; flex: 1; }
 #edit-modal-close { font-size: 20px; padding: 2px 10px; margin-left: auto; }
-.edit-body { display: flex; flex-wrap: nowrap; gap: 16px; padding: 12px 14px;
+.edit-body { display: flex; flex-wrap: nowrap; padding: 12px 14px;
   overflow: hidden; min-height: 0; flex: 1; }
 .edit-preview { flex: 1 1 auto; min-width: 0; display: flex;
   flex-direction: column; gap: 8px; min-height: 0; }
@@ -792,10 +818,29 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
 .edit-preview-nav button { padding: 3px 14px; font-size: 13px; }
 #edit-compare.holding { background: var(--accent); border-color: var(--accent);
   color: #fff; }
-#edit-status { text-align: center; font-size: 11px; color: var(--fg-dim);
-  min-height: 14px; }
-.edit-controls { flex: 0 0 360px; display: flex; flex-direction: column;
+/* Over the photo rather than on a line of its own under it, and only while
+   there is something to say. */
+#edit-status { position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  z-index: 2; max-width: calc(100% - 24px); padding: 3px 10px; border-radius: 999px;
+  background: rgba(0, 0, 0, 0.66); color: #fff; font-size: 11px; line-height: 1.4;
+  text-align: center; pointer-events: none; border: 1px solid rgba(255, 255, 255, 0.14); }
+#edit-status:empty { display: none; }
+.edit-preview-bar { display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 6px 22px; }
+/* The adjustments and, under them, Save: one column whose width is the
+   splitter's to set (--edit-side-w, from bindEditSplitter). */
+.edit-side { flex: 0 0 var(--edit-side-w, 360px); min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; }
+.edit-controls { flex: 1 1 auto; display: flex; flex-direction: column;
   gap: 10px; overflow-y: auto; min-height: 0; padding-right: 4px; }
+.edit-splitter { flex: 0 0 16px; align-self: stretch; cursor: col-resize; position: relative;
+  touch-action: none; }
+.edit-splitter::after { content: ""; position: absolute; top: 0; bottom: 0; left: 7px; width: 2px;
+  border-radius: 1px; background: transparent; transition: background 0.12s; }
+.edit-splitter:hover::after, .edit-splitter.dragging::after,
+.edit-splitter:focus-visible::after { background: var(--accent); }
+.edit-splitter:focus-visible { outline: none; }
+body.resizing-edit, body.resizing-edit * { cursor: col-resize !important; user-select: none; }
 
 /* Narrow windows: stack the panels and let the dialog scroll instead. */
 @media (max-width: 1000px) {
@@ -803,7 +848,9 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
   .edit-body { flex-wrap: wrap; overflow-y: auto; }
   .edit-preview { flex: 1 1 100%; }
   .edit-canvas-wrap { flex: 0 0 auto; height: 55vh; }
-  .edit-controls { flex: 1 1 100%; overflow-y: visible; }
+  .edit-splitter { display: none; }
+  .edit-side { flex: 1 1 100%; }
+  .edit-controls { overflow-y: visible; }
 }
 .edit-actionbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .edit-actionbar select { background: var(--bg-3); color: var(--fg);
@@ -927,8 +974,10 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
 .linkish:hover { background: transparent; text-decoration: underline; }
 .edit-box footer { padding: 12px 16px; border-top: 1px solid var(--border);
   display: flex; align-items: center; gap: 8px; }
+.edit-side footer { flex: none; padding: 10px 4px 0 0; margin-top: 6px; flex-wrap: wrap; gap: 6px; }
 #edit-dirty { flex: 1; font-size: 11px; color: var(--review);
-  font-family: "SF Mono", Menlo, monospace; }
+  font-family: "SF Mono", Menlo, monospace; min-width: 0; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
 .edit-box footer button.primary { background: var(--accent);
   border-color: var(--accent); color: #fff; }
 .edit-box footer button.primary:hover { background: #5aa0f0; }
@@ -1463,6 +1512,15 @@ input[type="range"] { accent-color: var(--accent); }
 .look-name { color: var(--ink-dim); }
 .look-val { font-family: var(--mono); font-size: var(--fs-xs);
   color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+/* A slider's number takes a typed value (bindTypedValues in app.js). */
+:is(#edit-modal, #hdr-look-modal) .look-row .look-val { cursor: text; padding: 2px 3px;
+  margin: -2px -3px; border-radius: var(--r1); }
+:is(#edit-modal, #hdr-look-modal) .look-row .look-val:hover { background: var(--raised); color: var(--ink); }
+.look-val[hidden] { display: none; }
+.look-val-input { width: 100%; min-width: 0; box-sizing: border-box; padding: 1px 3px;
+  font-family: var(--mono); font-size: var(--fs-xs); font-variant-numeric: tabular-nums;
+  text-align: right; color: var(--ink); background: var(--sunken);
+  border: 1px solid var(--accent); border-radius: var(--r1); outline: none; }
 .mask-context { font-size: var(--fs-xs); color: var(--ink-faint);
   letter-spacing: 0.6px; text-transform: uppercase; }
 
@@ -1719,6 +1777,27 @@ input[type="range"] { accent-color: var(--accent); }
 #quit-screen { position: fixed; inset: 0; z-index: 1000; background: var(--canvas);
   display: flex; align-items: center; justify-content: center; padding: var(--s5); }
 #quit-screen.hidden { display: none; }
+#update-screen { position: fixed; inset: 0; z-index: 1000; background: var(--canvas);
+  display: flex; align-items: center; justify-content: center; padding: var(--s4); }
+#update-screen.hidden { display: none; }
+
+/* A downloaded update, in the top bar until it is installed or put off. */
+#update-btn { height: 26px; padding: 0 10px; border-radius: 999px; font-size: var(--fs-xs);
+  font-weight: 600; white-space: nowrap; }
+#update-btn.ready { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+#update-btn.hidden { display: none; }
+
+/* One line of news, bottom centre: how an update went. */
+#notice-toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 900;
+  display: flex; align-items: center; gap: 12px; max-width: min(640px, calc(100vw - 32px));
+  padding: 8px 8px 8px 16px; border-radius: 999px; background: var(--raised);
+  border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  font-size: var(--fs-sm); color: var(--ink); }
+#notice-toast.hidden { display: none; }
+#notice-toast.error { border-color: var(--reject); }
+#notice-link { color: var(--accent); white-space: nowrap; }
+#notice-link.hidden { display: none; }
+#notice-close { flex: none; width: 26px; height: 26px; padding: 0; border: none; background: none; }
 .quit-box { max-width: 420px; text-align: center; }
 .quit-box h2 { margin: 0 0 var(--s2); font-size: 18px; }
 .quit-box p { margin: 0; color: var(--ink-dim); line-height: 1.6; }
@@ -2028,7 +2107,8 @@ input[type="range"] { accent-color: var(--accent); }
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--r3);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); }
 .choice-box h2 { margin: 0 0 6px; font-size: var(--fs-lg); }
-.choice-box p { margin: 0 0 18px; font-size: var(--fs-md); color: var(--ink-dim); line-height: 1.5; }
+.choice-box p { margin: 0 0 18px; font-size: var(--fs-md); color: var(--ink-dim); line-height: 1.5;
+  white-space: pre-line; }
 .choice-buttons { display: flex; justify-content: flex-end; gap: 8px; }
 .choice-buttons .danger { color: var(--reject); }
 .choice-buttons .danger:first-child { margin-right: auto; }
@@ -2236,7 +2316,7 @@ button.primary:disabled { background: var(--raised); border-color: var(--line); 
 .landing-shell { max-width: 1200px; padding: 28px 32px 40px; }
 .landing-header { display: flex; align-items: flex-start; gap: 24px; margin-bottom: 26px; }
 .landing-brand { flex: 1 1 auto; min-width: 0; }
-.landing-brand h1 { margin: 0; font-size: 22px; }
+.landing-brand h1 { margin: 0; font-size: 22px; font-family: "Pickapicka Brand", var(--font); font-weight: 600; }
 .landing-brand .landing-tagline { margin: 4px 0 0; }
 .landing-actions-bar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .landing-actions-bar > button, .landing-actions-bar .menu-wrap > button { height: 32px; }
@@ -2301,8 +2381,11 @@ body.landing-mode { grid-template-columns: minmax(0, 1fr); }
 #sidebar, #main { grid-row: 2; height: auto; min-height: 0; }
 #landing { grid-row: 2; grid-column: 1 / -1; min-height: 0; height: auto; overflow-y: auto; }
 .tb-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.tb-mark { flex: none; width: 18px; height: 18px; border-radius: 5px;
+/* The app icon's squircle (a 185/824 corner) and mark, small. */
+.tb-mark { flex: none; position: relative; width: 18px; height: 18px; border-radius: 22.5%;
   background: conic-gradient(from 210deg, var(--pick), var(--review), var(--reject), var(--accent), var(--pick)); }
+.brand-glyph { position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+  filter: drop-shadow(0 0.6px 0.8px rgba(0, 0, 0, 0.28)); }
 #project-switcher { min-width: 0; }
 #project-switcher.hidden { display: none; }
 #project-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 320px; height: 30px;
@@ -2361,6 +2444,13 @@ body.landing-mode { grid-template-columns: minmax(0, 1fr); }
 .film-cell.d-reject::after { background: var(--reject); }
 .film-cell.d-reject img { opacity: 0.45; }
 .edit-preview .filmstrip { background: none; border-top: none; padding: 6px 0; }
+/* Preferences can turn it off: 74 px is a lot of a portrait frame's height. */
+body.filmstrip-off .filmstrip { display: none; }
+
+/* Tab in the viewer: nothing but the photo, over the top bar as well. The keys
+   still decide, rate and move. */
+body.viewer-bare #modal { top: 0; z-index: 185; }   /* over #topbar */
+body.viewer-bare :is(#modal-top, #modal-filmstrip, #modal-bottom, #modal .keybar) { display: none; }
 
 /* ----- the info panel beside the grid ----- */
 .cull-body { flex: 1 1 auto; min-height: 0; display: flex; }
@@ -2553,14 +2643,15 @@ html.launching #intro { position: fixed; inset: 0; z-index: 1000; display: flex;
   background: var(--canvas); }
 #intro.leaving { opacity: 0; transition: opacity 420ms ease; pointer-events: none; }
 .intro-logo { position: relative; width: 104px; height: 104px; }
-.intro-glow, .intro-mark { position: absolute; inset: 0; border-radius: 28px;
+.intro-glow, .intro-mark { position: absolute; inset: 0; border-radius: 22.5%;
   background: conic-gradient(from 210deg, var(--pick), var(--review), var(--reject), var(--accent), var(--pick)); }
 .intro-glow { opacity: 0; filter: blur(36px); transform: scale(0.7); }
 .intro-mark { overflow: hidden; opacity: 0; filter: blur(12px); transform: scale(0.84); }
+.intro-mark .brand-glyph { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.28)); }
 .intro-mark::after { content: ""; position: absolute; inset: -30%;
   background: linear-gradient(100deg, transparent 38%, rgba(255, 255, 255, 0.5) 50%, transparent 62%);
   transform: translateX(-110%); }
-.intro-name { font-size: 34px; font-weight: 700; letter-spacing: -0.02em; color: var(--ink);
+.intro-name { font-family: "Pickapicka Brand", var(--font); font-size: 34px; font-weight: 600; color: var(--ink);
   opacity: 0; transform: translateY(10px); }
 
 #intro.play .intro-mark { animation: intro-focus 760ms cubic-bezier(0.16, 0.84, 0.24, 1) forwards; }

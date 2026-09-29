@@ -19,7 +19,10 @@ const state = {
   filteredPhotos: [],
   pageSize: 4,
   cursorIdx: 0,             // index into filteredPhotos (focused tile)
-  modal: { open: false, idx: 0, fit: true, compare: false },
+  // zoom: 0 is fit, otherwise the scale against the photo's own pixels (1 is
+  // 100%). center: the point of the photo at the middle of the window, as a
+  // fraction of it, kept from photo to photo so a burst is checked in one place.
+  modal: { open: false, idx: 0, zoom: 0, center: { x: 0.5, y: 0.5 }, compare: false },
   people: [],
   peopleById: new Map(),
   subjects: { classes: [], counts: {}, vehicles: [], presets: {}, available: [] },
@@ -1009,14 +1012,6 @@ function loupeInit() {
     const b = e.target.closest("[data-loupe-scale]");
     if (b) setLoupeScale(parseInt(b.dataset.loupeScale, 10));
   });
-  // Wheeling over the photo steps through the magnifications too.
-  wrap.addEventListener("wheel", (e) => {
-    if (!loupe.on || !state.modal.open) return;
-    e.preventDefault();
-    const i = LOUPE_SCALES.indexOf(loupe.scale);
-    setLoupeScale(LOUPE_SCALES[Math.min(LOUPE_SCALES.length - 1,
-                                        Math.max(0, i + (e.deltaY < 0 ? 1 : -1)))]);
-  }, { passive: false });
   $("#modal-loupe").addEventListener("click", toggleLoupe);
   syncLoupeButton();
 }
@@ -1080,7 +1075,8 @@ function loupeGeometry(wrapRect, imgRect, cursor) {
 
 function drawLoupe() {
   const img = $("#modal-image");
-  if (!loupe.on || !state.modal.open || !loupe.at || !img.naturalWidth) {
+  // A zoomed photo is already magnified; the loupe is for the fitted one.
+  if (!loupe.on || !state.modal.open || state.modal.zoom || !loupe.at || !img.naturalWidth) {
     hideLoupe();
     return;
   }
@@ -1144,6 +1140,179 @@ function syncModalPeak() {
   layer.style.top = `${img.offsetTop}px`;
   layer.style.width = `${img.offsetWidth}px`;
   layer.style.height = `${img.offsetHeight}px`;
+}
+
+// ---------- viewer zoom ----------
+// Fit, or a scale against the photo's own pixels. A click zooms to 100% where
+// it lands and a second one goes back, as in Compare; the wheel or a pinch
+// zooms about the pointer; a drag pans. The place is kept from photo to photo,
+// so the next frame of a burst opens on the same eyes. The loupe is for the
+// fitted photo and steps aside while zoomed.
+const MODAL_ZOOM_MAX = 4;
+const MODAL_ZOOM_STEP = 1.5;       // + and -
+const WHEEL_ZOOM_RATE = 0.002;     // per wheel pixel; a notch is about 100
+const PINCH_ZOOM_RATE = 0.01;      // a pinch arrives as ctrl+wheel, in small deltas
+
+// The size the photo is at 100%. The thumbnail goes up first and the full image
+// replaces it, so until then the size is the thumbnail's shape at the original's
+// long edge; the full image's own size once it is in.
+function modalRefSize() {
+  const img = $("#modal-image");
+  const nw = img.naturalWidth, nh = img.naturalHeight;
+  if (!nw || !nh) return null;
+  if (img.src.endsWith(img.dataset.full || "\0")) return { w: nw, h: nh };
+  const photo = state.filteredPhotos[state.modal.idx];
+  const long = Math.max(photo?.width || 0, photo?.height || 0);
+  const k = long ? long / Math.max(nw, nh) : 1;
+  return { w: nw * k, h: nh * k };
+}
+
+function modalFitScale(ref) {
+  const wrap = $("#modal-image-wrap");
+  return Math.min(1, wrap.clientWidth / ref.w, wrap.clientHeight / ref.h);
+}
+
+// The point of the photo at the middle of the window, as fractions of it.
+function readModalCenter() {
+  const wrap = $("#modal-image-wrap"), img = $("#modal-image");
+  if (!img.offsetWidth || !img.offsetHeight) return;
+  const clamp = (v) => Math.min(1, Math.max(0, v));
+  state.modal.center = {
+    x: clamp((wrap.scrollLeft + wrap.clientWidth / 2 - img.offsetLeft) / img.offsetWidth),
+    y: clamp((wrap.scrollTop + wrap.clientHeight / 2 - img.offsetTop) / img.offsetHeight),
+  };
+}
+
+// Lay the photo out for state.modal.zoom. `pin` holds a point of the photo
+// (fractions) under a point of the window (px from its corner); without one
+// the remembered centre goes to the middle.
+function applyModalZoom(pin) {
+  const wrap = $("#modal-image-wrap"), img = $("#modal-image");
+  const z = state.modal.zoom;
+  const ref = z ? modalRefSize() : null;
+  if (!z || !ref) {
+    wrap.classList.remove("zoomed");
+    img.className = "fit";
+    img.style.width = img.style.height = "";
+  } else {
+    wrap.classList.add("zoomed");
+    img.className = "zoomed";
+    img.style.width = `${ref.w * z}px`;
+    img.style.height = `${ref.h * z}px`;
+    const p = pin || { fx: state.modal.center.x, fy: state.modal.center.y,
+                       ax: wrap.clientWidth / 2, ay: wrap.clientHeight / 2 };
+    wrap.scrollLeft = img.offsetLeft + p.fx * img.offsetWidth - p.ax;
+    wrap.scrollTop = img.offsetTop + p.fy * img.offsetHeight - p.ay;
+    readModalCenter();
+  }
+  syncModalBoxes();
+  syncModalPeak();
+  drawLoupe();
+  syncModalZoomUi();
+}
+
+// Zoom to z (0 is fit), about a point on screen, or about the middle.
+function setModalZoom(z, at) {
+  const ref = modalRefSize();
+  if (!ref) return;
+  const fit = modalFitScale(ref);
+  const next = z <= fit * 1.001 ? 0 : Math.min(MODAL_ZOOM_MAX, z);
+  let pin = null;
+  if (next && at) {
+    const r = $("#modal-image").getBoundingClientRect(), w = $("#modal-image-wrap").getBoundingClientRect();
+    const clamp = (v) => Math.min(1, Math.max(0, v));
+    pin = { fx: clamp((at.x - r.left) / r.width), fy: clamp((at.y - r.top) / r.height),
+            ax: at.x - w.left, ay: at.y - w.top };
+  } else if (next && !state.modal.zoom) {
+    state.modal.center = { x: 0.5, y: 0.5 };
+  }
+  state.modal.zoom = next;
+  applyModalZoom(pin);
+  showModalHud(next ? `${Math.round(next * 100)}%` : "Fit");
+}
+
+function modalScale() {
+  const ref = modalRefSize();
+  return ref ? $("#modal-image").offsetWidth / ref.w : 0;
+}
+
+function zoomModalBy(factor, at) {
+  setModalZoom((state.modal.zoom || modalScale()) * factor, at);
+}
+
+function toggleModalZoom(at) {
+  setModalZoom(state.modal.zoom ? 0 : 1, at);
+}
+
+function syncModalZoomUi() {
+  const z = state.modal.zoom;
+  $$("#modal-zoom [data-mzoom]").forEach((b) => {
+    const v = parseFloat(b.dataset.mzoom);
+    b.classList.toggle("active", v === 0 ? !z : Math.abs(z - v) < 0.005);
+  });
+  const s = modalScale();
+  $("#modal-zoom-val").textContent = s ? `${Math.round(s * 100)}%` : "";
+}
+
+let modalHudTimer = 0;
+function showModalHud(text, ms = 900) {
+  const hud = $("#modal-hud");
+  hud.textContent = text;
+  hud.classList.remove("hidden");
+  clearTimeout(modalHudTimer);
+  modalHudTimer = setTimeout(() => hud.classList.add("hidden"), ms);
+}
+
+// Tab: the photo alone, without the bars around it. Keys still work.
+function toggleViewerBars() {
+  const bare = document.body.classList.toggle("viewer-bare");
+  requestAnimationFrame(() => applyModalZoom());
+  if (bare) showModalHud("Tab brings the bars back", 1800);
+}
+
+function bindModalZoom() {
+  const wrap = $("#modal-image-wrap");
+  wrap.addEventListener("wheel", (e) => {
+    if (!state.modal.open) return;
+    e.preventDefault();
+    const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    zoomModalBy(Math.exp(-px * (e.ctrlKey ? PINCH_ZOOM_RATE : WHEEL_ZOOM_RATE)),
+                { x: e.clientX, y: e.clientY });
+  }, { passive: false });
+  let drag = null;
+  wrap.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    drag = { x: e.clientX, y: e.clientY, left: wrap.scrollLeft, top: wrap.scrollTop, moved: false };
+    wrap.setPointerCapture(e.pointerId);
+  });
+  wrap.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+    if (!drag.moved || !state.modal.zoom) return;
+    wrap.classList.add("panning");
+    wrap.scrollLeft = drag.left - dx;
+    wrap.scrollTop = drag.top - dy;
+  });
+  const end = (e) => {
+    const was = drag;
+    drag = null;
+    wrap.classList.remove("panning");
+    if (!was || was.moved || e.type === "pointercancel") return;
+    // Fitted, the band around a portrait frame is not the photo: only a click
+    // on it zooms. Zoomed, a click anywhere goes back.
+    const r = $("#modal-image").getBoundingClientRect();
+    const onPhoto = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+    if (state.modal.zoom || onPhoto) toggleModalZoom({ x: e.clientX, y: e.clientY });
+  };
+  wrap.addEventListener("pointerup", end);
+  wrap.addEventListener("pointercancel", end);
+  wrap.addEventListener("scroll", () => { if (state.modal.zoom) readModalCenter(); });
+  $("#modal-zoom").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-mzoom]");
+    if (b) setModalZoom(parseFloat(b.dataset.mzoom));
+  });
+  window.addEventListener("resize", () => { if (state.modal.open) syncModalZoomUi(); });
 }
 
 // ---------- subject settings ----------
@@ -1804,7 +1973,6 @@ function decideAt(absIdx, decision, { advance = false } = {}) {
   if (state.modal.open) {
     if (!n) { closeModal(); return; }
     state.modal.idx = state.cursorIdx;
-    state.modal.fit = true;
     state.modal.compare = false;
     renderModal();
     scheduleViewSave();
@@ -2722,6 +2890,82 @@ function bindEditControls() {
   });
 }
 
+// The divider between the photo and the adjustments. Dragged, it gives the
+// width to one or the other; the width is kept for next time. Only the drag is
+// clamped against the window: a width saved on a wide screen is not cut down
+// on opening, the photo simply gets what is left.
+const EDIT_SIDE_DEFAULT = 360;
+const EDIT_SIDE_MIN = 300;
+const EDIT_SIDE_MAX = 760;
+const EDIT_PREVIEW_MIN = 360;   // what the drag leaves the photo at the least
+const EDIT_SIDE_KEY_STEP = 24;
+
+function savedEditSideWidth() {
+  try {
+    const v = Number(localStorage.getItem("pcls.editSideW"));
+    return v >= EDIT_SIDE_MIN && v <= EDIT_SIDE_MAX ? v : EDIT_SIDE_DEFAULT;
+  } catch { return EDIT_SIDE_DEFAULT; }
+}
+
+function setEditSideWidth(w, save) {
+  const body = $(".edit-body");
+  const room = body.clientWidth - EDIT_PREVIEW_MIN - $("#edit-splitter").offsetWidth;
+  const v = Math.round(Math.max(EDIT_SIDE_MIN, Math.min(EDIT_SIDE_MAX, room, w)));
+  $("#edit-modal").style.setProperty("--edit-side-w", `${v}px`);
+  if (save) {
+    try { localStorage.setItem("pcls.editSideW", String(v)); } catch { /* private */ }
+  }
+  // A drag fires faster than the photo can be laid out; once per frame.
+  if (!editSideFrame) {
+    editSideFrame = requestAnimationFrame(() => {
+      editSideFrame = 0;
+      layoutPreviewImage();
+      resizeOverlay();
+    });
+  }
+}
+let editSideFrame = 0;
+
+function bindEditSplitter() {
+  $("#edit-modal").style.setProperty("--edit-side-w", `${savedEditSideWidth()}px`);
+  const bar = $("#edit-splitter");
+  const sideWidth = () => $(".edit-side").getBoundingClientRect().width;
+  // The render is made at the size the photo is shown at, so a new size wants
+  // a new render; once, when the width settles, not on every pixel of a drag.
+  const settle = () => fetchEditPreview(true);
+  let drag = null;
+  bar.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    bar.setPointerCapture(e.pointerId);
+    drag = { x: e.clientX, w: sideWidth() };
+    bar.classList.add("dragging");
+    document.body.classList.add("resizing-edit");
+  });
+  bar.addEventListener("pointermove", (e) => {
+    if (drag) setEditSideWidth(drag.w - (e.clientX - drag.x), false);
+  });
+  const end = () => {
+    if (!drag) return;
+    drag = null;
+    bar.classList.remove("dragging");
+    document.body.classList.remove("resizing-edit");
+    setEditSideWidth(sideWidth(), true);
+    settle();
+  };
+  bar.addEventListener("pointerup", end);
+  bar.addEventListener("pointercancel", end);
+  bar.addEventListener("dblclick", () => { setEditSideWidth(EDIT_SIDE_DEFAULT, true); settle(); });
+  bar.addEventListener("keydown", (e) => {
+    // The arrows are the editor's previous and next photo everywhere else.
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    e.stopPropagation();
+    setEditSideWidth(sideWidth() + (e.key === "ArrowLeft" ? 1 : -1) * EDIT_SIDE_KEY_STEP, true);
+    settle();
+  });
+}
+
 function syncEditSliders() {
   const target = adjTarget();
   $$("#edit-modal input[type=range][data-edit]").forEach((sl) => {
@@ -2762,6 +3006,89 @@ function bindSliderLooks() {
     sl.value = 0;
     sl.dispatchEvent(new Event("input", { bubbles: true }));
     sl.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  bindTypedValues();
+}
+
+// Clicking a slider's number turns it into a field: type a value and Enter (or
+// click away) sets it, Esc leaves it, the arrow keys step it. The value goes
+// back through the slider, as if it had been dragged there, so every panel's
+// own handler, its clamping to the range and its snapping to the step apply
+// unchanged, and nothing about a panel has to know this exists.
+const TYPED_SLIDER_SCOPE = "#edit-modal, #hdr-look-modal";
+
+function sliderOfValue(el) {
+  if (!el.matches?.(".look-val") || !el.closest(TYPED_SLIDER_SCOPE)) return null;
+  const sl = el.closest(".look-row")?.querySelector("input[type=range]");
+  return sl && !sl.disabled ? sl : null;
+}
+
+function stepDecimals(step) {
+  const s = String(step);
+  return s.includes(".") ? s.length - s.indexOf(".") - 1 : 0;
+}
+
+function setSliderTo(sl, v) {
+  sl.value = String(v);   // the browser clamps it to min..max and snaps it to step
+  sl.dispatchEvent(new Event("input", { bubbles: true }));
+  sl.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function editSliderValue(span, sl) {
+  const field = document.createElement("input");
+  field.type = "text";
+  field.inputMode = "decimal";
+  field.className = "look-val-input";
+  const name = span.closest(".look-row").querySelector(".look-name, .look-label");
+  field.setAttribute("aria-label", `${name ? name.textContent.trim() : "Slider"} value`);
+  const decimals = stepDecimals(sl.step || 1);
+  const show = () => { field.value = Number(sl.value).toFixed(decimals); };
+  show();
+  span.hidden = true;
+  span.after(field);
+  field.focus();
+  field.select();
+  let done = false;
+  const finish = (commit) => {
+    if (done) return;
+    done = true;
+    if (commit) {
+      const v = parseFloat(field.value.trim().replace(",", "."));
+      if (Number.isFinite(v) && v !== Number(sl.value)) setSliderTo(sl, v);
+    }
+    field.remove();
+    span.hidden = false;
+  };
+  field.addEventListener("keydown", (e) => {
+    // The editor's shortcuts (C, F, arrows, Enter to save) are not for a field.
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+    else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      const step = Number(sl.step || 1) * (e.shiftKey ? 10 : 1);
+      setSliderTo(sl, Number(sl.value) + (e.key === "ArrowUp" ? step : -step));
+      show();
+      field.select();
+    }
+  });
+  field.addEventListener("keyup", (e) => e.stopPropagation());
+  field.addEventListener("blur", () => finish(true));
+}
+
+function bindTypedValues() {
+  document.addEventListener("click", (e) => {
+    const span = e.target.closest?.(".look-val");
+    const sl = span && sliderOfValue(span);
+    if (!sl) return;
+    // The number sits inside the slider's <label>, which would otherwise hand
+    // the click on to the slider.
+    e.preventDefault();
+    editSliderValue(span, sl);
+  });
+  document.addEventListener("pointerover", (e) => {
+    const span = e.target.closest?.(".look-val");
+    if (span && !span.title && sliderOfValue(span)) span.title = "Click to type a value";
   });
 }
 
@@ -6440,7 +6767,8 @@ async function confirmBulkApply() {
 function openModal(absIdx) {
   state.modal.open = true;
   state.modal.idx = absIdx;
-  state.modal.fit = true;
+  state.modal.zoom = 0;
+  state.modal.center = { x: 0.5, y: 0.5 };
   state.modal.compare = false;
   state.cursorIdx = absIdx;
   $("#modal").classList.remove("hidden");
@@ -6454,6 +6782,8 @@ function closeModal() {
   delete $("#modal-image").dataset.full;
   loupe.at = null;
   hideLoupe();
+  // The bars come back with the next photo opened, not a surprise later.
+  document.body.classList.remove("viewer-bare");
   $("#modal").classList.add("hidden");
   renderMain();
 }
@@ -6494,7 +6824,6 @@ function renderModal() {
   const shownRel = comparing ? photo.base : photo.rel_path;
   const img = $("#modal-image");
   showModalImage(photo, shownRel);
-  img.className = state.modal.fit ? "fit" : "actual";
   $("#modal-title").textContent = basename(shownRel);
   $("#modal-title").title = shownRel;
   $("#modal-meta").textContent = `${state.modal.idx + 1} of ${state.filteredPhotos.length} · ${photo.scene}`;
@@ -6523,15 +6852,14 @@ function renderModal() {
     `blur ${(s.blur ?? 0).toFixed(0)} (rank ${(s.blur_pct ?? 0).toFixed(2)}) · ` +
     `exposure |z| ${(s.exposure_zscore ?? 0).toFixed(2)} · eye ${eye} · ` +
     `badness ${(s.badness ?? 0).toFixed(2)}`;
-  img.onload = () => { syncModalBoxes(); syncModalPeak(); drawLoupe(); };
-  syncModalBoxes();
-  syncModalPeak();
-  drawLoupe();
+  // The thumbnail and then the full image each land at the zoom and place in
+  // use, and the layers over the photo follow them.
+  img.onload = () => applyModalZoom();
+  applyModalZoom();
   renderFilmstrip($("#modal-filmstrip"), state.modal.idx, (i) => {
     if (i === state.modal.idx) return;
     state.modal.idx = i;
     state.cursorIdx = i;
-    state.modal.fit = true;
     state.modal.compare = false;
     renderModal();
     scheduleViewSave();
@@ -6602,7 +6930,6 @@ function modalNav(delta) {
   if (i === state.modal.idx) return;
   state.modal.idx = i;
   state.cursorIdx = i;
-  state.modal.fit = true;
   state.modal.compare = false;
   renderModal();
   scheduleViewSave();
@@ -6817,11 +7144,10 @@ function bindKeys() {
       if (k === "Escape") { closeModal(); e.preventDefault(); return; }
       if (k === "ArrowRight" || k === " ") { modalNav(+1); e.preventDefault(); return; }
       if (k === "ArrowLeft") { modalNav(-1); e.preventDefault(); return; }
-      if (k === "f" || k === "F" || k === "z" || k === "Z") {
-        state.modal.fit = !state.modal.fit;
-        $("#modal-image").className = state.modal.fit ? "fit" : "actual";
-        e.preventDefault(); return;
-      }
+      if (k === "f" || k === "F" || k === "z" || k === "Z") { toggleModalZoom(); e.preventDefault(); return; }
+      if (k === "+" || k === "=") { zoomModalBy(MODAL_ZOOM_STEP); e.preventDefault(); return; }
+      if (k === "-" || k === "_") { zoomModalBy(1 / MODAL_ZOOM_STEP); e.preventDefault(); return; }
+      if (k === "Tab") { toggleViewerBars(); e.preventDefault(); return; }
       if (k === "c" || k === "C") { toggleCompare(); e.preventDefault(); return; }
       if (k === "b" || k === "B") { toggleBoxes(); e.preventDefault(); return; }
       if (k === "k" || k === "K") { togglePeak(); e.preventDefault(); return; }
@@ -7365,6 +7691,7 @@ async function openPrefs(pane = "general") {
       : "By folder: each subfolder is a scene.";
   }
   $("#pref-keybar").checked = !keybarCollapsed();
+  $("#pref-filmstrip").checked = filmstripOn();
   $("#pref-inspector").checked = inspectorOn();
   $("#pref-loupe").checked = loupe.on;
   $("#pref-launch-sound").checked = launchSoundOn();
@@ -7410,8 +7737,19 @@ function renderPrefWorkspaces() {
   }));
 }
 
+function filmstripOn() {
+  try { return localStorage.getItem("pcls.filmstrip") !== "0"; } catch { return true; }
+}
+
+// The viewer and the editor lay the photo out on resize; this is one.
+function applyFilmstrip(on) {
+  document.body.classList.toggle("filmstrip-off", !on);
+  window.dispatchEvent(new Event("resize"));
+}
+
 function bindPrefs() {
   applyPhotoBg(photoBg());
+  applyFilmstrip(filmstripOn());
   $("#prefs-btn").addEventListener("click", () => openPrefs());
   $("#prefs-close").addEventListener("click", closePrefs);
   $("#prefs-modal").addEventListener("click", (e) => { if (e.target.id === "prefs-modal") closePrefs(); });
@@ -7419,6 +7757,12 @@ function bindPrefs() {
   $("#pref-keybar").addEventListener("change", (e) => {
     try { localStorage.setItem("pcls.keybar", e.target.checked ? "1" : "0"); } catch { /* private */ }
     renderKeybars();
+  });
+  $("#pref-filmstrip").addEventListener("change", (e) => {
+    try { localStorage.setItem("pcls.filmstrip", e.target.checked ? "1" : "0"); } catch { /* private */ }
+    applyFilmstrip(e.target.checked);
+    // The editor's render is sized to the photo, which just changed height.
+    if (editSession.relPath) fetchEditPreview(true);
   });
   $("#pref-inspector").addEventListener("change", (e) => { if (e.target.checked !== inspectorOn()) toggleInspector(); });
   $("#pref-loupe").addEventListener("change", (e) => { if (e.target.checked !== loupe.on) toggleLoupe(); });
@@ -7474,6 +7818,7 @@ function closeMenus() {
 // ---------- UI bindings ----------
 function bindUi() {
   bindPrefs();
+  bindUpdates();
   bindScoreProgress();
   bindCompare();
   bindInspector();
@@ -7573,6 +7918,7 @@ function bindUi() {
   // Editor
   renderEditControls();
   bindEditControls();
+  bindEditSplitter();
   bindLookPanel();
   bindRepairPanel();
   bindOpticsPanel();
@@ -8962,6 +9308,198 @@ async function quitApp() {
   $("#quit-screen").classList.remove("hidden");
 }
 
+// ---------- updates ----------
+// The server looks for a new release and fetches its installer (updater.py);
+// the page says what it found and starts the install when asked. "Later" puts
+// the button away until the app is next opened.
+const update = { state: null, timer: 0, later: null };
+const UPDATE_POLL_BUSY = 2000;       // while checking or downloading
+const UPDATE_POLL_IDLE = 60000;
+const UPDATE_WAIT_MS = 10 * 60 * 1000;   // then the restart screen says to open the app by hand
+
+async function refreshUpdate() {
+  clearTimeout(update.timer);
+  const res = await fetch("/api/update");
+  if (!res.ok) throw new Error(`update state failed: ${res.status}`);
+  update.state = await res.json();
+  renderUpdate();
+  // "idle" with checks on is the first check still to come, seconds away.
+  const st = update.state.status;
+  const busy = st === "checking" || st === "downloading" || (st === "idle" && update.state.auto);
+  update.timer = setTimeout(pollUpdate, busy ? UPDATE_POLL_BUSY : UPDATE_POLL_IDLE);
+}
+
+// Not once the server has gone on purpose: the app quit, or is being updated.
+function pollUpdate() {
+  if (!$("#quit-screen").classList.contains("hidden")) return;
+  if (!$("#update-screen").classList.contains("hidden")) return;
+  refreshUpdate();
+}
+
+function updateStatusText(s) {
+  const v = s.latest?.version;
+  switch (s.status) {
+    case "checking": return "Checking…";
+    case "current": return "Up to date.";
+    case "downloading": {
+      const p = s.progress;
+      return `Downloading ${v}… ${p && p.total ? Math.round((p.done / p.total) * 100) : 0}%`;
+    }
+    case "ready": return `${v} is downloaded. Update to ${v}, in the top bar, installs it.`;
+    case "available": return s.command ? `${v} is out. Update with: ${s.command}` : `${v} is out.`;
+    case "installing": return `Installing ${v}…`;
+    case "error": return s.error;
+    default: return s.auto ? "Checks a little after the app opens, and every few hours." : "Automatic checks are off.";
+  }
+}
+
+function renderUpdate() {
+  const s = update.state;
+  const v = s.latest?.version;
+  const offer = (s.status === "ready" || s.status === "available") && v !== update.later;
+  const btn = $("#update-btn");
+  btn.classList.toggle("hidden", !offer);
+  btn.classList.toggle("ready", s.status === "ready");
+  if (offer) {
+    btn.textContent = s.status === "ready" ? `Update to ${v}` : `${v} is out`;
+    btn.title = s.status === "ready" ? "Downloaded and checked. Restart Pickapicka to install it."
+      : (s.command ? `Update with: ${s.command}` : "A new version is out");
+  }
+  $("#pref-update-auto").checked = !!s.auto;
+  $("#pref-update-version").textContent = `Version ${s.current}`;
+  $("#pref-update-status").textContent = updateStatusText(s);
+  $("#pref-update-check").disabled = ["checking", "downloading", "installing"].includes(s.status);
+}
+
+async function onUpdateClick() {
+  const s = update.state;
+  const v = s.latest.version;
+  if (s.status === "ready") {
+    const consent = s.kind === "macos-app"
+      ? "macOS asks for your password to install it."
+      : "Windows asks you to allow the installer to make changes.";
+    const pick = await askChoice(`Update to Pickapicka ${v}?`,
+      `Pickapicka restarts to install it and comes back to this project. Your decisions and saved edits are kept.\n\n${consent}`, [
+        { id: "later", label: "Later" },
+        { id: "notes", label: "What's new" },
+        { id: "install", label: "Restart and update", primary: true },
+      ]);
+    if (pick === "install") await installUpdate();
+    else if (pick === "notes") window.open(s.latest.url, "_blank", "noopener");
+    else { update.later = v; renderUpdate(); }
+    return;
+  }
+  const how = s.command
+    ? `This copy was installed with ${s.kind === "homebrew" ? "Homebrew" : "uv"}, which updates it:\n\n${s.command}\n\nThen start Pickapicka again.`
+    : "Download it from the Releases page.";
+  const pick = await askChoice(`Pickapicka ${v} is out`, how, [
+    { id: "later", label: "Later" },
+    { id: "notes", label: s.command ? "What's new" : "Open the Releases page", primary: true },
+  ]);
+  if (pick === "notes") window.open(s.latest.url, "_blank", "noopener");
+  else { update.later = v; renderUpdate(); }
+}
+
+async function installUpdate() {
+  const s = update.state;
+  await decisionSaves;
+  await flushViewSave();
+  const post = (force) => fetch("/api/update/install", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force }),
+  });
+  let res = await post(false);
+  if (res.status === 409) {
+    const err = await res.json();
+    const what = err.detail.charAt(0).toUpperCase() + err.detail.slice(1);
+    if (!confirm(`${what}. Update anyway? It stops where it is.`)) return;
+    res = await post(true);
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert("Could not start the update: " + (err.detail || res.status));
+    return;
+  }
+  // Back into this project afterwards, the way switching projects comes back.
+  if (state.projectDir && currentModule() !== "projects") sessionStorage.setItem("pcls.openNext", state.projectDir);
+  $("#update-screen-title").textContent = `Updating to Pickapicka ${s.latest.version}`;
+  $("#update-screen-text").textContent = (s.kind === "macos-app"
+    ? "macOS asks for your password to install it. "
+    : "Windows asks you to allow the installer to make changes. ")
+    + "Pickapicka then opens again by itself, and this page reloads with it.";
+  $("#update-screen").classList.remove("hidden");
+  waitForRestart(s.boot, Date.now());
+}
+
+// The old server answers for a moment after the install starts, so only a
+// different boot id means the app has come back.
+async function waitForRestart(oldBoot, since) {
+  let res = null;
+  try { res = await fetch("/api/update", { cache: "no-store" }); } catch { /* not back yet */ }
+  if (res && res.ok) {
+    const s = await res.json();
+    if (s.boot !== oldBoot) { location.replace(location.pathname); return; }
+  }
+  if (Date.now() - since > UPDATE_WAIT_MS) {
+    $("#update-screen-text").textContent = "Pickapicka has not come back yet. Once the installer has finished, "
+      + "open Pickapicka again; this page reloads as soon as it is running.";
+  }
+  setTimeout(() => waitForRestart(oldBoot, since), 1500);
+}
+
+// How the last update went, once, as the version after it opens.
+function showUpdateResult(s) {
+  const r = s.result;
+  if (!r) return;
+  try {
+    if (localStorage.getItem("pcls.updateSeen") === r.at) return;
+    localStorage.setItem("pcls.updateSeen", r.at);
+  } catch { /* private */ }
+  if (r.ok) { showNotice(`Updated to Pickapicka ${r.to}.`, { href: r.url, label: "What's new" }, false); return; }
+  // Declining the password dialog or the UAC prompt: the old version reopened.
+  if (/cancel/i.test(r.message || "")) {
+    showNotice(`The update to ${r.to} was cancelled. Update to ${r.to}, in the top bar, tries again.`, null, false);
+    return;
+  }
+  showNotice(`The update to ${r.to} did not install`
+    + (r.code != null ? ` (installer exit code ${r.code})` : "")
+    + (r.message ? `: ${r.message}` : "."), null, true);
+}
+
+function showNotice(text, link, error) {
+  const el = $("#notice-toast");
+  $("#notice-text").textContent = text;
+  const a = $("#notice-link");
+  a.classList.toggle("hidden", !link);
+  if (link) { a.href = link.href; a.textContent = link.label; }
+  el.classList.toggle("error", !!error);
+  el.classList.remove("hidden");
+  clearTimeout(showNotice.timer);
+  // A failure stays until it is read and dismissed.
+  if (!error) showNotice.timer = setTimeout(() => el.classList.add("hidden"), 12000);
+}
+
+function bindUpdates() {
+  $("#update-btn").addEventListener("click", onUpdateClick);
+  $("#notice-close").addEventListener("click", () => $("#notice-toast").classList.add("hidden"));
+  $("#pref-update-auto").addEventListener("change", async (e) => {
+    const res = await fetch("/api/update/auto", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ auto: e.target.checked }),
+    });
+    if (!res.ok) throw new Error(`update setting failed: ${res.status}`);
+    await refreshUpdate();
+  });
+  $("#pref-update-check").addEventListener("click", async () => {
+    const res = await fetch("/api/update/check", { method: "POST" });
+    if (!res.ok) throw new Error(`update check failed: ${res.status}`);
+    $("#pref-update-status").textContent = "Checking…";
+    $("#pref-update-check").disabled = true;
+    clearTimeout(update.timer);
+    update.timer = setTimeout(pollUpdate, 800);
+  });
+}
+
 
 // ---------- keyboard shortcuts ----------
 // One list of every key, by where it works. The sheet (?) shows all of it; the
@@ -9020,7 +9558,10 @@ const KEYMAP = {
       { k: ["←", "→"], alt: "Space", label: "Previous / next photo", bar: "Move" },
     ]},
     { group: "Look closer", keys: [
-      { k: ["F"], alt: "Z", label: "Fit or 100%", bar: "100%" },
+      { k: ["F"], alt: "Z or a click", label: "Fit or 100%", bar: "100%" },
+      { k: ["+", "-"], alt: "scroll or pinch", label: "Zoom in or out, at the pointer for a scroll", bar: "Zoom" },
+      { k: ["drag"], label: "Pan a zoomed photo" },
+      { k: ["Tab"], label: "Hide or show the bars", bar: "Bars" },
       { k: ["L"], label: "Loupe", bar: "Loupe" },
       { k: ["K"], label: "Focus peaking" },
       { k: ["B"], label: "Subject boxes" },
@@ -9832,7 +10373,9 @@ function playIntro() {
   hydrateIcons();
   initTooltips();
   loupeInit();
+  bindModalZoom();
   $$(".quit-btn").forEach((b) => b.addEventListener("click", quitApp));
+  refreshUpdate().then(() => showUpdateResult(update.state));
   $("#undo-toast-btn .kbd").textContent = `${MOD_KEY}Z`;
   let s;
   try { s = await fetchState(); } catch { showLanding(); return; }

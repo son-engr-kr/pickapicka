@@ -4,15 +4,30 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Pickapicka</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png" />
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png" />
+  <!-- The name's typeface, as in the app icon; the intro shows it first thing. -->
+  <link rel="preload" href="/static/fonts/Poppins-SemiBold.ttf" as="font" type="font/ttf" crossorigin />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <!-- The app's mark, as in its icon (packaging/make_icon.py, "pick"): a
+       viewfinder with a tick in it, in squircle units. Inline rather than
+       drawn by app.js, because the launch intro shows it before any script. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="brand-mark" viewBox="0 0 100 100">
+      <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+        <path stroke-width="6" d="M21.5 36.5V21.5H36.5M63.5 21.5H78.5V36.5M21.5 63.5V78.5H36.5M63.5 78.5H78.5V63.5"/>
+        <path stroke-width="10.4" d="M34.5 51.5L45.5 62.5L66.5 39.5"/>
+      </g>
+    </symbol>
+  </svg>
   <!-- The launch intro. The app opens the browser at /?launch (launch.py), and
        this class goes on before anything is painted, so the page underneath
        never shows for a frame first. -->
   <script>if (new URLSearchParams(location.search).has("launch")) document.documentElement.classList.add("launching");</script>
   <div id="intro" aria-hidden="true">
-    <div class="intro-logo"><div class="intro-glow"></div><div class="intro-mark"></div></div>
+    <div class="intro-logo"><div class="intro-glow"></div><div class="intro-mark"><svg class="brand-glyph"><use href="#brand-mark"/></svg></div></div>
     <div class="intro-name">Pickapicka</div>
   </div>
 
@@ -20,7 +35,7 @@
        are in, what is running, and the way out. -->
   <header id="topbar">
     <div class="tb-left">
-      <span class="tb-mark" aria-hidden="true"></span>
+      <span class="tb-mark" aria-hidden="true"><svg class="brand-glyph"><use href="#brand-mark"/></svg></span>
       <div class="menu-wrap" id="project-switcher">
         <button id="project-btn" type="button" aria-haspopup="menu" aria-expanded="false"
                 title="Switch project"><span id="project-name"></span></button>
@@ -34,6 +49,7 @@
       <button id="tab-edit" type="button" role="tab" data-module="edit" title="Edit the highlighted photo (E)">Edit</button>
     </nav>
     <div class="tb-right">
+      <button id="update-btn" class="hidden" type="button"></button>
       <span id="activity" class="hidden" role="status"><span class="tb-spinner"></span><span id="activity-text"></span></span>
       <button id="export-picks-btn" class="primary" title="Copy all PICK photos to a folder" disabled data-icon="folder">Export picks</button>
       <button id="prefs-btn" type="button" data-icon="settings" title="Preferences" aria-label="Preferences"></button>
@@ -549,6 +565,8 @@
           <section data-pane="general">
             <label class="prefs-row"><span><b>Key bar</b><small>The keys for each screen, along its bottom.</small></span>
               <input type="checkbox" id="pref-keybar" /></label>
+            <label class="prefs-row"><span><b>Filmstrip</b><small>The scene's photos along the bottom of the viewer and the editor. Off gives its height to the photo.</small></span>
+              <input type="checkbox" id="pref-filmstrip" /></label>
             <label class="prefs-row"><span><b>Photo info panel</b><small>Beside the grid: histogram, why a photo was suggested, faces, camera. Also <kbd>I</kbd>.</small></span>
               <input type="checkbox" id="pref-inspector" /></label>
             <label class="prefs-row"><span><b>Loupe in the viewer</b><small>A magnified view under the pointer. Also <kbd>L</kbd>.</small></span>
@@ -559,6 +577,10 @@
               <div class="prefs-seg" id="pref-photo-bg" role="group">
                 <button type="button" data-bg="black">Black</button><button type="button" data-bg="dark">Dark grey</button><button type="button" data-bg="grey">Medium grey</button>
               </div></div>
+            <label class="prefs-row"><span><b>Updates</b><small>Look for a new version on GitHub and download it in the background, so updating is one click. Nothing about your photos is sent.</small></span>
+              <input type="checkbox" id="pref-update-auto" /></label>
+            <div class="prefs-row"><span><b id="pref-update-version"></b><small id="pref-update-status"></small></span>
+              <button type="button" id="pref-update-check">Check now</button></div>
             <div class="prefs-row"><span><b>Guided tours</b><small>Shown again the next time each screen opens.</small></span>
               <button type="button" id="pref-tours">Show them again</button></div>
           </section>
@@ -901,18 +923,29 @@
       <span id="modal-title"></span>
       <span id="modal-meta"></span>
       <span id="modal-exif"></span>
+      <span id="modal-zoom" role="group" aria-label="Zoom">
+        <button type="button" data-mzoom="0" title="Fit the whole photo (F)">Fit</button><button
+                type="button" data-mzoom="1" title="Original pixels (F)">100%</button><button
+                type="button" data-mzoom="2">200%</button>
+        <span id="modal-zoom-val"></span>
+      </span>
       <button id="modal-close" title="Back to the grid (Esc)" data-icon="close" aria-label="Close"></button>
     </div>
-    <div id="modal-image-wrap">
-      <img id="modal-image" alt="" />
-      <span id="modal-loading" class="hidden">Loading full size…</span>
-      <img id="modal-peak" class="hidden" alt="" />
-      <div id="modal-boxes" class="hidden"></div>
-      <div id="loupe-box" class="hidden"></div>
-      <div id="loupe-panel" class="hidden">
-        <canvas id="loupe-canvas"></canvas>
-        <span id="loupe-label"></span>
+    <!-- The stage holds what stays put over the photo; the wrap inside it is
+         what scrolls when the photo is zoomed past the window. -->
+    <div id="modal-stage">
+      <div id="modal-image-wrap">
+        <img id="modal-image" class="fit" alt="" draggable="false" />
+        <img id="modal-peak" class="hidden" alt="" />
+        <div id="modal-boxes" class="hidden"></div>
+        <div id="loupe-box" class="hidden"></div>
+        <div id="loupe-panel" class="hidden">
+          <canvas id="loupe-canvas"></canvas>
+          <span id="loupe-label"></span>
+        </div>
       </div>
+      <span id="modal-loading" class="hidden">Loading full size…</span>
+      <span id="modal-hud" class="hidden" aria-live="polite"></span>
     </div>
     <div class="filmstrip" id="modal-filmstrip" aria-label="Photos in this scene"></div>
     <div id="modal-bottom">
@@ -962,24 +995,32 @@
             <img id="edit-img" alt="preview" />
             <canvas id="edit-overlay"></canvas>
             <span id="edit-tool-hint" class="hidden"></span>
+            <span id="edit-status" role="status"></span>
           </div>
-          <div class="edit-preview-nav">
-            <button id="edit-prev" data-icon="left" title="previous photo (←)" aria-label="Previous photo"></button>
-            <button id="edit-compare" title="Hold to see the original (C)">Hold: original</button>
-            <button id="edit-next" data-icon="right" title="next photo (→)" aria-label="Next photo"></button>
+          <!-- One row under the photo, not two: every row here is height a
+               portrait frame does not get. -->
+          <div class="edit-preview-bar">
+            <div class="edit-preview-nav">
+              <button id="edit-prev" data-icon="left" title="previous photo (←)" aria-label="Previous photo"></button>
+              <button id="edit-compare" title="Hold to see the original (C)">Hold: original</button>
+              <button id="edit-next" data-icon="right" title="next photo (→)" aria-label="Next photo"></button>
+            </div>
+            <div class="edit-zoom-bar">
+              <span class="edit-zoom-label">zoom</span>
+              <button class="edit-zoom active" data-zoom="0" title="Fit the whole photo (F)">fit</button>
+              <button class="edit-zoom" data-zoom="0.5">50%</button>
+              <button class="edit-zoom" data-zoom="1" title="Original pixels (F)">100%</button>
+              <button class="edit-zoom" data-zoom="2">200%</button>
+              <span id="edit-zoom-hint">scroll to zoom · drag to pan (space or middle-drag over a mask)</span>
+            </div>
           </div>
-          <div class="edit-zoom-bar">
-            <span class="edit-zoom-label">zoom</span>
-            <button class="edit-zoom active" data-zoom="0" title="Fit the whole photo (F)">fit</button>
-            <button class="edit-zoom" data-zoom="0.5">50%</button>
-            <button class="edit-zoom" data-zoom="1" title="Original pixels (F)">100%</button>
-            <button class="edit-zoom" data-zoom="2">200%</button>
-            <span id="edit-zoom-hint">scroll to zoom · drag to pan (space or middle-drag over a mask)</span>
-          </div>
-          <span id="edit-status"></span>
           <div class="filmstrip" id="edit-filmstrip" aria-label="Photos in this scene"></div>
           <div class="keybar" data-context="editor"></div>
         </div>
+        <div class="edit-splitter" id="edit-splitter" role="separator" aria-orientation="vertical"
+             aria-label="Resize the adjustments panel" tabindex="0"
+             title="Drag to resize the panel · double-click for the default width"></div>
+        <div class="edit-side">
         <div class="edit-controls">
           <!-- In the order a photo is usually worked: tone and colour first, then
                looks, geometry and retouching; saved versions last. Each section
@@ -1361,13 +1402,16 @@
             </div>
           </details>
         </div>
+        <!-- Under the adjustments rather than across the whole dialog, so the
+             photo runs to the bottom of the window. -->
+        <footer>
+          <span id="edit-dirty"></span>
+          <button id="edit-apply-more">Apply to more…</button>
+          <button id="edit-cancel">Cancel</button>
+          <button id="edit-save" class="primary" disabled>Save</button>
+        </footer>
+        </div>
       </div>
-      <footer>
-        <span id="edit-dirty"></span>
-        <button id="edit-apply-more">Apply to more…</button>
-        <button id="edit-cancel">Cancel</button>
-        <button id="edit-save" class="primary" disabled>Save</button>
-      </footer>
     </div>
   </div>
 
@@ -1575,6 +1619,20 @@
   </div>
 
   <!-- Shown once the server has stopped: the page cannot do anything after. -->
+  <!-- While the installer runs: the server is gone, and this page waits for
+       the new one to come up, then reloads into the same project. -->
+  <div id="update-screen" class="hidden" role="status">
+    <div class="quit-box">
+      <h2 id="update-screen-title"></h2>
+      <p id="update-screen-text"></p>
+    </div>
+  </div>
+  <div id="notice-toast" class="hidden" role="status">
+    <span id="notice-text"></span>
+    <a id="notice-link" class="hidden" target="_blank" rel="noopener"></a>
+    <button id="notice-close" type="button" data-icon="close" title="Dismiss" aria-label="Dismiss"></button>
+  </div>
+
   <div id="quit-screen" class="hidden">
     <div class="quit-box">
       <h2>Pickapicka has quit</h2>
