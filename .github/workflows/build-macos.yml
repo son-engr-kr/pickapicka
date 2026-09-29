@@ -77,14 +77,25 @@ jobs:
       - name: Create .pkg installer
         run: |
           PKG="dist/Pickapicka-${{ steps.ver.outputs.tag }}-macos-arm64.pkg"
-          # A component pkg that installs the .app into /Applications; opens in
-          # Installer.app on double-click.
+          # Installs the .app into /Applications; opens in Installer.app on
+          # double-click, and is what the in-app updater runs (updater.py).
+          # Built from a root with relocation turned off: a component pkg
+          # follows a copy of the app that was moved or run from elsewhere and
+          # upgrades that one, so /Applications could keep the old version.
+          ROOT=dist/pkgroot
+          rm -rf "$ROOT" && mkdir -p "$ROOT"
+          ditto dist/Pickapicka.app "$ROOT/Pickapicka.app"
+          pkgbuild --analyze --root "$ROOT" dist/components.plist
+          plutil -replace 0.BundleIsRelocatable -bool NO dist/components.plist
           pkgbuild \
+            --root "$ROOT" \
+            --component-plist dist/components.plist \
             --install-location /Applications \
-            --component "dist/Pickapicka.app" \
             --identifier kr.son-engr.pickapicka \
             --version "${{ steps.ver.outputs.version }}" \
             "$PKG"
+          pkgutil --expand "$PKG" dist/pkg-check
+          grep -q '<relocate/>' dist/pkg-check/PackageInfo || { echo "the package still relocates"; exit 1; }
           ls -lh "$PKG"
 
       - name: Upload to GitHub Release
