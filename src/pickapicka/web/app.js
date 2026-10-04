@@ -519,6 +519,7 @@ const SHORTCUT_TIPS = {
   "#boxes-btn": ["Show detected subject boxes", "B"],
   "#hdr-btn": ["Review and fix auto-detected HDR brackets", null],
   "#rescore-btn": ["Choose what to detect and re-score. Keeps decisions", null],
+  "#folders-btn": ["Which folders of the shoot belong to the project", null],
   "#people-cluster-btn": ["Group faces into people and subjects into groups", null],
   "#cluster-settings-btn": ["How strictly to group faces and subjects", null],
   "#people-manage-btn": ["Rename people, set priority, exclude clusters", null],
@@ -1460,6 +1461,148 @@ async function runRescore() {
     return;
   }
   closeRescoreModal();
+  startScoreProgress("rescore");
+  $("#score-bar-fill").style.width = "0%";
+  $("#score-progress-text").textContent = "starting…";
+  $("#score-current").textContent = "";
+  pollScoreStatus();
+}
+
+// ---------- folders ----------
+// Which top-level folders under the photo folder the project takes in. The
+// server reports each against the project; ticking one out drops its photos
+// at once, and anything new or gone waits for a re-score the user starts.
+const foldersEdit = { report: null, include: new Map() };   // folder name -> taken in
+
+async function openFoldersModal(changed) {
+  $("#folders-changed").classList.toggle("hidden", !changed);
+  $("#folders-status").textContent = "";
+  const res = await fetch("/api/folders");
+  if (!res.ok) throw new Error(`folders failed: ${res.status}`);
+  showFolders(await res.json());
+  $("#folders-modal").classList.remove("hidden");
+}
+
+function closeFoldersModal() { $("#folders-modal").classList.add("hidden"); }
+
+function showFolders(report) {
+  foldersEdit.report = report;
+  foldersEdit.include = new Map(report.folders.filter((r) => r.name !== null).map((r) => [r.name, !r.ignored]));
+  renderFolders();
+}
+
+// Folders ticked differently from how the project has them.
+function folderChanges() {
+  const out = [], back = [];
+  for (const r of foldersEdit.report.folders) {
+    if (r.name === null) continue;
+    const inc = foldersEdit.include.get(r.name);
+    if (inc && r.ignored) back.push(r);
+    if (!inc && !r.ignored) out.push(r);
+  }
+  return { out, back };
+}
+
+function renderFolders() {
+  const report = foldersEdit.report;
+  $("#folders-list").innerHTML = report.folders.map((r) => {
+    const loose = r.name === null;
+    const inc = loose || foldersEdit.include.get(r.name);
+    const tags = [];
+    if (r.ignored) tags.push(`<span class="folder-tag">left out</span>`);
+    else {
+      if (r.new) tags.push(`<span class="folder-tag new">+${r.new} new</span>`);
+      if (r.missing) tags.push(`<span class="folder-tag warn">${r.missing} gone from disk</span>`);
+    }
+    if (!inc && r.marked) tags.push(`<span class="folder-tag warn">${plural(r.marked, "photo")} you marked</span>`);
+    return `<label class="folder-row${inc ? "" : " out"}${loose ? " fixed" : ""}">
+      <input type="checkbox" ${inc ? "checked" : ""} ${loose ? "disabled" : `data-folder="${escapeAttr(r.name)}"`} />
+      <span class="folder-name">${loose ? "Loose files (top level)" : escapeHtml(r.name)}</span>
+      <span class="folder-count">${plural(r.on_disk, "image")}</span>
+      <span class="folder-tags">${tags.join("")}</span>
+    </label>`;
+  }).join("");
+  $$("#folders-list [data-folder]").forEach((cb) => cb.addEventListener("change", () => {
+    foldersEdit.include.set(cb.dataset.folder, cb.checked);
+    renderFolders();
+  }));
+  const { out, back } = folderChanges();
+  const go = $("#folders-go");
+  const note = $("#folders-note");
+  if (out.length || back.length) {
+    const leaving = out.reduce((n, r) => n + r.photos, 0);
+    go.textContent = "Apply";
+    note.textContent = [
+      leaving ? `${plural(leaving, "photo")} will leave the project.` : "",
+      back.length ? "A folder taken back in is added by the next re-score." : "",
+    ].filter(Boolean).join(" ");
+  } else if (report.added || report.missing) {
+    go.textContent = "Re-score to " + [
+      report.added ? `add ${plural(report.added, "new image")}` : "",
+      report.missing ? `drop ${report.missing} gone from disk` : "",
+    ].filter(Boolean).join(" and ");
+    note.textContent = "Decisions, stars, labels and edits are kept. Faces are grouped "
+      + "again, so people's names and order go back to the defaults.";
+  } else {
+    go.textContent = "Done";
+    note.textContent = "The project matches the photo folder.";
+  }
+}
+
+async function foldersGo() {
+  const { out, back } = folderChanges();
+  if (out.length || back.length) {
+    const marked = out.reduce((n, r) => n + r.marked, 0);
+    if (marked && !confirm(`${plural(marked, "photo")} you have marked or edited will leave the project, `
+        + "and their marks with them. Continue?")) return;
+    const ignored = [...foldersEdit.include].filter(([, inc]) => !inc).map(([name]) => name);
+    const res = await fetch("/api/folders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ignored }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      $("#folders-status").textContent = "Failed: " + (err.detail || res.status);
+      return;
+    }
+    showFolders(await res.json());
+    await reloadAfterFolders();
+    return;
+  }
+  closeFoldersModal();
+  if (foldersEdit.report.added || foldersEdit.report.missing) await rescoreAsIs();
+}
+
+// The project's photos changed under the grid: keep the scene if it is still
+// there, else land on the first.
+async function reloadAfterFolders() {
+  const prev = state.selectedScene;
+  await loadDb();
+  prunePersonFilter();
+  syncSortControls();
+  if (prev && state.byScene.has(prev)) {
+    recomputeFilter();
+    renderSidebar();
+  } else if (state.sceneOrder.length) {
+    selectScene(state.sceneOrder[0]);
+  }
+  renderPeopleChips();
+  renderMain();
+}
+
+// A re-score with the project's settings as they are.
+async function rescoreAsIs() {
+  const res = await fetch("/api/score", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ with_faces: false }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert("Re-score failed: " + (err.detail || res.status));
+    return;
+  }
   startScoreProgress("rescore");
   $("#score-bar-fill").style.width = "0%";
   $("#score-progress-text").textContent = "starting…";
@@ -7175,6 +7318,12 @@ function bindKeys() {
       return;
     }
 
+    // Folders; Esc only.
+    if (!$("#folders-modal").classList.contains("hidden")) {
+      if (k === "Escape") { closeFoldersModal(); e.preventDefault(); }
+      return;
+    }
+
     // The re-score dialog owns its class filter; Esc only.
     if (!$("#rescore-modal").classList.contains("hidden")) {
       if (k === "Escape") { closeRescoreModal(); e.preventDefault(); }
@@ -7987,6 +8136,10 @@ function bindUi() {
     decideAt(state.modal.idx, photo.decision === b.dataset.decision ? null : b.dataset.decision, { advance: true });
   }));
   $("#rescore-btn").addEventListener("click", openRescoreModal);
+  $("#folders-btn").addEventListener("click", () => openFoldersModal(false));
+  $("#folders-modal-close").addEventListener("click", closeFoldersModal);
+  $("#folders-cancel").addEventListener("click", closeFoldersModal);
+  $("#folders-go").addEventListener("click", foldersGo);
   // Subjects
   $("#subject-settings-btn").addEventListener("click", openSubjectModal);
   $("#rescore-modal-close").addEventListener("click", closeRescoreModal);
@@ -10374,6 +10527,9 @@ function pollOpenStatus() {
       $("#score-progress").classList.add("hidden");
       $("#score-title").textContent = "Scoring photos…";
       await bootMain();
+      // The folder changed since the last score: say so, rather than the open
+      // re-scoring on its own as it used to.
+      if (s.files_changed) await openFoldersModal(true);
     }
   };
   tick();

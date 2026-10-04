@@ -1133,9 +1133,9 @@ body.resizing-edit, body.resizing-edit * { cursor: col-resize !important; user-s
 #boxes-btn.hidden { display: none; }
 
 /* subject settings dialog */
-#subject-modal, #rescore-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8);
+#subject-modal, #rescore-modal, #folders-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8);
   display: flex; align-items: center; justify-content: center; z-index: 190; }
-#subject-modal.hidden, #rescore-modal.hidden { display: none; }
+#subject-modal.hidden, #rescore-modal.hidden, #folders-modal.hidden { display: none; }
 .subject-box { background: var(--bg-2); border: 1px solid var(--border);
   border-radius: 8px; width: min(640px, 94vw); max-height: 92vh;
   display: flex; flex-direction: column; }
@@ -1485,7 +1485,7 @@ input[type="range"] { accent-color: var(--accent); }
    ===================================================================== */
 
 #relink-modal, #bulk-modal, #people-modal, #hdr-modal, #hdr-look-modal,
-#export-modal, #subject-modal, #rescore-modal, #cluster-modal, #edit-modal,
+#export-modal, #subject-modal, #rescore-modal, #folders-modal, #cluster-modal, #edit-modal,
 #photo-modal { background: var(--overlay); }
 
 .people-box, .subject-box, .cluster-box, .bulk-box, .relink-box, .export-box,
@@ -2672,3 +2672,26 @@ html.launching #intro { position: fixed; inset: 0; z-index: 1000; display: flex;
   #intro.play .intro-glow { animation: none; opacity: 0.28; transform: scale(1.12); }
   #intro.play .intro-mark::after { animation: none; }
 }
+
+/* ----- folders dialog ----- */
+.folders-changed { margin: 0; padding: 8px 10px; border-radius: var(--r1);
+  background: var(--sunken); border: 1px solid var(--line-strong);
+  font-size: var(--fs-sm); color: var(--ink); }
+.folders-changed.hidden { display: none; }
+#folders-list { display: flex; flex-direction: column; border: 1px solid var(--line);
+  border-radius: var(--r1); }
+.folder-row { display: grid; grid-template-columns: auto 1fr auto; align-items: center;
+  gap: 4px 10px; padding: 8px 10px; border-top: 1px solid var(--line); cursor: pointer; }
+.folder-row:first-child { border-top: 0; }
+.folder-row.out .folder-name { color: var(--ink-faint); text-decoration: line-through; }
+.folder-row.fixed { cursor: default; }
+.folder-name { font-family: var(--mono); font-size: var(--fs-sm); color: var(--ink);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-count { font-size: var(--fs-xs); color: var(--ink-dim); white-space: nowrap; }
+.folder-tags { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 4px; }
+.folder-tags:empty { display: none; }
+.folder-tag { font-size: var(--fs-xs); padding: 1px 6px; border-radius: 3px;
+  background: var(--sunken); color: var(--ink-dim); }
+.folder-tag.new { color: var(--accent); }
+.folder-tag.warn { color: var(--review); }
+#folders-status { flex: 1; font-size: var(--fs-xs); color: var(--review); }

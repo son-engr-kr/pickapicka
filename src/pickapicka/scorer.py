@@ -61,6 +61,57 @@ def excluded_scan_dirs(db_path: Path, project_dir: Path | None) -> set[Path]:
     return out
 
 
+def ignored_scan_dirs(jpeg_root: Path, raw_root: Path, ignored: Iterable[str]) -> set[Path]:
+    """Resolved paths of the top-level folders a project leaves out (its
+    `ignored_dirs`), under both roots: a folder of video stills or exports kept
+    inside the shoot is not part of it."""
+    out: set[Path] = set()
+    for name in ignored:
+        assert is_folder_name(name), f"not a top-level folder name: {name!r}"
+        out.add((jpeg_root / name).resolve())
+        out.add((raw_root / name).resolve())
+    return out
+
+
+def is_folder_name(name: str) -> bool:
+    """A single path component: what `ignored_dirs` may hold."""
+    return bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name
+
+
+def top_folder(rel: str) -> str | None:
+    """The top-level folder of a root-relative path; None for a loose file.
+    The same component folder grouping names a scene after."""
+    parts = Path(rel).parts
+    return parts[0] if len(parts) > 1 else None
+
+
+def photo_folder(photo: dict[str, Any]) -> str | None:
+    """The top-level folder a photo was found in. A RAW's rel_path is relative
+    to the RAW root and a JPEG's to the JPEG root, as each was scanned; a merged
+    HDR result lives in the project, so its bracket's frames say."""
+    if photo.get("type") == "hdr":
+        return top_folder(photo["members"][0])
+    return top_folder(photo["rel_path"])
+
+
+def source_folders(data: dict[str, Any]) -> dict[str, str | None]:
+    """`source_rel_paths`, each mapped to the top-level folder it is in."""
+    out: dict[str, str | None] = {}
+    for p in data.get("photos", []):
+        t = p.get("type")
+        if t == "hdr":
+            for m in p.get("members", []):
+                out[m] = top_folder(m)
+        elif t == "raw":
+            out["raw::" + p.get("src", p["rel_path"])] = top_folder(p["rel_path"])
+        else:
+            out[p["rel_path"]] = top_folder(p["rel_path"])
+    for b in data.get("brackets", []):
+        for m in b.get("members", []):
+            out[m] = top_folder(m)
+    return out
+
+
 def hdr_dir(db_path: Path, project_dir: Path | None) -> Path:
     """Directory holding merged HDR JPEGs. In a project it lives under the
     project folder; in the legacy layout it sits beside the db like the
@@ -165,15 +216,21 @@ def _existing_decisions(data: dict[str, Any] | None) -> dict[str, dict[str, Any]
     }
 
 
-def _existing_edits(data: dict[str, Any] | None) -> dict[str, tuple[Any, Any]]:
-    """Map rel_path -> (edit, edited_at) so a re-score keeps prior grading."""
+# A photo's grading: the edit, when it was made, and the saved slots.
+EDIT_FIELDS = ("edit", "edited_at", "edit_slots")
+
+
+def _existing_edits(data: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Map rel_path -> its EDIT_FIELDS so a re-score keeps prior grading. The
+    slots are grading too: a re-score used to drop them."""
     if not data:
         return {}
-    return {
-        p["rel_path"]: (p.get("edit"), p.get("edited_at"))
-        for p in data.get("photos", [])
-        if p.get("edit")
-    }
+    out: dict[str, dict[str, Any]] = {}
+    for p in data.get("photos", []):
+        kept = {k: p[k] for k in EDIT_FIELDS if p.get(k)}
+        if kept:
+            out[p["rel_path"]] = kept
+    return out
 
 
 def _resolve_bracket_groups(
@@ -302,6 +359,44 @@ def apply_scene_suggestions(items: list[dict[str, Any]]) -> None:
             items[idx]["auto_suggestion"] = "review"
 
 
+def drop_folders(data: dict[str, Any], folders: set[str]) -> int:
+    """Take every photo found in `folders` out of the project, with the
+    brackets made of them, and repair what pointed at them: a person's or a
+    subject group's count and representative, and the group itself when none
+    of it is left. Scene suggestions are recomputed for what remains, as they
+    are relative to a scene. Returns how many photos left."""
+    before = len(data["photos"])
+    data["photos"] = [p for p in data["photos"] if photo_folder(p) not in folders]
+    data["brackets"] = [b for b in data.get("brackets", [])
+                        if top_folder(b["members"][0]) not in folders]
+
+    def repair(groups: list[dict[str, Any]], field: str, items: str, idx: str) -> list[dict[str, Any]]:
+        members: dict[str, list[dict[str, Any]]] = {}
+        for p in data["photos"]:
+            for i, it in enumerate(p.get(items) or []):
+                if it.get(field):
+                    members.setdefault(it[field], []).append({"rel_path": p["rel_path"], idx: i})
+        kept = []
+        for g in groups:
+            refs = members.get(g["id"], [])
+            if not refs:
+                continue
+            g["count"] = len(refs)
+            if g.get("ref") not in refs:
+                g["ref"] = refs[0]
+            kept.append(g)
+        return kept
+
+    data["people"] = repair(data.get("people", []), "person_id", "faces", "face_idx")
+    data["vehicles"] = repair(data.get("vehicles", []), "vehicle_id", "objects", "obj_idx")
+    by_scene: dict[str, list[dict[str, Any]]] = {}
+    for p in data["photos"]:
+        by_scene.setdefault(p["scene"], []).append(p)
+    for items in by_scene.values():
+        apply_scene_suggestions(items)
+    return before - len(data["photos"])
+
+
 def _subject_scores(
     abs_path: Path, objects: list[dict[str, Any]], width: int, height: int,
 ) -> dict[str, Any]:
@@ -345,7 +440,7 @@ def _score_one(
     target: dict[str, Any],
     face_detect,
     existing: dict[str, tuple[Any, Any]],
-    existing_edits: dict[str, tuple[Any, Any]],
+    existing_edits: dict[str, dict[str, Any]],
     embedding_sink: list[np.ndarray],
     object_detect=None,
 ) -> dict[str, Any]:
@@ -419,11 +514,7 @@ def _score_one(
     if target.get("kind") == "raw":
         photo["type"] = "raw"
         photo["src"] = target["src"]
-    prior_edit, prior_edited_at = existing_edits.get(rel_path, (None, None))
-    if prior_edit:
-        photo["edit"] = prior_edit
-        if prior_edited_at:
-            photo["edited_at"] = prior_edited_at
+    photo.update(existing_edits.get(rel_path, {}))
     return photo
 
 
@@ -440,6 +531,7 @@ def run_scoring(
     raw_subdir: str = "",
     subject_classes: list[str] | None = None,
     detect_faces: bool | None = None,
+    scene_grouping: dict[str, Any] | None = None,
 ) -> None:
     """Scan, merge HDR brackets, then score the standalone frames plus the
     merged results. An HDR bracket is scored once, as its merged output.
@@ -452,6 +544,11 @@ def run_scoring(
     edit); otherwise a prior grouping is preserved across re-scores, and a
     first run auto-detects brackets from EXIF.
 
+    Scenes follow `scene_grouping` when given (the new-project wizard), else
+    the project's own, else its folders: a re-score used to drop a time-gap
+    grouping and hand back folder scenes. Folders in the project's
+    `ignored_dirs` are not scanned.
+
     If `progress_cb` is given, it's called as `cb(idx, total, current_rel_path)`
     before each photo, and once more with `idx == total` and current=None at the
     end. Otherwise a click progress bar prints to stdout."""
@@ -460,7 +557,9 @@ def run_scoring(
     raw_root = photo_dir / raw_subdir if raw_subdir else jpeg_root
     assert jpeg_root.is_dir(), f"not a directory: {jpeg_root}"
 
-    excludes = excluded_scan_dirs(db_path, project_dir)
+    existing = _load_existing(db_path)
+    ignored = sorted((existing or {}).get("ignored_dirs") or [])
+    excludes = excluded_scan_dirs(db_path, project_dir) | ignored_scan_dirs(jpeg_root, raw_root, ignored)
     collected = _collect_jpegs(jpeg_root, excludes)
     scene_of = {str(p.relative_to(jpeg_root)): scene for scene, p in collected}
     src_rels = set(scene_of)
@@ -469,7 +568,6 @@ def run_scoring(
         click.echo(f"Found {len(src_rels)} JPEG/PNG under {jpeg_root}"
                    + (f" and {len(raw_collected)} RAW under {raw_root}" if raw_collected else ""))
 
-    existing = _load_existing(db_path)
     existing_dec = _existing_decisions(existing)
     existing_edits = _existing_edits(existing)
     if verbose and existing_dec:
@@ -648,6 +746,11 @@ def run_scoring(
                 object_detect))
         progress_cb(len(targets), len(targets), None)
 
+    # Scored into folder scenes; regrouped before the per-scene suggestions,
+    # which are relative to whatever a scene turns out to hold.
+    grouping = scene_grouping if scene_grouping is not None else (existing or {}).get("scene_grouping")
+    if grouping and grouping.get("mode") == "time_gap":
+        scenes.regroup(scored, jpeg_root, "time_gap", grouping.get("gap_minutes", 30))
     by_scene: dict[str, list[dict[str, Any]]] = {}
     for p in scored:
         by_scene.setdefault(p["scene"], []).append(p)
@@ -684,6 +787,11 @@ def run_scoring(
     # preference, so they are carried across rather than reset with the data.
     if (existing or {}).get("cluster_settings") is not None:
         data["cluster_settings"] = (existing or {})["cluster_settings"]
+    # The same goes for how scenes are made and which folders are left out.
+    if grouping:
+        data["scene_grouping"] = grouping
+    if ignored:
+        data["ignored_dirs"] = ignored
     data["photos"] = scored
     db.save(db_path, data)
 

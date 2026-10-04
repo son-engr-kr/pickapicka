@@ -40,8 +40,13 @@ from .scorer import (
     SUPPORTED_EXTS,
     _is_supported,
     apply_scene_suggestions,
+    drop_folders,
     excluded_scan_dirs,
-    source_rel_paths,
+    ignored_scan_dirs,
+    is_folder_name,
+    photo_folder,
+    source_folders,
+    top_folder,
     walk_files,
 )
 
@@ -351,6 +356,10 @@ class ForgetPayload(BaseModel):
     project_dir: str | None = None
 
 
+class FoldersPayload(BaseModel):
+    ignored: list[str]          # top-level folder names the project leaves out
+
+
 class SceneGroupingPayload(BaseModel):
     mode: Literal["folder", "time_gap"]
     gap_minutes: int = 30
@@ -532,7 +541,10 @@ class AppContext:
         return {"running": False, "phase": None, "message": None,
                 "idx": 0, "total": 0, "current": None,
                 "started_at": None, "ended_at": None, "error": None,
-                "ready": False, "needs_relink": None, "cancel": False, "cancelled": False}
+                "ready": False, "needs_relink": None, "cancel": False, "cancelled": False,
+                # The photo folder no longer matches the project: the client
+                # asks what to do rather than the open re-scoring on its own.
+                "files_changed": False}
 
     def is_loaded(self) -> bool:
         return self.db_path is not None
@@ -1651,20 +1663,21 @@ def _scan_sources(
     raw_root: Path,
     photo_root: Path,
     exclude_dirs: set[Path] | None = None,
-) -> set[str]:
-    """Identities of all on-disk sources (for change detection): supported
-    images under jpeg_root by their jpeg-relative path, plus RAW files under
-    raw_root tagged `raw::<photo-root-relative path>`. Matches
-    scorer.source_rel_paths so a re-open only re-scores when files change."""
+) -> dict[str, str | None]:
+    """Identities of all on-disk sources (for change detection), each mapped to
+    its top-level folder: supported images under jpeg_root by their
+    jpeg-relative path, plus RAW files under raw_root tagged
+    `raw::<photo-root-relative path>`. Matches scorer.source_folders."""
     excl = exclude_dirs or ()
-    found: set[str] = set()
+    found: dict[str, str | None] = {}
     for img in walk_files(jpeg_root, excl):
         if _is_supported(img):
-            found.add(str(img.relative_to(jpeg_root)))
+            rel = str(img.relative_to(jpeg_root))
+            found[rel] = top_folder(rel)
     if raw_root.is_dir():
         for f in walk_files(raw_root, excl):
             if raw.is_raw(f):
-                found.add("raw::" + str(f.relative_to(photo_root)))
+                found["raw::" + str(f.relative_to(photo_root))] = top_folder(str(f.relative_to(raw_root)))
     return found
 
 
@@ -2004,8 +2017,10 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                         "jpeg_subdir": jpeg_subdir,
                     }
                 raise RuntimeError(f"photo folder not found: {jpeg_root}")
-            scan_excludes = excluded_scan_dirs(db_path, project_dir)
-            current_files = _scan_sources(jpeg_root, raw_root, photo_dir, scan_excludes)
+            ignored = (existing_data or {}).get("ignored_dirs") or []
+            scan_excludes = (excluded_scan_dirs(db_path, project_dir)
+                             | ignored_scan_dirs(jpeg_root, raw_root, ignored))
+            current_files = set(_scan_sources(jpeg_root, raw_root, photo_dir, scan_excludes))
             if not current_files:
                 hint = _summarize_other_files(jpeg_root, scan_excludes)
                 raise RuntimeError(
@@ -2013,15 +2028,16 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                     f"pick a different folder or set the JPEG subfolder"
                 )
 
-            # Compare the scan against the prior *source* files (standalone
-            # photos + bracket members), since merged HDR results carry
-            # synthetic rel_paths that never appear in a folder scan.
-            existing_files = source_rel_paths(existing_data) if existing_data else set()
-            needs_score = (
-                existing_data is None
-                or existing_data.get("scored_at") is None
-                or current_files != existing_files
-            )
+            # Only a project never scored is scored here. One whose folder has
+            # changed since opens as it was, and the client asks: a re-score
+            # also regroups faces, and a folder of video stills made inside
+            # the shoot was being scored into it and given its own scenes.
+            # Compared on the *source* files (standalone photos + bracket
+            # members), since merged HDR results carry synthetic rel_paths
+            # that never appear in a folder scan.
+            needs_score = existing_data is None or existing_data.get("scored_at") is None
+            if not needs_score:
+                ctx.opening_state["files_changed"] = current_files != set(source_folders(existing_data))
 
             if needs_score:
                 ctx.opening_state["phase"] = "scoring"
@@ -2039,6 +2055,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                     with_faces=False, progress_cb=score_cb,
                     project_dir=project_dir, raw_subdir=raw_subdir,
                     subject_classes=subject_classes,
+                    scene_grouping=initial_scene_grouping,
                 )
 
                 ctx.opening_state["phase"] = "clustering"
@@ -2054,26 +2071,6 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                     ctx.opening_state["total"] = total
 
                 run_clustering(db_path, progress_cb=cluster_cb)
-
-                # Apply user-chosen initial scene grouping (wizard).
-                if initial_scene_grouping and initial_scene_grouping.get("mode") == "time_gap":
-                    fresh = db.load(db_path)
-                    scenes.regroup(
-                        fresh["photos"],
-                        jpeg_root,
-                        "time_gap",
-                        initial_scene_grouping.get("gap_minutes", 30),
-                    )
-                    by_scene: dict[str, list[dict[str, Any]]] = {}
-                    for p in fresh["photos"]:
-                        by_scene.setdefault(p["scene"], []).append(p)
-                    for items in by_scene.values():
-                        apply_scene_suggestions(items)
-                    fresh["scene_grouping"] = {
-                        "mode": "time_gap",
-                        "gap_minutes": initial_scene_grouping.get("gap_minutes", 30),
-                    }
-                    db.save(db_path, fresh)
 
             ctx.opening_state["phase"] = "loading"
             ctx.opening_state["message"] = "Loading project…"
@@ -3128,6 +3125,70 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         return _cached_image(crop_path, "image/jpeg")
 
     # ----- scene grouping --------------------------------------------
+
+    # ----- folders ---------------------------------------------------
+
+    def _folder_report() -> dict[str, Any]:
+        """Each top-level folder of the photo folder against the project: how
+        many images it has on disk, how many of them are new to the project or
+        gone from disk, how many of its photos carry the photographer's marks,
+        and whether the project leaves it out. Loose files are the folder named
+        None. `added` and `missing` are what a re-score would change."""
+        on_disk = _scan_sources(ctx.jpeg_root, ctx.raw_root, ctx.photo_root,
+                                excluded_scan_dirs(ctx.db_path, ctx.project_dir))
+        in_project = source_folders(ctx.data)
+        ignored = set(ctx.data.get("ignored_dirs") or [])
+        rows: dict[str | None, dict[str, Any]] = {}
+
+        def row(name: str | None) -> dict[str, Any]:
+            return rows.setdefault(name, {"name": name, "on_disk": 0, "new": 0, "missing": 0,
+                                          "photos": 0, "marked": 0, "ignored": name in ignored})
+        for ident, folder in on_disk.items():
+            r = row(folder)
+            r["on_disk"] += 1
+            r["new"] += ident not in in_project
+        for ident, folder in in_project.items():
+            row(folder)["missing"] += ident not in on_disk
+        for p in ctx.data["photos"]:
+            r = row(photo_folder(p))
+            r["photos"] += 1
+            r["marked"] += any(p.get(k) for k in ("decision", "rating", "label", "edit"))
+        for name in ignored:
+            row(name)
+        return {
+            "folders": sorted(rows.values(), key=lambda r: (r["name"] is not None, (r["name"] or "").lower())),
+            "added": sum(r["new"] for r in rows.values() if not r["ignored"]),
+            "missing": sum(r["missing"] for r in rows.values()),
+        }
+
+    @app.get("/api/folders")
+    def get_folders() -> dict[str, Any]:
+        _require_loaded()
+        return _folder_report()
+
+    @app.post("/api/folders")
+    def set_folders(payload: FoldersPayload) -> dict[str, Any]:
+        """Set which top-level folders the project leaves out. The photos of a
+        folder newly left out leave the project now, marks and all; one taken
+        back in comes in with the next re-score. Nothing on disk is touched."""
+        _require_loaded()
+        if ctx.scoring_state["running"] or ctx.cluster_state["running"]:
+            raise HTTPException(status_code=409, detail="another task is running")
+        bad = [n for n in payload.ignored if not is_folder_name(n)]
+        if bad:
+            raise HTTPException(status_code=400, detail=f"not a top-level folder name: {bad[0]!r}")
+        ignored = sorted(set(payload.ignored))
+        newly = set(ignored) - set(ctx.data.get("ignored_dirs") or [])
+        with ctx.save_lock:
+            if newly:
+                drop_folders(ctx.data, newly)
+            if ignored:
+                ctx.data["ignored_dirs"] = ignored
+            else:
+                ctx.data.pop("ignored_dirs", None)
+            db.save(ctx.db_path, ctx.data)
+            ctx._rebuild_index()
+        return _folder_report()
 
     @app.post("/api/scene-grouping")
     def set_scene_grouping(payload: SceneGroupingPayload) -> dict[str, Any]:

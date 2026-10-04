@@ -65,7 +65,18 @@ whole job: decide, filter, move on.
   new-project wizard previews both on the chosen folder before anything is
   scored: the scenes each subfolder would make, or a timeline of the shoot that
   re-splits as you drag the gap slider, with the longest pause marked so you can
-  see which gap would separate what.
+  see which gap would separate what. The grouping survives a re-score: a
+  time-gap project used to come back from one grouped by folder.
+- **Folders left out**: *More → Folders…* lists the top-level folders under
+  the photo folder, and any of them can be left out of the project: a folder
+  of video stills or exports kept inside the shoot, say. Leaving one out takes
+  its photos out of the project at once; nothing on disk is touched, and every
+  later scan skips it.
+- **Opening a changed folder asks first**: when a project opens on a photo
+  folder whose images no longer match it (new ones added, or some gone), it
+  opens as it was and shows the Folders dialog, with what is new in each folder.
+  From there you leave folders out, re-score to take the changes in, or carry
+  on. It used to re-score on its own, which also regroups faces.
 
 ## Deciding
 

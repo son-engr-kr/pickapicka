@@ -56,12 +56,18 @@ case-insensitive. When a shot has both a RAW and a same-named JPEG, the RAW is
 used. If your RAWs live in a separate `RAW/` tree, set the RAW subfolder under
 **Advanced** in the new-project wizard. Videos and sidecars are ignored.
 
+Every subfolder is scanned. A folder that is not part of the shoot (video
+stills, exports, a working folder for a trailer) can be left out under
+**More → Folders…**; the project remembers it in `ignored_dirs` and no scan
+looks inside it again.
+
 ## How decisions are persisted
 
 Everything lives in `<photo_dir>/picks.json` next to your images. Re-scoring
-preserves your pick/review/reject decisions by relative path. Re-clustering
-resets cluster labels and priorities (face indices change), but per-photo
-decisions are kept.
+preserves your pick/review/reject decisions, stars, colour labels, edits and
+saved edit slots by relative path, along with the scene grouping and the folders
+left out. Re-clustering resets cluster labels and priorities (face indices
+change), but per-photo decisions are kept.
 
 Caches (`picks.json.thumbs/`, `picks.json.faces/`,
 `picks.json.embeddings.npy`) are recreated on demand and safe to delete.

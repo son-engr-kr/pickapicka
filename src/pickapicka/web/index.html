@@ -441,6 +441,7 @@
           <button id="more-btn" type="button" data-icon="more" aria-haspopup="menu" aria-expanded="false">More</button>
           <div id="more-menu" class="menu hidden" role="menu">
             <button id="hdr-btn" role="menuitem" title="Review and fix auto-detected HDR brackets" data-icon="hdr">HDR brackets</button>
+            <button id="folders-btn" role="menuitem" title="Which folders of the shoot belong to the project" data-icon="folder">Folders…</button>
             <button id="rescore-btn" role="menuitem" title="Re-run scoring on all photos (preserves decisions)" data-icon="refresh">Rescore…</button>
             <hr />
             <button id="reject-undecided-btn" role="menuitem" class="danger" title="Mark all undecided photos in this scene as reject" disabled data-icon="close">Reject undecided</button>
@@ -1458,6 +1459,37 @@
         <span id="rescore-status"></span>
         <button id="rescore-cancel">Cancel</button>
         <button id="rescore-go" class="primary">Re-score</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Which folders under the photo folder the project takes in. Opened by
+       itself when a project opens on a folder that has changed, which used to
+       re-score on its own. -->
+  <div id="folders-modal" class="hidden">
+    <div class="subject-box">
+      <header>
+        <h2>Folders</h2>
+        <button id="folders-modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
+      </header>
+      <div class="subject-body">
+        <p class="folders-changed hidden" id="folders-changed">
+          The photo folder has changed since this project was last scored.
+          Nothing has been re-scored yet.
+        </p>
+        <p class="subject-intro">
+          Every image under the photo folder belongs to the project, except in
+          the folders left out here: a folder of video stills or exports, say.
+          Leaving one out takes its photos out of the project. Nothing on disk
+          is touched.
+        </p>
+        <div id="folders-list"></div>
+        <p class="subject-note" id="folders-note"></p>
+      </div>
+      <footer>
+        <span id="folders-status"></span>
+        <button id="folders-cancel">Not now</button>
+        <button id="folders-go" class="primary">Apply</button>
       </footer>
     </div>
   </div>
