@@ -120,3 +120,19 @@ def test_a_reload_forgets_both(tmp_path):
     ctx.ca_for("a.jpg", {"lens": {"ca_auto": True}})
     ctx.reload_data()
     assert not ctx.settled_optics and not ctx.ca_cache
+
+
+def test_the_idle_sharp_base_comes_from_the_full_decode_past_the_preview_cap(tmp_path):
+    from pickapicka.server import EDIT_PREVIEW_EDGE
+    rng = np.random.default_rng(2)
+    w, h = 3000, 2000
+    Image.fromarray(rng.integers(0, 256, (h, w, 3), dtype=np.uint8)).save(tmp_path / "big.jpg", quality=95)
+    data = db.init_db(tmp_path, "")
+    data["photos"] = [{"rel_path": "big.jpg", "scene": "(none)", "width": w, "height": h}]
+    (tmp_path / "picks.json").write_text(json.dumps(data), encoding="utf-8")
+    ctx = AppContext()
+    ctx.load_db(tmp_path / "picks.json")
+    assert max(ctx.get_decoded_base("big.jpg").shape[:2]) <= EDIT_PREVIEW_EDGE
+    sharp = ctx.get_sharp_base("big.jpg", {}, 2560)
+    assert sharp.shape[:2] == (1706, 2560)
+    assert ctx.get_sharp_base("big.jpg", {}, 4000).shape[:2] == (h, w), "never upscaled"

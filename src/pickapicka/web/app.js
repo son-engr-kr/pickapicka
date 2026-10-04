@@ -1160,8 +1160,10 @@ function modalRefSize() {
   const img = $("#modal-image");
   const nw = img.naturalWidth, nh = img.naturalHeight;
   if (!nw || !nh) return null;
-  if (img.src.endsWith(img.dataset.full || "\0")) return { w: nw, h: nh };
   const photo = state.filteredPhotos[state.modal.idx];
+  // A rendered photo comes at screen size first, so only a file sent as is
+  // knows its own 100%.
+  if (img.src.endsWith(img.dataset.full || "\0") && !(photo && isRendered(photo))) return { w: nw, h: nh };
   const long = Math.max(photo?.width || 0, photo?.height || 0);
   const k = long ? long / Math.max(nw, nh) : 1;
   return { w: nw * k, h: nh * k };
@@ -1228,6 +1230,7 @@ function setModalZoom(z, at) {
   }
   state.modal.zoom = next;
   applyModalZoom(pin);
+  upgradeModalImage();
   showModalHud(next ? `${Math.round(next * 100)}%` : "Fit");
 }
 
@@ -3157,8 +3160,57 @@ function previewBody(edit, draft) {
 let previewInFlight = false;
 let previewQueued;
 
+// Once the editor has been still for a moment, the fit view is rendered again
+// from the full-resolution decode at the canvas's own device size: the settled
+// render is a quick decode capped at PREVIEW_EDGE, soft on a large or high-DPI
+// canvas. Anything newer cancels it, and it never holds up the render queue.
+const SHARP_IDLE_MS = 700;
+let sharpTimer = null;
+let sharpAbort = null;
+
+function cancelSharp() {
+  if (sharpTimer) { clearTimeout(sharpTimer); sharpTimer = null; }
+  if (sharpAbort) { sharpAbort.abort(); sharpAbort = null; }
+}
+
+function scheduleSharp() {
+  cancelSharp();
+  if (isZoomed() || editSession.tool === "crop") return;   // 1:1 is already full resolution
+  sharpTimer = setTimeout(async () => {
+    sharpTimer = null;
+    const wrap = $(".edit-canvas-wrap");
+    if (!editSession.relPath || !wrap || !wrap.clientWidth) return;
+    const need = Math.max(wrap.clientWidth, wrap.clientHeight) * (window.devicePixelRatio || 1);
+    const body = { rel_path: editSession.relPath, edit: editSession.edit,
+                   fit_edge: Math.ceil(need / FIT_STEP) * FIT_STEP, sharp: true };
+    const seq = previewSeq, rel = editSession.relPath;
+    const ctl = sharpAbort = new AbortController();
+    let blob;
+    try {
+      const res = await fetch("/api/edit/preview", {
+        method: "POST", signal: ctl.signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`sharp preview failed: ${res.status}`);
+      blob = await res.blob();
+    } catch (e) {
+      if (e.name === "AbortError") return;
+      throw e;
+    } finally {
+      if (sharpAbort === ctl) sharpAbort = null;
+    }
+    if (seq !== previewSeq || rel !== editSession.relPath || previewInFlight
+        || isZoomed() || editSession.tool === "crop") return;
+    if (editSession.objUrl) URL.revokeObjectURL(editSession.objUrl);
+    editSession.objUrl = URL.createObjectURL(blob);
+    if (!editSession.comparing) $("#edit-img").src = editSession.objUrl;
+  }, SHARP_IDLE_MS);
+}
+
 function fetchEditPreview(immediate, draft) {
   if (editSession.timer) { clearTimeout(editSession.timer); editSession.timer = null; }
+  cancelSharp();
   const go = async () => {
     if (!editSession.relPath) return;
     // One render at a time. Firing a fresh request every 110 ms at a server
@@ -3218,7 +3270,10 @@ function fetchEditPreview(immediate, draft) {
       // Its own words go once the render is up: "rendering…", or a failure the
       // next render recovered from. Anything else is a message for the user.
       if (["preview error", "rendering…"].includes($("#edit-status").textContent)) $("#edit-status").textContent = "";
-      if (!draft) prefetchNeighbours(rel);
+      if (!draft) {
+        prefetchNeighbours(rel);
+        if (!previewQueued) scheduleSharp();
+      }
     } catch {
       $("#edit-status").textContent = "preview error";
     } finally {
@@ -6780,6 +6835,7 @@ function closeModal() {
   state.modal.open = false;
   modalLoadSeq++;
   delete $("#modal-image").dataset.full;
+  delete $("#modal-image").dataset.max;
   loupe.at = null;
   hideLoupe();
   // The bars come back with the next photo opened, not a surprise later.
@@ -6900,13 +6956,42 @@ function explainScores(photo) {
 // newest request may put its image up.
 let modalLoadSeq = 0;
 
+// A RAW or edited photo is rendered for the viewer, at the screen's size first
+// and at full resolution once it is zoomed into; any other file is sent as is.
+function screenEdge() {
+  return Math.round(Math.max(screen.width, screen.height) * (window.devicePixelRatio || 1));
+}
+
+function isRendered(photo) {
+  return photo.type === "raw" || !!photo.edited_at;
+}
+
+// Zoomed in on a rendered photo: swap in its full-resolution render, once.
+function upgradeModalImage() {
+  const photo = state.filteredPhotos[state.modal.idx];
+  const img = $("#modal-image");
+  if (!photo || !state.modal.zoom || !img.dataset.full || !isRendered(photo)) return;
+  const max = img.dataset.full.replace(/\?edge=\d+$/, "?edge=0");
+  if (img.dataset.max === max) return;
+  img.dataset.max = max;
+  const seq = modalLoadSeq;
+  const loader = new Image();
+  loader.onload = () => {
+    if (seq !== modalLoadSeq || !img.src.endsWith(img.dataset.full)) return;
+    img.dataset.full = max;
+    img.src = max;
+  };
+  loader.src = max;
+}
+
 function showModalImage(photo, rel) {
   const img = $("#modal-image");
   const seq = ++modalLoadSeq;
-  const full = "/img/" + enc(rel);
+  const full = "/img/" + enc(rel) + `?edge=${screenEdge()}`;
   const note = $("#modal-loading");
-  if (img.dataset.full === full) return;
+  if (img.dataset.full === full || img.dataset.max === full.replace(/\?edge=\d+$/, "?edge=0")) return;
   img.dataset.full = full;
+  delete img.dataset.max;
   img.src = rel === photo.rel_path ? thumbUrl(photo) : full;
   note.textContent = "Loading full size…";
   note.classList.remove("hidden", "error");
@@ -6915,6 +7000,7 @@ function showModalImage(photo, rel) {
     if (seq !== modalLoadSeq) return;
     img.src = full;
     note.classList.add("hidden");
+    upgradeModalImage();
   };
   loader.onerror = () => {
     if (seq !== modalLoadSeq) return;
@@ -7432,7 +7518,7 @@ function loadComparePhoto(i) {
   const full = new Image();
   // Late, and the pane has moved on to another photo: not this one's to show.
   full.onload = () => { if (pane.dataset.rel === photo.rel_path) img.src = full.src; };
-  full.src = "/img/" + enc(photo.rel_path);
+  full.src = "/img/" + enc(photo.rel_path) + `?edge=${screenEdge()}`;
 }
 
 function renderCompare() {

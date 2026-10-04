@@ -137,6 +137,10 @@ class EditPreviewPayload(BaseModel):
     # The crop tool shows the straightened frame *uncropped*, so the box can be
     # dragged over everything still available. The tilt is honoured either way.
     skip_crop: bool = False
+    # The settled fit render redone once input goes idle: scaled from the
+    # full-resolution decode to `fit_edge` (which may then exceed
+    # EDIT_PREVIEW_EDGE), so a large or high-DPI canvas ends up sharp.
+    sharp: bool = False
 
 
 class EditSavePayload(BaseModel):
@@ -690,10 +694,10 @@ class AppContext:
         """Full-resolution oriented RGB uint8 (used for export baking)."""
         return self._decode_scaled(rel_path, None)
 
-    def decode_view(self, rel_path: str) -> np.ndarray:
-        """RGB uint8 capped at EDIT_VIEW_EDGE — for rendering the full-size
+    def decode_view(self, rel_path: str, max_edge: int | None = EDIT_VIEW_EDGE) -> np.ndarray:
+        """RGB uint8 capped at `max_edge` (None: full size), for rendering the
         viewer image of an edited or RAW photo."""
-        return self._decode_scaled(rel_path, EDIT_VIEW_EDGE)
+        return self._decode_scaled(rel_path, max_edge)
 
     def get_decoded_base(self, rel_path: str) -> np.ndarray:
         """Cached downscaled (~EDIT_PREVIEW_EDGE) original RGB — the array the
@@ -872,6 +876,21 @@ class AppContext:
                 base, (max(1, int(w * scale)), max(1, int(h * scale))),
                 interpolation=cv2.INTER_AREA)
         return self.edit_base_cache.get(rel_path, f"fit@{edge}:{okey}", build)
+
+    def get_sharp_base(self, rel_path: str, edit: dict[str, Any] | None,
+                       edge: int) -> np.ndarray:
+        """The corrected full-resolution frame scaled down to `edge`: the fit
+        view's idle refinement, free of the quick decode and the preview cap."""
+        okey = editing.optics_key(edit)
+
+        def build() -> np.ndarray:
+            base = self.get_corrected_full(rel_path, edit)
+            h, w = base.shape[:2]
+            scale = edge / max(h, w)
+            return base if scale >= 1.0 else cv2.resize(
+                base, (max(1, int(w * scale)), max(1, int(h * scale))),
+                interpolation=cv2.INTER_AREA)
+        return self.edit_base_cache.get(rel_path, f"sharp@{edge}:{okey}", build)
 
     def get_corrected_full(self, rel_path: str, edit: dict[str, Any] | None) -> np.ndarray:
         """`get_full_base` with the optics applied, for the 1:1 view: a window
@@ -2594,7 +2613,11 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             edge = max(ctx.get_decoded_base(rel).shape[:2])
             draft = bool(payload.max_edge) and payload.max_edge < edge
             fit = not draft and bool(payload.fit_edge) and payload.fit_edge < edge
-            if draft:
+            if payload.sharp:
+                assert not payload.max_edge and payload.fit_edge, "a sharp render is a settled one, sized"
+                sharp_edge = min(payload.fit_edge, EDIT_ZOOM_MAX_OUT)
+                base, which = ctx.get_sharp_base(rel, fit_edit, sharp_edge), f"sharp@{sharp_edge}"
+            elif draft:
                 base, which = ctx.get_draft_base(rel, payload.max_edge), f"draft@{payload.max_edge}"
             elif fit:
                 base, which = ctx.get_fit_base(rel, fit_edit, payload.fit_edge), f"fit@{payload.fit_edge}"
@@ -3297,7 +3320,10 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     # ----- image serving ---------------------------------------------
 
     @app.get("/img/{rel_path:path}")
-    def get_image(rel_path: str) -> Response:
+    def get_image(rel_path: str, edge: int | None = None) -> Response:
+        """The viewer's full image. A RAW or edited photo is rendered: at
+        `edge` (the screen's long edge in device pixels) when given, 0 meaning
+        full resolution for zooming in, else at EDIT_VIEW_EDGE."""
         _require_loaded()
         path = _lexical(ctx.source_path(rel_path))
         if not _within_roots(ctx, path):
@@ -3309,7 +3335,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         is_raw = bool(photo and photo.get("type") == "raw")
         if is_raw or (edit and not editing.is_neutral(edit)):
             # RAW isn't browser-viewable, and edits must show — render a JPEG.
-            out = editing.render(ctx.decode_view(rel_path), edit,
+            cap = EDIT_VIEW_EDGE if edge is None else (edge or None)
+            out = editing.render(ctx.decode_view(rel_path, cap), edit,
                                  meta=ctx.photo_meta(rel_path),
                                  auto=ctx.auto_fields(rel_path, edit),
                                  src=ctx.range_src(rel_path, edit),
