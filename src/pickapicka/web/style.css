@@ -291,7 +291,7 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
   flex-wrap: wrap; gap: 6px 14px; background: var(--bg-2); }
 /* Buttons and control groups keep their size; when the row runs out of space
    they wrap to a second line instead of squashing into multi-line text. */
-#main-header > button, #page-nav, #cols-toggle { flex-shrink: 0; }
+#main-header > button, #page-nav, #cols-toggle, #sort-toggle { flex-shrink: 0; }
 #scene-title { font-weight: 600; font-family: "SF Mono", Menlo, monospace;
   font-size: 13px; flex-shrink: 1; min-width: 60px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -299,9 +299,9 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
 #page-nav button { padding: 2px 12px; font-size: 16px; line-height: 1; }
 #page-indicator { font-family: "SF Mono", Menlo, monospace; font-size: 12px;
   color: var(--fg-dim); min-width: 70px; text-align: center; }
-#cols-toggle { display: flex; align-items: center; gap: 4px; }
-#cols-toggle .label { color: var(--fg-dim); font-size: 11px; }
-#cols-toggle .cols { padding: 2px 10px; font-size: 12px; min-width: 32px; }
+#cols-toggle, #sort-toggle { display: flex; align-items: center; gap: 4px; }
+:is(#cols-toggle, #sort-toggle) .label { color: var(--fg-dim); font-size: 11px; }
+:is(#cols-toggle, #sort-toggle) .cols { padding: 2px 10px; font-size: 12px; min-width: 32px; }
 #scene-stats { color: var(--fg-dim); font-size: 12px; margin-left: auto;
   white-space: nowrap; }
 #rescore-btn { padding: 4px 12px; font-size: 12px; }
@@ -1460,12 +1460,13 @@ input[type="range"] { accent-color: var(--accent); }
 #scene-title, #shown-count { font-size: var(--fs-sm); color: var(--ink-dim); }
 #scene-title { font-weight: 600; color: var(--ink); }
 
-#cols-toggle { display: inline-flex; background: var(--sunken);
+#cols-toggle, #sort-toggle { display: inline-flex; background: var(--sunken);
   border: 1px solid var(--line); border-radius: var(--r1); padding: 2px; gap: 2px; }
-#cols-toggle .cols { border: 0; background: transparent; padding: 3px 9px;
+:is(#cols-toggle, #sort-toggle) .cols { border: 0; background: transparent; padding: 3px 9px;
   border-radius: 3px; color: var(--ink-dim); }
-#cols-toggle .cols:hover { background: var(--raised); color: var(--ink); }
-#cols-toggle .cols.active { background: var(--accent); color: var(--accent-ink);
+:is(#cols-toggle, #sort-toggle) .cols:hover:not(:disabled) { background: var(--raised); color: var(--ink); }
+#sort-toggle .cols:disabled { opacity: 0.4; cursor: default; }
+:is(#cols-toggle, #sort-toggle) .cols.active { background: var(--accent); color: var(--accent-ink);
   font-weight: 550; }
 
 .tile { border-radius: var(--r2); border: 1px solid var(--line);
@@ -2146,7 +2147,7 @@ button.primary:disabled { background: var(--raised); border-color: var(--line); 
 #page-nav { gap: 2px; }
 #page-nav button { padding: 0 6px; }
 #page-indicator { min-width: 54px; font-size: var(--fs-sm); color: var(--ink-dim); }
-#cols-toggle .label { padding: 0 6px 0 4px; font-size: var(--fs-xs); color: var(--ink-faint); }
+:is(#cols-toggle, #sort-toggle) .label { padding: 0 6px 0 4px; font-size: var(--fs-xs); color: var(--ink-faint); }
 .hdr-tools { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 
 /* ----- a menu dropped from a button ----- */
@@ -2247,14 +2248,14 @@ button.primary:disabled { background: var(--raised); border-color: var(--line); 
 
 /* Selected states are neutral: the accent is kept for the main action of a
    place and for the keyboard cursor, so those stand out. */
-#cols-toggle .cols.active { background: var(--raised); color: var(--ink);
+:is(#cols-toggle, #sort-toggle) .cols.active { background: var(--raised); color: var(--ink);
   box-shadow: inset 0 0 0 1px var(--line-strong); }
 #scene-mode-cards .option-card.active { background: var(--raised); border-color: var(--line-strong);
   box-shadow: inset 0 0 0 1px var(--ink-faint); color: var(--ink); }
 
 /* On a narrow window the header gives up its labels before the scene's name. */
 #main-header { container-type: inline-size; }
-@container (max-width: 860px) { #cols-toggle .label, #scene-stats { display: none; } }
+@container (max-width: 860px) { :is(#cols-toggle, #sort-toggle) .label, #scene-stats { display: none; } }
 @container (max-width: 700px) { #peak-btn .btn-label, #more-btn .btn-label { display: none; } }
 
 /* ----- the viewer ----- */

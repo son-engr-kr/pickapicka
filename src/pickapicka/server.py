@@ -182,6 +182,7 @@ class EditSlotPayload(BaseModel):
 # means anything inside the scene it was counted in.
 class ViewPayload(BaseModel):
     filter: Literal["all", "undecided", "pick", "review", "reject", "edited"]
+    sort: Literal["time", "people"] = "time"
     page_size: Literal[1, 2, 4, 8]
     page: int
     scene: str | None = None
@@ -1835,7 +1836,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         _require_loaded()
         if payload.page < 0:
             raise HTTPException(status_code=400, detail="page must not be negative")
-        view = {"filter": payload.filter, "page_size": payload.page_size,
+        view = {"filter": payload.filter, "sort": payload.sort,
+                "page_size": payload.page_size,
                 "page": payload.page, "scene": payload.scene,
                 "photo": payload.photo, "viewer": payload.viewer}
         userstate.set_view(_view_key(), view)

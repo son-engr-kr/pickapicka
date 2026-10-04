@@ -187,8 +187,12 @@ than on the whole frame.
 
 - **Face clustering**: detects faces with `insightface` and clusters them
   per-person via DBSCAN on embeddings.
-- **Drag-and-drop people priority**: rank face clusters by importance; photos
-  containing higher-priority people sort to the top within each scene.
+- **Drag-and-drop people priority**: rank face clusters by importance. The
+  grid's **Sort** switch picks the order within each scene: **Time** (the
+  default) is shooting order, and **People** puts photos containing
+  higher-priority people first. People order pulls a burst apart wherever its
+  frames see different people, which is why it is not the default. The choice
+  is remembered per project with the filter and layout.
 - **Exclude clusters**: hide irrelevant clusters (background people, false
   positives) from sorting and chips.
 

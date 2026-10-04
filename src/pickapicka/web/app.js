@@ -15,6 +15,10 @@ const state = {
   sceneOrder: [],
   selectedScene: null,
   filter: "all",
+  // Within a scene: "time" is shooting order; "people" puts photos of
+  // higher-priority people first, which pulls a burst apart wherever its
+  // frames see different people.
+  sort: "time",
   personFilter: new Set(),  // person ids required (any-match)
   filteredPhotos: [],
   pageSize: 4,
@@ -1512,15 +1516,20 @@ function selectScene(scene) {
 function recomputeFilter() {
   if (!state.selectedScene) { state.filteredPhotos = []; return; }
   const photos = state.byScene.get(state.selectedScene) || [];
-  let arr = photos.filter(matchesFilter);
-  if (state.peopleById.size > 0) {
-    arr = arr.slice().sort((a, b) => {
+  const people = state.sort === "people" && state.peopleById.size > 0;
+  // Photos are stored in file name order, which is not shooting order once a
+  // counter rolls over or two cameras share a scene. They run by capture time
+  // (within a person's priority, when sorting by people); those without one go
+  // last, by name.
+  const arr = photos.filter(matchesFilter).sort((a, b) => {
+    if (people) {
       const pa = bestPriority(a), pb = bestPriority(b);
       if (pa !== pb) return pa - pb;
-      // stable secondary: by rel_path
-      return a.rel_path < b.rel_path ? -1 : a.rel_path > b.rel_path ? 1 : 0;
-    });
-  }
+    }
+    const ta = a.captured_at || "\uffff", tb = b.captured_at || "\uffff";
+    if (ta !== tb) return ta < tb ? -1 : 1;
+    return a.rel_path < b.rel_path ? -1 : a.rel_path > b.rel_path ? 1 : 0;
+  });
   state.filteredPhotos = arr;
   if (state.cursorIdx >= state.filteredPhotos.length) {
     state.cursorIdx = Math.max(0, state.filteredPhotos.length - 1);
@@ -1843,6 +1852,7 @@ function scheduleViewSave() {
 function viewPayload() {
   return {
     filter: state.filter,
+    sort: state.sort,
     page_size: state.pageSize,
     page: pageIdx(),
     scene: state.selectedScene,
@@ -1885,6 +1895,7 @@ async function restoreView() {
   if (!res.ok) throw new Error(`view load failed: ${res.status}`);
   const v = await res.json();
   if (v.filter) state.filter = v.filter;
+  if (v.sort) state.sort = v.sort;
   if (v.page_size) state.pageSize = v.page_size;
   return v;
 }
@@ -1894,6 +1905,21 @@ function syncViewControls() {
     b.classList.toggle("active", b.dataset.filter === state.filter));
   $$("#cols-toggle .cols").forEach((b) =>
     b.classList.toggle("active", parseInt(b.dataset.cols, 10) === state.pageSize));
+  syncSortControls();
+}
+
+// Sorting by people needs people: until faces are grouped it would be time
+// order under another name.
+function syncSortControls() {
+  const people = state.peopleById.size > 0;
+  $$("#sort-toggle .cols").forEach((b) => {
+    b.classList.toggle("active", b.dataset.sort === state.sort);
+    if (b.dataset.sort === "people") {
+      b.disabled = !people;
+      b.title = people ? "Photos of higher-priority people first, set in People"
+        : "Group faces into people first";
+    }
+  });
 }
 
 // Land on a page directly, rather than stepping to it as gotoPage does.
@@ -7931,6 +7957,18 @@ function bindUi() {
       showCursor();
     });
   });
+  $$("#sort-toggle .cols").forEach((b) => {
+    b.addEventListener("click", () => {
+      if (state.sort === b.dataset.sort) return;
+      // The focused photo stays focused: re-sorting only moves it.
+      const focused = state.filteredPhotos[state.cursorIdx];
+      state.sort = b.dataset.sort;
+      syncSortControls();
+      recomputeFilter();
+      state.cursorIdx = Math.max(0, state.filteredPhotos.indexOf(focused));
+      showCursor();
+    });
+  });
   $$("#cols-toggle .cols").forEach((b) => {
     b.addEventListener("click", () => {
       $$("#cols-toggle .cols").forEach((x) => x.classList.toggle("active", x === b));
@@ -8334,6 +8372,7 @@ async function savePeople() {
   state.people = result.people;
   state.peopleById = new Map(state.people.map((p) => [p.id, p]));
   prunePersonFilter();
+  syncSortControls();
   closePeopleModal();
   renderPeopleChips();
   recomputeFilter();
@@ -9312,8 +9351,10 @@ const HELP_CONTENT = {
     recomputed within each new scene.</p>`,
   "people": `
     <h3>Drag to set priority, click <i>Exclude</i> to ignore</h3>
-    <p>The top of the <b>Active</b> list is the highest priority. Photos
-    containing higher-priority people sort to the top within each scene.</p>
+    <p>The top of the <b>Active</b> list is the highest priority. With the
+    grid's sort set to <b>People</b>, photos containing higher-priority people
+    come first within each scene; set to <b>Time</b>, the grid keeps shooting
+    order.</p>
     <p>Clicking <b>Exclude</b> on a cluster moves it to the Excluded section.
     Excluded clusters are ignored for sorting and filtering, and their face
     crops are hidden in the grid — but the photos themselves still show.</p>
