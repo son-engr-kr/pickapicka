@@ -2838,6 +2838,12 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         _prebuild_thumbs(ctx, list(payload.rel_paths))
         return {"updated": len(payload.rel_paths)}
 
+    @app.post("/api/edit/upgrade")
+    def upgrade_edit(payload: EditPreviewPayload) -> dict[str, Any]:
+        """The given edit at the current process version (no save): the editor
+        shows it, and it is saved like any other change."""
+        return {"edit": editing.upgrade(payload.edit)}
+
     @app.post("/api/edit/auto")
     def auto_edit(payload: AutoTonePayload) -> dict[str, Any]:
         """Compute an auto-tone edit from the histogram; returns it (no save) so

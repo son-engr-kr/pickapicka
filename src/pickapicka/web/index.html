@@ -993,6 +993,8 @@
       <header>
         <h2>Edit</h2>
         <span id="edit-which">—</span>
+        <button id="edit-process" class="edit-process hidden" type="button"
+                title="Made with the old maths: exposure about 2.2 times as strong per unit, and the colour mixer's luminance moving shadows too. It still looks as it was made. Update to use the current maths (exposure is converted so mid grey stays put).">Old process · Update</button>
         <button id="tour-editor-btn" class="tour-btn" type="button" title="Keyboard shortcuts and the guided tour (?)" aria-label="Keyboard shortcuts">?</button>
         <button id="edit-modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
@@ -1099,10 +1101,10 @@
                   <button id="mask-delete" data-icon="trash" title="Remove this mask (Delete)">Delete</button>
                 </div>
                 <label class="look-row"><span class="look-name">Feather</span>
-                  <input type="range" id="mask-feather" min="0" max="100" step="1" />
+                  <input type="range" id="mask-feather" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
                   <span class="look-val" id="mask-feather-val"></span></label>
                 <label class="look-row"><span class="look-name">Amount</span>
-                  <input type="range" id="mask-amount" min="0" max="100" step="1" />
+                  <input type="range" id="mask-amount" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
                   <span class="look-val" id="mask-amount-val"></span></label>
                 <div id="mask-range-tools" class="hidden">
                   <label class="mask-range-enable">
@@ -1204,7 +1206,7 @@
                         title="Remove this look from the library" aria-label="Remove this look from the library"></button>
               </div>
               <label class="look-row"><span class="look-name">Amount</span>
-                <input type="range" id="look-amount" min="0" max="100" step="1" />
+                <input type="range" id="look-amount" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
                 <span class="look-val" id="look-amount-val"></span></label>
               <div class="look-actions">
                 <button id="look-import" type="button">Import .cube…</button>
@@ -1298,15 +1300,15 @@
               </p>
               <label class="look-row" title="Even out blotches and fine lines; the texture stays">
                 <span class="look-name">Smooth skin</span>
-                <input type="range" id="portrait-smooth" min="0" max="100" step="1" />
+                <input type="range" id="portrait-smooth" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
                 <span class="look-val" id="portrait-smooth-val"></span></label>
               <label class="look-row" title="Takes the yellow out of the teeth and brightens them; lips and gums are left alone">
                 <span class="look-name">Whiten teeth</span>
-                <input type="range" id="portrait-teeth" min="0" max="100" step="1" />
+                <input type="range" id="portrait-teeth" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
                 <span class="look-val" id="portrait-teeth-val"></span></label>
               <label class="look-row" title="Clears redness from the whites of the eyes and brightens them">
                 <span class="look-name">Whiten eyes</span>
-                <input type="range" id="portrait-eyes" min="0" max="100" step="1" />
+                <input type="range" id="portrait-eyes" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
                 <span class="look-val" id="portrait-eyes-val"></span></label>
               <button type="button" id="portrait-blemishes"
                       title="Find spots and blemishes and heal them; each one lands in Heal &amp; red eye">Remove blemishes</button>

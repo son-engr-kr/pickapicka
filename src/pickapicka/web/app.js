@@ -51,7 +51,8 @@ const LOOK_DEFAULT = { shadows: 0.22, brightness: 1.05, clarity: 1.6, saturation
 // must mirror editing.DEFAULT_EDIT on the server (all sliders neutral at 0).
 const EDIT_SCHEMA = {
   light: { title: "Light", fields: [
-    { k: "exposure",   label: "Exposure",    min: -2,   max: 2,   step: 0.05, fmt: 2 },
+    { k: "exposure",   label: "Exposure",    min: -4,   max: 4,   step: 0.05, fine: 0.01, fmt: 2,
+      hardMin: -5, hardMax: 5 },
     { k: "contrast",   label: "Contrast",    min: -100, max: 100, step: 1,    fmt: 0 },
     { k: "highlights", label: "Highlights",  min: -100, max: 100, step: 1,    fmt: 0 },
     { k: "shadows",    label: "Shadows",     min: -100, max: 100, step: 1,    fmt: 0 },
@@ -96,6 +97,9 @@ const EDIT_SCHEMA = {
   ]},
 };
 const EDIT_FIELDS = Object.values(EDIT_SCHEMA).flatMap((g) => g.fields);
+// Mirrors editing.PROCESS_VERSION. An edit without `pv` was made with process 1
+// and keeps rendering that way; a new edit is made at this version.
+const PROCESS_VERSION = 2;
 // Mirrors server.EDIT_SLOTS. Per-photo scratchpad: stash the working edit,
 // try something else, bring the first one back.
 const EDIT_SLOTS = 6;
@@ -157,6 +161,8 @@ const MASK_LOCAL_KEYS = new Set(EDIT_FIELDS.map((f) => f.k).filter((k) => k !== 
 const MASK_MAX = 16;
 
 function fieldByKey(k) { return EDIT_FIELDS.find((f) => f.k === k); }
+// A slider value as the server keeps it: tenths (sliders.py).
+const r1 = (v) => Math.round((Number(v) || 0) * 10) / 10;
 function mergeNeutralEdit(edit) {
   const e = { ...EDIT_NEUTRAL };
   for (const c of CURVE_CHANNELS) {
@@ -183,6 +189,9 @@ function mergeNeutralEdit(edit) {
     ? { ...edit.portrait } : null;
   e.transform = (edit && edit.transform) ? { ...edit.transform } : null;
   if (edit) for (const f of EDIT_FIELDS) if (edit[f.k] != null) e[f.k] = edit[f.k];
+  // No edit yet: it will be made at the current process. An old edit keeps the
+  // maths it was made with (no `pv` is process 1).
+  e.pv = edit ? edit.pv : PROCESS_VERSION;
   return e;
 }
 function editsEqual(a, b) {
@@ -233,8 +242,8 @@ function canonHsl(h) {
   for (const b of HSL_BANDS) {
     const src = h[b.k];
     if (!src) continue;
-    const vals = HSL_FIELDS.filter((f) => Math.round(src[f.k] || 0) !== 0)
-      .map((f) => [f.k, Math.round(src[f.k])]);
+    const vals = HSL_FIELDS.filter((f) => r1(src[f.k]) !== 0)
+      .map((f) => [f.k, r1(src[f.k])]);
     if (vals.length) out.push([b.k, vals]);
   }
   return out.length ? JSON.stringify(out) : "";
@@ -253,12 +262,12 @@ function canonGrading(g) {
   for (const z of GRADE_ZONES) {
     const src = g[z.k];
     if (!src) continue;
-    const sat = Math.round(src.sat || 0), lum = Math.round(src.lum || 0);
+    const sat = r1(src.sat), lum = r1(src.lum);
     if (!sat && !lum) continue;
     out.push([z.k, Math.round(src.hue || 0), sat, lum]);
   }
-  const blending = Math.round(g.blending == null ? 50 : g.blending);
-  const balance = Math.round(g.balance || 0);
+  const blending = r1(g.blending == null ? 50 : g.blending);
+  const balance = r1(g.balance);
   if (!out.length) return "";
   return JSON.stringify([out, blending, balance]);
 }
@@ -303,7 +312,7 @@ const LUMA_RANGE_FIELDS = [
 // moment it is saved. The darker half is a starting point you can see.
 const LUMA_RANGE_NEW = { lo: 0, hi: 50, feather_lo: 10, feather_hi: 10 };
 function lumaRangeIsAll(r) {
-  return !r || (Math.round(r.lo) <= 0 && Math.round(r.hi) >= 100);
+  return !r || (r1(r.lo) <= 0 && r1(r.hi) >= 100);
 }
 
 // Mirrors segment.CLASS_GROUPS. An automatic mask has no shape to drag: what it
@@ -362,16 +371,16 @@ function canonMasks(masks) {
   const list = persistableMasks(masks);
   if (!list.length) return "[]";
   return JSON.stringify(list.map((m) => {
-    const o = { t: m.type, e: !!m.enabled, i: !!m.invert, f: Math.round(m.feather),
-                a: Math.round(m.amount), n: m.name || "",
+    const o = { t: m.type, e: !!m.enabled, i: !!m.invert, f: r1(m.feather),
+                a: r1(m.amount), n: m.name || "",
                 adj: [...MASK_LOCAL_KEYS].sort().map((k) => rnd4(m.adj && m.adj[k])) };
     // Without this, narrowing a mask's tonal range would not register as a
     // change and Save would stay disabled.
     o.rl = m.range_luma
-      ? LUMA_RANGE_FIELDS.map((f) => Math.round(m.range_luma[f.k] || 0)) : null;
+      ? LUMA_RANGE_FIELDS.map((f) => r1(m.range_luma[f.k])) : null;
     o.rc = m.range_color
       ? [(m.range_color.samples || []).map((v) => v.map(Math.round)),
-         Math.round(m.range_color.range || 0), Math.round(m.range_color.feather || 0)]
+         r1(m.range_color.range), r1(m.range_color.feather)]
       : null;
     if (m.type === "radial") o.g = [m.cx, m.cy, m.rx, m.ry, m.angle].map(rnd4);
     else if (m.type === "linear") o.g = [m.x1, m.y1, m.x2, m.y2].map(rnd4);
@@ -3032,7 +3041,7 @@ function renderEditControls() {
       `<label class="look-row" data-field="${f.k}"` +
       `${f.hint ? ` title="${escapeHtml(f.hint)}"` : ""}>` +
       `<span class="look-name">${f.label}</span>` +
-      `<input type="range" data-edit="${f.k}" min="${f.min}" max="${f.max}" step="${f.step}" />` +
+      `<input type="range" data-edit="${f.k}" ${sliderAttrs(f)} />` +
       `<span class="look-val" data-val="${f.k}"></span></label>`
     ).join("");
   }
@@ -3055,7 +3064,7 @@ function bindEditControls() {
     const target = adjTarget();
     target[k] = parseFloat(sl.value);
     const f = fieldByKey(k);
-    $(`#edit-modal .look-val[data-val="${k}"]`).textContent = Number(target[k]).toFixed(f.fmt);
+    $(`#edit-modal .look-val[data-val="${k}"]`).textContent = fmtSlider(sl, target[k], f.fmt);
     if (editSession.activeMask >= 0) renderMaskList();
     setEditDirty();
     previewDuringDrag();     // live drafts while the slider moves
@@ -3148,12 +3157,88 @@ function syncEditSliders() {
   // still has to come back looking right when a photo opens with one saved.
   syncCropControls();
 }
+// ---------- sliders ----------
+// Every editor slider holds tenths (sliders.py) and steps by its whole unit
+// when dragged plainly or nudged with the arrows; Option(Alt)-drag and
+// Option-arrows reach the tenths. Shift-arrows step ten units, as in
+// Lightroom, Capture One and darktable.
+//
+// A slider running -100..100 takes RawTherapee's logarithmic mapping, base 2,
+// anchored at the middle (Adjuster::setLogScale(2, 0, true) in
+// rtgui/widgets/basic/adjuster.cc, which its brightness, contrast and
+// saturation use): a fraction x of the way from the middle to an end reads
+// (2^x - 1) of the end's value. Near zero it is 0.69 times as sensitive as a
+// straight slider, at the ends 1.39 times. Only the hand moves differently;
+// the values, and what they do, are the same.
+//
+// Such a slider's `value` is overridden on the element, so every panel keeps
+// reading and writing real values and only the thumb's position is mapped.
+const NATIVE_VALUE = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+const LOG_BASE = 2;
+const FINE_DRAG = 10;   // Option-drag speed divisor
+
+function sliderAttrs(f) {
+  const coarse = f.step ?? 1;
+  const fine = f.fine ?? Number((coarse / 10).toFixed(4));
+  const log = f.min === -100 && f.max === 100;
+  return `min="${f.min}" max="${f.max}" step="${log ? "any" : fine}"`
+    + ` data-coarse="${coarse}" data-fine="${fine}"` + (log ? ` data-curve="log2"` : "")
+    + (f.hardMin != null ? ` data-hard-min="${f.hardMin}" data-hard-max="${f.hardMax}"`
+        + ` data-soft-min="${f.min}" data-soft-max="${f.max}"` : "");
+}
+
+const curveToValue = (p, max) =>
+  Math.sign(p) * (LOG_BASE ** Math.min(1, Math.abs(p) / max) - 1) / (LOG_BASE - 1) * max;
+const curveToPos = (v, max) =>
+  Math.sign(v) * Math.log1p(Math.min(1, Math.abs(v) / max) * (LOG_BASE - 1)) / Math.log(LOG_BASE) * max;
+const sliderFine = (sl) => Number(sl.dataset.fine || sl.step) || 1;
+const roundTo = (v, step) => Number((Math.round(v / step) * step).toFixed(stepDecimals(step)));
+
+// Where the thumb is, in the slider's own min..max: what the fill is painted
+// from and what a fine drag moves.
+const sliderPos = (sl) => Number(NATIVE_VALUE.get.call(sl));
+
+function enhanceSlider(sl) {
+  if (sl.dataset.enhanced) return;
+  sl.dataset.enhanced = "1";
+  const log = sl.dataset.curve === "log2";
+  const hard = sl.dataset.hardMin != null;
+  if (!log && !hard) return;
+  // Whatever was written before this ran was a value, not a position.
+  const before = NATIVE_VALUE.get.call(sl);
+  Object.defineProperty(sl, "value", {
+    configurable: true,
+    get() {
+      const p = Number(NATIVE_VALUE.get.call(this));
+      return String(roundTo(log ? curveToValue(p, Number(this.max)) : p, sliderFine(this)));
+    },
+    set(raw) {
+      let v = Number(raw);
+      if (hard) {
+        // darktable's soft and hard limits: the slider shows the soft range,
+        // a typed value may go to the hard one and widens the slider to fit;
+        // back inside, it shrinks again.
+        v = Math.min(Number(this.dataset.hardMax), Math.max(Number(this.dataset.hardMin), v));
+        this.min = String(Math.min(Number(this.dataset.softMin), v));
+        this.max = String(Math.max(Number(this.dataset.softMax), v));
+      }
+      NATIVE_VALUE.set.call(this, String(log ? curveToPos(v, Number(this.max)) : v));
+    },
+  });
+  sl.value = before;
+}
+
+function enhanceSliders(root) {
+  root.querySelectorAll?.("input[type=range][data-coarse]").forEach(enhanceSlider);
+}
+
 // A slider fills from its zero: from the middle for one that goes both ways,
 // from the left for one that only goes up, and not at all at zero, so a moved
 // slider is told from an untouched one at a glance. The fill was the browser's,
-// from the left edge on every slider, which made all of them look set.
+// from the left edge on every slider, which made all of them look set. Painted
+// from the thumb's position, which on a mapped slider is not its value.
 function paintSlider(sl) {
-  const min = Number(sl.min), max = Number(sl.max), v = Number(sl.value);
+  const min = Number(sl.min), max = Number(sl.max), v = sliderPos(sl);
   if (!(max > min)) return;
   const zero = min < 0 && max > 0 ? 0 : min;
   const at = (x) => ((x - min) / (max - min)) * 100;
@@ -3165,10 +3250,29 @@ function paintSliders() {
   $$("#edit-modal input[type=range]").forEach(paintSlider);
 }
 
+// The number beside a slider: its own decimals (`fmt`), and a tenth when it
+// holds one, so 12 stays "12" and 12.3 is not shown as 12.
+function fmtSlider(sl, v, fmt = 0) {
+  const r = roundTo(Number(v) || 0, sliderFine(sl));
+  return r.toFixed(Math.max(fmt, stepDecimals(r)));
+}
+
 function bindSliderLooks() {
+  enhanceSliders(document);
+  new MutationObserver((records) => {
+    for (const r of records) for (const n of r.addedNodes) if (n.nodeType === 1) {
+      if (n.matches("input[type=range][data-coarse]")) enhanceSlider(n);
+      else enhanceSliders(n);
+    }
+  }).observe(document.body, { childList: true, subtree: true });
   document.addEventListener("input", (e) => {
-    if (e.target.matches?.("#edit-modal input[type=range]")) paintSlider(e.target);
-  });
+    const sl = e.target;
+    if (!sl.matches?.("input[type=range]")) return;
+    // A plain drag is the browser's own (a trusted event): it lands on whole
+    // units. Everything this file does dispatches its own, untrusted, events.
+    if (e.isTrusted && sl.dataset.coarse) sl.value = roundTo(Number(sl.value), Number(sl.dataset.coarse));
+    if (sl.matches("#edit-modal input[type=range]")) paintSlider(sl);
+  }, true);
   // Double-click puts an adjustment back to zero, as in Lightroom. Only the
   // main adjustments: they are all neutral at 0 (EDIT_SCHEMA), which is not
   // true of every slider in the editor.
@@ -3179,7 +3283,59 @@ function bindSliderLooks() {
     sl.dispatchEvent(new Event("input", { bubbles: true }));
     sl.dispatchEvent(new Event("change", { bubbles: true }));
   });
+  bindSliderKeys();
   bindTypedValues();
+  bindFineDrag();
+}
+
+// The step a key moves a slider by: its whole unit, ten with Shift, a tenth
+// with Option.
+function keyStep(sl, e) {
+  const coarse = Number(sl.dataset.coarse || sl.step) || 1;
+  return e.altKey ? sliderFine(sl) : coarse * (e.shiftKey ? 10 : 1);
+}
+
+function bindSliderKeys() {
+  document.addEventListener("keydown", (e) => {
+    const sl = e.target;
+    if (!sl.matches?.("input[type=range][data-coarse]") || sl.disabled) return;
+    const dir = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 }[e.key];
+    if (!dir || e.metaKey || e.ctrlKey) return;
+    // Focused, the slider owns its arrows: the editor's own shortcuts do not
+    // also fire on them.
+    e.preventDefault();
+    e.stopPropagation();
+    setSliderTo(sl, roundTo(Number(sl.value) + dir * keyStep(sl, e), sliderFine(sl)));
+  }, true);
+}
+
+// Option(Alt) held when a slider is grabbed drags it at a tenth of the speed,
+// from where it was rather than jumping to the pointer, down to its tenths.
+// Lightroom's colour wheels call the same modifier "Fine Adjust".
+function bindFineDrag() {
+  document.addEventListener("pointerdown", (e) => {
+    const sl = e.target.closest?.("#edit-modal input[type=range]");
+    if (!sl || !e.altKey || e.button !== 0 || sl.disabled) return;
+    e.preventDefault();
+    sl.focus();
+    sl.setPointerCapture(e.pointerId);
+    const x0 = e.clientX, p0 = sliderPos(sl);
+    const perPx = (Number(sl.max) - Number(sl.min)) / Math.max(1, sl.getBoundingClientRect().width) / FINE_DRAG;
+    const move = (ev) => {
+      const before = sl.value;
+      NATIVE_VALUE.set.call(sl, String(p0 + (ev.clientX - x0) * perPx));   // clamped by the browser
+      if (sl.value !== before) sl.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const up = () => {
+      sl.removeEventListener("pointermove", move);
+      sl.removeEventListener("pointerup", up);
+      sl.removeEventListener("pointercancel", up);
+      sl.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    sl.addEventListener("pointermove", move);
+    sl.addEventListener("pointerup", up);
+    sl.addEventListener("pointercancel", up);
+  }, true);
 }
 
 // Clicking a slider's number turns it into a field: type a value and Enter (or
@@ -3213,8 +3369,9 @@ function editSliderValue(span, sl) {
   field.className = "look-val-input";
   const name = span.closest(".look-row").querySelector(".look-name, .look-label");
   field.setAttribute("aria-label", `${name ? name.textContent.trim() : "Slider"} value`);
-  const decimals = stepDecimals(sl.step || 1);
-  const show = () => { field.value = Number(sl.value).toFixed(decimals); };
+  const decimals = stepDecimals(sl.dataset.fine || sl.step || 1);
+  const show = () => { field.value = sl.dataset.coarse ? fmtSlider(sl, sl.value)
+    : Number(sl.value).toFixed(decimals); };
   show();
   span.hidden = true;
   span.after(field);
@@ -3225,7 +3382,8 @@ function editSliderValue(span, sl) {
     if (done) return;
     done = true;
     if (commit) {
-      const v = parseFloat(field.value.trim().replace(",", "."));
+      const raw = parseFloat(field.value.trim().replace(",", "."));
+      const v = sl.dataset.coarse && Number.isFinite(raw) ? roundTo(raw, sliderFine(sl)) : raw;
       if (Number.isFinite(v) && v !== Number(sl.value)) setSliderTo(sl, v);
     }
     field.remove();
@@ -3238,8 +3396,9 @@ function editSliderValue(span, sl) {
     else if (e.key === "Escape") { e.preventDefault(); finish(false); }
     else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
       e.preventDefault();
-      const step = Number(sl.step || 1) * (e.shiftKey ? 10 : 1);
-      setSliderTo(sl, Number(sl.value) + (e.key === "ArrowUp" ? step : -step));
+      const step = sl.dataset.coarse ? keyStep(sl, e) : Number(sl.step || 1) * (e.shiftKey ? 10 : 1);
+      const next = Number(sl.value) + (e.key === "ArrowUp" ? step : -step);
+      setSliderTo(sl, sl.dataset.coarse ? roundTo(next, sliderFine(sl)) : next);
       show();
       field.select();
     }
@@ -3269,7 +3428,8 @@ function syncEditValues() {
   const target = adjTarget();
   $$("#edit-modal .look-val[data-val]").forEach((el) => {
     const f = fieldByKey(el.dataset.val);
-    el.textContent = Number(target[el.dataset.val] || 0).toFixed(f ? f.fmt : 0);
+    const sl = $(`#edit-modal input[data-edit="${el.dataset.val}"]`);
+    el.textContent = fmtSlider(sl, target[el.dataset.val] || 0, f ? f.fmt : 0);
   });
 }
 
@@ -3280,7 +3440,9 @@ function setEditDirty() {
   // undo history can see every change for the same reason.
   recordEditHistory();
   markSlot();
-  const dirty = !editsEqual(editSession.edit, editSession.baseline);
+  const dirty = !editsEqual(editSession.edit, editSession.baseline)
+    || (editSession.edit.pv || 1) !== (editSession.baseline.pv || 1);
+  syncProcessBadge();
   $("#edit-save").disabled = !dirty;
   $("#edit-dirty").textContent = dirty ? "unsaved changes" : "";
 }
@@ -3657,6 +3819,31 @@ async function pickNeutral(f) {
   } catch { $("#edit-status").textContent = "white balance error"; }
 }
 
+// ---------- process version ----------
+// An edit made before process 2 keeps its maths (editing.PROCESS_VERSION) and
+// says so in the header, with a button to move it across.
+async function upgradedEdit(edit) {
+  const res = await fetch("/api/edit/upgrade", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rel_path: editSession.relPath, edit }),
+  });
+  if (!res.ok) throw new Error(`upgrade failed: ${res.status}`);
+  return mergeNeutralEdit((await res.json()).edit);
+}
+
+function syncProcessBadge() {
+  const old = !!editSession.edit && (editSession.edit.pv || 1) < PROCESS_VERSION
+    && !isNeutralEdit(editSession.edit);
+  $("#edit-process").classList.toggle("hidden", !old);
+}
+
+async function upgradeProcess() {
+  editSession.edit = await upgradedEdit(editSession.edit);
+  refreshEditUi();
+  fetchEditPreview(true);
+}
+
 async function autoEdit() {
   if (!editSession.relPath) return;
   $("#edit-status").textContent = "auto…";
@@ -3669,7 +3856,10 @@ async function autoEdit() {
     if (!res.ok) { $("#edit-status").textContent = "auto failed"; return; }
     const { edit } = await res.json();
     // Auto-tone is a global suggestion; keep the local masks and the watermark.
-    const masks = editSession.edit.masks;
+    // It is made at the current process, so masks made at process 1 come
+    // across converted, as an Update would bring them.
+    const masks = (editSession.edit.pv || 1) < PROCESS_VERSION
+      ? (await upgradedEdit(editSession.edit)).masks : editSession.edit.masks;
     const watermark = editSession.edit.watermark;
     editSession.edit = mergeNeutralEdit(edit);
     editSession.edit.masks = masks;
@@ -3815,7 +4005,7 @@ const GRADE_ZONES = [
   { k: "highlights", label: "Highlights" },
 ];
 const GRADE_FIELDS = [
-  { k: "hue", label: "Hue", min: 0, max: 359,
+  { k: "hue", label: "Hue", min: 0, max: 359, fine: 1,   // whole degrees, as grading.normalize keeps them
     hint: "Which way to push this tonal region. Does nothing on its own \u2014 raise Strength." },
   { k: "sat", label: "Strength", min: 0, max: 100,
     hint: "How far to push it. Brightness is untouched at any setting." },
@@ -3834,11 +4024,11 @@ function currentGrading() { return editSession.edit.grading || {}; }
 function gradeZoneVals(zone) { return currentGrading()[zone] || {}; }
 function gradeZoneTouched(zone) {
   const v = gradeZoneVals(zone);
-  return !!(Math.round(v.sat || 0) || Math.round(v.lum || 0));
+  return !!(r1(v.sat) || r1(v.lum));
 }
 function gradeGlobal(k, dflt) {
   const v = currentGrading()[k];
-  return v == null ? dflt : Math.round(v);
+  return v == null ? dflt : r1(v);
 }
 
 function buildGradeFields() {
@@ -3846,20 +4036,20 @@ function buildGradeFields() {
   const row = (f, attr) =>
     `<label class="look-row" title="${escapeHtml(f.hint)}">` +
     `<span class="look-label">${f.label}</span>` +
-    `<input type="range" data-${attr}="${f.k}" min="${f.min}" max="${f.max}" step="1" />` +
+    `<input type="range" data-${attr}="${f.k}" ${sliderAttrs(f)} />` +
     `<span class="look-val" data-${attr}-val="${f.k}"></span></label>`;
   const zoneWrap = $("#grade-fields");
   if (!zoneWrap) return;
   zoneWrap.innerHTML = GRADE_FIELDS.map((f) => row(f, "grade")).join("");
   zoneWrap.addEventListener("input", (e) => {
     const sl = e.target.closest("input[type=range][data-grade]");
-    if (sl) updateGradeZone({ [sl.dataset.grade]: parseInt(sl.value, 10) });
+    if (sl) updateGradeZone({ [sl.dataset.grade]: parseFloat(sl.value) });
   });
   const globalWrap = $("#grade-globals");
   globalWrap.innerHTML = GRADE_GLOBALS.map((f) => row(f, "gradeg")).join("");
   globalWrap.addEventListener("input", (e) => {
     const sl = e.target.closest("input[type=range][data-gradeg]");
-    if (sl) updateGrading({ [sl.dataset.gradeg]: parseInt(sl.value, 10) });
+    if (sl) updateGrading({ [sl.dataset.gradeg]: parseFloat(sl.value) });
   });
   gradeState.built = true;
 }
@@ -3882,17 +4072,19 @@ function renderGradePanel() {
   });
   const vals = gradeZoneVals(gradeState.zone);
   for (const f of GRADE_FIELDS) {
-    const v = Math.round(vals[f.k] || 0);
-    $(`#grade-fields input[data-grade="${f.k}"]`).value = v;
+    const v = r1(vals[f.k]);
+    const sl = $(`#grade-fields input[data-grade="${f.k}"]`);
+    sl.value = v;
     const cell = $(`#grade-fields [data-grade-val="${f.k}"]`);
     // A hue with no strength behind it is a setting, not a change — say so
     // rather than showing a number that is doing nothing.
-    cell.textContent = (f.k === "hue" && !Math.round(vals.sat || 0)) ? `${v}\u00b0 \u00b7 off` : v;
+    cell.textContent = (f.k === "hue" && !r1(vals.sat)) ? `${fmtSlider(sl, v)}\u00b0 \u00b7 off` : fmtSlider(sl, v);
   }
   for (const f of GRADE_GLOBALS) {
     const v = gradeGlobal(f.k, f.dflt);
-    $(`#grade-globals input[data-gradeg="${f.k}"]`).value = v;
-    $(`#grade-globals [data-gradeg-val="${f.k}"]`).textContent = v;
+    const sl = $(`#grade-globals input[data-gradeg="${f.k}"]`);
+    sl.value = v;
+    $(`#grade-globals [data-gradeg-val="${f.k}"]`).textContent = fmtSlider(sl, v);
   }
   $("#grade-reset").disabled = !gradeZoneTouched(gradeState.zone);
 }
@@ -3934,7 +4126,7 @@ const HSL_FIELDS = [
   { k: "sat", label: "Saturation",
     hint: "How much of this colour there is. At -100 the band goes grey." },
   { k: "lum", label: "Luminance",
-    hint: "Towards white or towards black, never past either \u2014 so the band keeps its hue." },
+    hint: "Brighter or darker, as an exposure change on this colour. Greys and near-greys are left alone." },
 ];
 const hslState = { band: "red", built: false };
 
@@ -3942,7 +4134,7 @@ function currentHsl() { return editSession.edit.hsl || {}; }
 function hslBandVals(band) { return currentHsl()[band] || {}; }
 function hslBandTouched(band) {
   const v = hslBandVals(band);
-  return HSL_FIELDS.some((f) => Math.round(v[f.k] || 0) !== 0);
+  return HSL_FIELDS.some((f) => r1(v[f.k]) !== 0);
 }
 
 function buildHslFields() {
@@ -3952,12 +4144,12 @@ function buildHslFields() {
   wrap.innerHTML = HSL_FIELDS.map((f) =>
     `<label class="look-row" title="${escapeHtml(f.hint)}">` +
     `<span class="look-label">${f.label}</span>` +
-    `<input type="range" data-hsl="${f.k}" min="-100" max="100" step="1" />` +
+    `<input type="range" data-hsl="${f.k}" ${sliderAttrs({ min: -100, max: 100 })} />` +
     `<span class="look-val" data-hsl-val="${f.k}"></span></label>`).join("");
   wrap.addEventListener("input", (e) => {
     const sl = e.target.closest("input[type=range][data-hsl]");
     if (!sl) return;
-    updateHsl({ [sl.dataset.hsl]: parseInt(sl.value, 10) });
+    updateHsl({ [sl.dataset.hsl]: parseFloat(sl.value) });
   });
   hslState.built = true;
 }
@@ -3980,9 +4172,10 @@ function renderHslPanel() {
   });
   const vals = hslBandVals(hslState.band);
   for (const f of HSL_FIELDS) {
-    const v = Math.round(vals[f.k] || 0);
-    $(`#hsl-fields input[data-hsl="${f.k}"]`).value = v;
-    $(`#hsl-fields [data-hsl-val="${f.k}"]`).textContent = v;
+    const v = r1(vals[f.k]);
+    const sl = $(`#hsl-fields input[data-hsl="${f.k}"]`);
+    sl.value = v;
+    $(`#hsl-fields [data-hsl-val="${f.k}"]`).textContent = fmtSlider(sl, v);
   }
   $("#hsl-reset").disabled = !hslBandTouched(hslState.band);
 }
@@ -4053,13 +4246,13 @@ function buildFilmFields() {
   wrap.innerHTML = FILM_FIELDS.map((f) =>
     `<label class="look-row" data-film-row="${f.k}" title="${escapeHtml(f.hint)}">` +
     `<span class="look-name">${f.label}</span>` +
-    `<input type="range" data-film="${f.k}" min="${f.min}" max="${f.max}" step="1" />` +
+    `<input type="range" data-film="${f.k}" ${sliderAttrs(f)} />` +
     `<span class="look-val" data-film-val="${f.k}"></span></label>`).join("");
   wrap.addEventListener("input", (e) => {
     const sl = e.target.closest("input[type=range][data-film]");
     if (!sl) return;
     // Touching a slider means this is no longer that stock, it is yours.
-    updateFilm({ [sl.dataset.film]: parseInt(sl.value, 10), stock: "" });
+    updateFilm({ [sl.dataset.film]: parseFloat(sl.value), stock: "" });
   });
 }
 
@@ -4099,7 +4292,7 @@ function renderPortraitPanel() {
   for (const k of PORTRAIT_KEYS) {
     const v = (editSession.edit.portrait && editSession.edit.portrait[k]) || 0;
     $(`#portrait-${k}`).value = v;
-    $(`#portrait-${k}-val`).textContent = v;
+    $(`#portrait-${k}-val`).textContent = fmtSlider($(`#portrait-${k}`), v);
   }
   $("#portrait-summary-state").textContent = portraitSummary();
   const faces = portraitState.faces;
@@ -4157,10 +4350,10 @@ function bindPortraitPanel() {
   $("#portrait-blemishes").addEventListener("click", removeBlemishes);
   for (const k of PORTRAIT_KEYS) {
     $(`#portrait-${k}`).addEventListener("input", (e) => {
-      const v = parseInt(e.target.value, 10);
+      const v = parseFloat(e.target.value);
       const next = { smooth: 0, teeth: 0, eyes: 0, ...(editSession.edit.portrait || {}), [k]: v };
       editSession.edit.portrait = PORTRAIT_KEYS.some((x) => next[x]) ? next : null;
-      $(`#portrait-${k}-val`).textContent = v;
+      $(`#portrait-${k}-val`).textContent = fmtSlider(e.target, v);
       $("#portrait-summary-state").textContent = portraitSummary();
       setEditDirty();
       previewDuringDrag();
@@ -4217,7 +4410,7 @@ function buildOpticsFields() {
   if (opticsState.built) return;
   const row = (group, f) => `<label class="look-row"${f.hint ? ` title="${escapeHtml(f.hint)}"` : ""}>`
     + `<span class="look-name">${f.label}</span>`
-    + `<input type="range" data-optic="${group}:${f.k}" min="${f.min}" max="${f.max}" step="${f.step}" />`
+    + `<input type="range" data-optic="${group}:${f.k}" ${sliderAttrs(f)} />`
     + `<span class="look-val" data-optic-val="${group}:${f.k}"></span></label>`;
   $("#optics-lens-fields").innerHTML = LENS_FIELDS.map((f) => row("lens", f)).join("");
   $("#optics-transform-fields").innerHTML = TRANSFORM_FIELDS.map((f) => row("transform", f)).join("");
@@ -4231,8 +4424,9 @@ function renderOpticsPanel() {
   const tf = { ...TRANSFORM_DEFAULT, ...(editSession.edit.transform || {}) };
   for (const [group, fields, vals] of [["lens", LENS_FIELDS, lens], ["transform", TRANSFORM_FIELDS, tf]]) {
     for (const f of fields) {
-      $(`[data-optic="${group}:${f.k}"]`).value = vals[f.k];
-      $(`[data-optic-val="${group}:${f.k}"]`).textContent = Number(vals[f.k]).toFixed(f.fmt);
+      const sl = $(`[data-optic="${group}:${f.k}"]`);
+      sl.value = vals[f.k];
+      $(`[data-optic-val="${group}:${f.k}"]`).textContent = fmtSlider(sl, vals[f.k], f.fmt);
     }
   }
   $("#lens-ca-auto").checked = !!lens.ca_auto;
@@ -4290,7 +4484,7 @@ function bindOpticsPanel() {
     const [group, key] = sl.dataset.optic.split(":");
     setOptic(group, key, parseFloat(sl.value));
     const f = (group === "lens" ? LENS_FIELDS : TRANSFORM_FIELDS).find((x) => x.k === key);
-    $(`[data-optic-val="${group}:${key}"]`).textContent = Number(sl.value).toFixed(f.fmt);
+    $(`[data-optic-val="${group}:${key}"]`).textContent = fmtSlider(sl, sl.value, f.fmt);
     setEditDirty();
     previewDuringDrag();
   });
@@ -4591,7 +4785,7 @@ function renderLookPanel() {
     .map((l) => `<option value="${l.key}">${escapeHtml(l.name || l.key)}</option>`).join("");
   sel.value = cur ? cur.key : "";
   $("#look-amount").value = cur ? cur.amount : 100;
-  $("#look-amount-val").textContent = cur ? cur.amount : "—";
+  $("#look-amount-val").textContent = cur ? fmtSlider($("#look-amount"), cur.amount) : "—";
   $("#look-amount").disabled = !cur;
   $("#look-delete").disabled = !(cur && known);
   $("#look-summary-state").textContent = cur ? `· ${cur.name || "on"}` : "";
@@ -4670,8 +4864,8 @@ function bindLookPanel() {
   });
   $("#look-amount").addEventListener("input", (e) => {
     if (!editSession.edit.lut) return;
-    editSession.edit.lut.amount = parseInt(e.target.value, 10);
-    $("#look-amount-val").textContent = e.target.value;
+    editSession.edit.lut.amount = parseFloat(e.target.value);
+    $("#look-amount-val").textContent = fmtSlider(e.target, e.target.value);
     setEditDirty();
     previewDuringDrag();
   });
@@ -4719,8 +4913,9 @@ function renderFilmPanel() {
     });
   });
   for (const fld of FILM_FIELDS) {
-    $(`#film-fields input[data-film="${fld.k}"]`).value = f[fld.k];
-    $(`#film-fields [data-film-val="${fld.k}"]`).textContent = f[fld.k];
+    const sl = $(`#film-fields input[data-film="${fld.k}"]`);
+    sl.value = f[fld.k];
+    $(`#film-fields [data-film-val="${fld.k}"]`).textContent = fmtSlider(sl, f[fld.k]);
   }
   $$("#film-fields input").forEach((i) => { i.disabled = !on; });
 }
@@ -4958,14 +5153,14 @@ function buildMaskRangeFields() {
   wrap.innerHTML = LUMA_RANGE_FIELDS.map((f) =>
     `<label class="look-row" title="${escapeHtml(f.hint)}">` +
     `<span class="look-name">${f.label}</span>` +
-    `<input type="range" data-luma="${f.k}" min="${f.min}" max="${f.max}" step="1" />` +
+    `<input type="range" data-luma="${f.k}" ${sliderAttrs(f)} />` +
     `<span class="look-val" data-luma-val="${f.k}"></span></label>`).join("");
   wrap.addEventListener("input", (e) => {
     const sl = e.target.closest("input[type=range][data-luma]");
     if (!sl) return;
     const m = activeMask();
     if (!m || !m.range_luma) return;
-    m.range_luma[sl.dataset.luma] = parseInt(sl.value, 10);
+    m.range_luma[sl.dataset.luma] = parseFloat(sl.value);
     // Keep the window the right way round rather than letting it invert
     // silently, which would select nothing and look like a broken slider.
     if (m.range_luma.lo > m.range_luma.hi) {
@@ -4989,9 +5184,10 @@ function renderMaskRange(m) {
   $("#mask-range-fields").classList.toggle("hidden", !m.range_luma);
   if (!m.range_luma) return;
   for (const f of LUMA_RANGE_FIELDS) {
-    const v = Math.round(m.range_luma[f.k] ?? 0);
-    $(`#mask-range-fields input[data-luma="${f.k}"]`).value = v;
-    $(`#mask-range-fields [data-luma-val="${f.k}"]`).textContent = v;
+    const v = r1(m.range_luma[f.k] ?? 0);
+    const sl = $(`#mask-range-fields input[data-luma="${f.k}"]`);
+    sl.value = v;
+    $(`#mask-range-fields [data-luma-val="${f.k}"]`).textContent = fmtSlider(sl, v);
   }
   // Say when the range is doing nothing rather than leaving it a mystery.
   $("#mask-range-note").classList.toggle("warn", lumaRangeIsAll(m.range_luma));
@@ -5163,9 +5359,9 @@ function renderMaskDetail() {
   $("#mask-invert").textContent = m.invert ? "Affect: outside" : "Affect: inside";
   $("#mask-invert").classList.toggle("active", m.invert);
   $("#mask-feather").value = m.feather;
-  $("#mask-feather-val").textContent = m.feather;
+  $("#mask-feather-val").textContent = fmtSlider($("#mask-feather"), m.feather);
   $("#mask-amount").value = m.amount;
-  $("#mask-amount-val").textContent = m.amount;
+  $("#mask-amount-val").textContent = fmtSlider($("#mask-amount"), m.amount);
   renderMaskRange(m);
   const auto = m.type === "auto";
   $("#mask-auto-tools").classList.toggle("hidden", !auto);
@@ -6325,8 +6521,8 @@ function bindMaskUi() {
     $(`#mask-${key}`).addEventListener("input", (e) => {
       const m = activeMask();
       if (!m) return;
-      m[key] = parseInt(e.target.value, 10);
-      $(`#mask-${key}-val`).textContent = m[key];
+      m[key] = parseFloat(e.target.value);
+      $(`#mask-${key}-val`).textContent = fmtSlider(e.target, m[key]);
       drawOverlay();
       setEditDirty();
       previewDuringDrag();
@@ -6723,6 +6919,9 @@ function mergeAdditive(base, overlay) {
     out.grading = merged;
   }
   out.masks = out.masks.concat(over.masks).slice(0, MASK_MAX);
+  // Mirrors editing.merge_additive: the maths is the photo's, unless there is
+  // nothing on it yet, and then the preset's (no `pv`: process 1).
+  if (isNeutralEdit(base)) out.pv = overlay ? overlay.pv : out.pv;
   return out;
 }
 
@@ -8207,6 +8406,7 @@ function bindUi() {
   bindWatermarkUi();
   curveInit();
   $("#edit-modal-close").addEventListener("click", () => leaveEditor("close"));
+  $("#edit-process").addEventListener("click", upgradeProcess);
   $("#edit-cancel").addEventListener("click", () => leaveEditor("cancel"));
   $("#edit-save").addEventListener("click", saveEdit);
   $("#edit-auto").addEventListener("click", autoEdit);

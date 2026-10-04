@@ -163,9 +163,10 @@ def test_a_midpoint_on_its_own_is_not_a_correction() -> None:
 
 def test_normalize_clamps_and_rounds() -> None:
     p = lens.normalize({"distortion": 999, "ca_red_cyan": -999,
-                        "vignette_amount": 12.6, "vignette_midpoint": -3})
+                        "vignette_amount": 12.64, "vignette_midpoint": -3})
+    # Tenths, as every slider holds (see the sliders module).
     assert p == {"distortion": 100, "ca_red_cyan": -100, "ca_blue_yellow": 0,
-                 "ca_auto": False, "vignette_amount": 13, "vignette_midpoint": 0}
+                 "ca_auto": False, "vignette_amount": 12.6, "vignette_midpoint": 0}
     # Garbage in a field leaves that field neutral instead of poisoning the dict.
     assert lens.normalize({"distortion": "wide", "ca_auto": 1}) == {
         **lens.DEFAULT_LENS, "ca_auto": True}

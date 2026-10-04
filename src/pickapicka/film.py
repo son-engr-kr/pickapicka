@@ -40,6 +40,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from .sliders import tenth
 
 # A stock is nothing but a named set of these numbers.
 DEFAULT_FILM: dict[str, Any] = {
@@ -108,7 +109,7 @@ def normalize(raw: Any) -> dict[str, Any] | None:
             val = float(raw[key])
         except (TypeError, ValueError):
             continue
-        out[key] = int(round(min(hi, max(lo, val))))
+        out[key] = tenth(min(hi, max(lo, val)))
     if is_neutral(out):
         return None
     return out

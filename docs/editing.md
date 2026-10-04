@@ -274,9 +274,14 @@ Two stages that fix the captured image rather than interpret it, and they run
     purple. Pushing those pixels would speckle a flat wall with two different
     corrections, so the mixer fades out as saturation approaches zero and only
     moves colours that are actually there.
-- Luminance moves a band towards white or towards black and never past either,
-  so the brightest members of a band keep their hue instead of clipping and
-  flattening into one another.
+- Luminance is an **exposure change on that colour**: it multiplies the light,
+  weighted by how much colour a pixel really has (its CIELAB chroma), the way
+  darktable's color zones fade by chroma. Process 1 moved every pixel a fixed
+  fraction of the way to white or black, so the darkest moved furthest, and its
+  grey guard read HLS saturation, which inflates in the dark: Blue +10 lifted a
+  dark blue-grey shadow three times as far as the sky. Now Blue +10 moves that
+  shadow by about a twentieth of what it did (CIELAB difference 5.9 to 0.3), and a mid sky about 0.9 stops either
+  way at +-100 (what process 1's +100 did to it).
 - The mixer is **global**, with no per-mask version, and deliberately so: it is a
   statement about a colour wherever it appears in the frame, and a mask already
   answers "only here" better than eight bands could.
@@ -405,8 +410,27 @@ noise actually lives, and negative texture can be brushed onto skin alone.
   middle-drag to pan past a mask).
 - **Typed values**: click a slider's number to type the value instead of
   dragging to it. Enter (or clicking away) sets it, Esc leaves it as it was, and
-  the arrow keys step it (with Shift, ten steps at a time). It is clamped to the
-  slider's range and rounded to its step, exactly as a drag would be.
+  the arrow keys step it. It is clamped to the slider's range and rounded to a
+  tenth. Exposure shows +-4 stops but takes a typed value up to +-5, and widens
+  to show it (darktable's soft and hard limits).
+- **Steps and fine control**: sliders hold tenths. A plain drag and the arrow
+  keys move by whole units (exposure by 0.05 stops); **Shift**+arrow moves ten,
+  **Option(Alt)**+arrow a tenth, and **Option-drag** moves at a tenth of the
+  speed from where the slider was, down to its tenths. Shift for big steps is
+  what Lightroom, Capture One and darktable all do; Option for fine is
+  Lightroom's "Fine Adjust".
+- **Gentler near zero**: a slider running -100..100 maps its position the way
+  RawTherapee's brightness, contrast and saturation do (a base-2 logarithmic
+  scale anchored at the middle): a quarter of the way along reads 19 rather than
+  25, so the small values most edits live in get more of the slider. The values,
+  and what they do, are unchanged.
+- **Process versions**: an edit carries the maths it was made with, as in
+  Lightroom. Process 2 put exposure in stops of light (process 1 doubled the
+  gamma-encoded value per unit, about 2.2 stops at mid grey) and changed the
+  colour mixer's luminance (see Colour mixer). An edit made before keeps
+  process 1 and renders exactly as it did; the header says **Old process** and
+  **Update** moves it across, converting exposure so mid grey stays put. New
+  edits, Auto and a reset are made at the current process.
 - **A panel as wide as you want it**: drag the divider between the photo and the
   adjustments (or focus it and use the arrow keys); double-click it for the
   default width. The width is kept for next time. Save, Cancel and Apply to

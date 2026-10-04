@@ -140,7 +140,7 @@ def test_edit_hash() -> None:
 def test_normalize_clamps_and_repairs() -> None:
     e = editing.normalize({"exposure": 99, "saturation": -999, "sharpen": -5,
                            "curve": [[2, 2], [-1, 0.5]]})
-    assert e["exposure"] == 2.0 and e["saturation"] == -100 and e["sharpen"] == 0
+    assert e["exposure"] == 5.0 and e["saturation"] == -100 and e["sharpen"] == 0
     xs = [p[0] for p in e["curve"]]
     assert xs[0] == 0.0 and xs[-1] == 1.0 and xs == sorted(xs)
 
@@ -182,7 +182,7 @@ def test_mask_normalize_clamps() -> None:
     assert m["feather"] == 100 and m["amount"] == 0
     assert -180 <= m["angle"] <= 180
     assert len(m["name"]) == 40
-    assert m["adj"]["exposure"] == 2.0
+    assert m["adj"]["exposure"] == 5.0
     # Only local keys survive: vignette and the curve stay global.
     assert set(m["adj"]) == set(editing.LOCAL_KEYS)
 

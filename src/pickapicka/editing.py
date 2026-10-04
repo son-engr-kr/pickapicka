@@ -48,6 +48,7 @@ from . import rangemask as rangemask_mod
 from . import redeye as redeye_mod
 from . import segment as segment_mod
 from . import sharpening as sharpening_mod
+from . import sliders as sliders_mod
 from . import transform as transform_mod
 from . import watermark as watermark_mod
 
@@ -106,9 +107,11 @@ DEFAULT_EDIT: dict[str, Any] = {
     "watermark": None, # signature / shooting info; see the watermark module
 }
 
-# (min, max) clamp for each scalar. Exposure is the only float.
+# (min, max) clamp for each scalar. Exposure is in stops to a hundredth; the
+# rest hold tenths (see `_tenth`). Exposure's slider shows +-4; a typed value
+# may go to +-5, the range Lightroom gives a raw.
 _RANGES: dict[str, tuple[float, float]] = {
-    "exposure": (-2.0, 2.0),
+    "exposure": (-5.0, 5.0),
     "contrast": (-100, 100),
     "highlights": (-100, 100),
     "shadows": (-100, 100),
@@ -135,9 +138,41 @@ _RANGES: dict[str, tuple[float, float]] = {
     "tilt": (-45.0, 45.0),
 }
 
-# Kept out of the integer rounding in `normalize`: a tenth of a degree is the
-# difference between a level horizon and an almost-level one.
+# Kept out of the rounding to tenths in `normalize`: a hundredth of a stop and
+# of a degree are both still visible.
 _FLOAT_KEYS = frozenset({"exposure", "tilt"})
+
+
+_tenth = sliders_mod.tenth   # see the sliders module
+
+
+# Process versions, as Lightroom has them: the maths an edit was made with.
+# An edit saved before version 2 carries no `pv` and renders exactly as it was
+# made; a new edit is made at PROCESS_VERSION, and `upgrade` moves an old one
+# across. What version 2 changed:
+#   - exposure is in stops of light (process 1 doubled the gamma-encoded value
+#     per unit, about 2.2 stops at mid grey);
+#   - colour-mixer luminance multiplies the light, weighted by chroma, where
+#     process 1 pushed towards white or black by a fixed fraction and so moved
+#     dark, nearly grey pixels most (see `_apply_hsl`).
+PROCESS_VERSION = 2
+
+
+def process_version(e: dict[str, Any]) -> int:
+    return e.get("pv", 1)
+
+
+# sRGB's transfer function (IEC 61966-2-1), for the stages that work on light.
+def _srgb_to_linear(v: np.ndarray) -> np.ndarray:
+    v = np.asarray(v, dtype=np.float32)
+    return np.where(v <= 0.04045, v / 12.92,
+                    ((np.maximum(v, 0.0) + 0.055) / 1.055) ** 2.4).astype(np.float32)
+
+
+def _linear_to_srgb(v: np.ndarray) -> np.ndarray:
+    v = np.asarray(v, dtype=np.float32)
+    return np.where(v <= 0.0031308, v * 12.92,
+                    1.055 * np.maximum(v, 0.0) ** (1.0 / 2.4) - 0.055).astype(np.float32)
 
 _EPS = 1e-4
 _LUT_N = 1024  # tone-LUT sample count
@@ -448,7 +483,7 @@ def _normalize_adj(raw: Any) -> dict[str, Any]:
             continue
         lo, hi = _RANGES[key]
         val = _fnum(raw[key], lo, hi, 0.0)
-        out[key] = val if key == "exposure" else int(round(val))
+        out[key] = val if key == "exposure" else _tenth(val)
     return out
 
 
@@ -514,8 +549,8 @@ def normalize_mask(raw: Any) -> dict[str, Any] | None:
     m["name"] = str(name)[:40] if isinstance(name, str) else ""
     m["enabled"] = bool(raw.get("enabled", True))
     m["invert"] = bool(raw.get("invert", False))
-    m["feather"] = int(round(_fnum(raw.get("feather"), 0, 100, m["feather"])))
-    m["amount"] = int(round(_fnum(raw.get("amount"), 0, 100, 100)))
+    m["feather"] = _tenth(_fnum(raw.get("feather"), 0, 100, m["feather"]))
+    m["amount"] = _tenth(_fnum(raw.get("amount"), 0, 100, 100))
     m["adj"] = _normalize_adj(raw.get("adj"))
     # Available on every kind, including "auto": "the subject, but only its
     # highlights" is one mask, and it is the reason this is a refinement rather
@@ -629,6 +664,10 @@ def normalize(edit: dict[str, Any] | None) -> dict[str, Any]:
     out["portrait"] = None
     if not edit:
         return out
+    pv = edit.get("pv", 1)
+    assert pv in (1, PROCESS_VERSION), f"unknown process version: {pv!r}"
+    if pv != 1:
+        out["pv"] = pv   # absent means 1, so an old edit hashes as it always did
     if edit.get("portrait") is not None:
         out["portrait"] = portrait_mod.normalize(edit["portrait"])
     if edit.get("lens") is not None:
@@ -657,7 +696,7 @@ def normalize(edit: dict[str, Any] | None) -> dict[str, Any]:
         except (TypeError, ValueError):
             continue
         val = min(hi, max(lo, val))
-        out[key] = val if key in _FLOAT_KEYS else int(round(val))
+        out[key] = val if key in _FLOAT_KEYS else _tenth(val)
     for key in CURVE_KEYS:
         if key in edit:
             out[key] = _clean_curve(edit[key])
@@ -692,6 +731,12 @@ def merge_additive(base: dict[str, Any] | None,
     """
     out = normalize(base)
     over = normalize(overlay)
+    # The maths is the photo's, unless there is nothing on it yet: then the
+    # preset's own values say what they were made with (no `pv`: process 1).
+    if is_neutral(base):
+        out.pop("pv", None)
+        if "pv" in over:
+            out["pv"] = over["pv"]
     for key in _RANGES:
         if abs(float(over[key]) - float(DEFAULT_EDIT[key])) > _EPS:
             out[key] = over[key]
@@ -836,7 +881,12 @@ def _tone_lut(e: dict[str, Any]) -> np.ndarray:
     single float LUT sampled on [0,1]. Returns None-equivalent identity when all
     of them are neutral (caller can skip)."""
     x = np.linspace(0.0, 1.0, _LUT_N)
-    t = x * (2.0 ** float(e["exposure"]))
+    if process_version(e) >= 2:
+        # Stops of light: +1 doubles it, as the label says.
+        t = _linear_to_srgb(_srgb_to_linear(x) * (2.0 ** float(e["exposure"]))).astype(np.float64)
+    else:
+        # Process 1 doubled the encoded value per unit: about 2.2 stops at mid grey.
+        t = x * (2.0 ** float(e["exposure"]))
 
     # Additive tone regions, masked by where each acts on the tonal ramp.
     hi, sh = e["highlights"] / 100.0, e["shadows"] / 100.0
@@ -980,7 +1030,19 @@ HSL_KEYS: tuple[str, ...] = ("hue", "sat", "lum")
 # Where each band sits on the hue circle, in degrees.
 _HSL_CENTRES = (0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 285.0, 320.0)
 _HSL_HUE_SHIFT = 30.0    # degrees of hue rotation at +/-100
-_HSL_LUM_MAX = 0.7       # how far towards white or black at +/-100
+_HSL_LUM_MAX = 0.7       # process 1: how far towards white or black at +/-100
+# Process 2: stops of light at +/-100 on a pixel of full chroma weight that sits
+# on the band's centre. Solved for, against this function, so that a mid sky,
+# sRGB (95, 145, 215), moves about 0.9 stops either way at Blue +/-100: what
+# process 1's +100 did to it. Process 1 was lopsided (+0.91, -1.83), and the
+# gentler side is the one kept, since +10 was already found to do a lot. That
+# sky is only about 60% blue (its hue lies between Aqua and Blue) and its
+# chroma weight is 0.54, hence a constant this size; the test pins the result.
+_HSL_LUM_EV = 2.8
+# Chroma (CIELAB C*) at which the luminance weight reaches 1. darktable's color
+# zones fades its lightness and hue edits on low-chroma pixels by
+# (1 - C/128)^2 (src/iop/colorzones.c); process 2 weights by its complement.
+_HSL_CHROMA_FULL = 128.0
 _HSL_GREY_GUARD = 0.12   # saturation below which the mixer lets go; see _apply_hsl
 
 
@@ -999,7 +1061,7 @@ def normalize_hsl(raw: Any) -> dict[str, dict[str, int]] | None:
         for key in HSL_KEYS:
             if src.get(key) is None:
                 continue
-            val = int(round(_fnum(src[key], -100.0, 100.0, 0.0)))
+            val = _tenth(_fnum(src[key], -100.0, 100.0, 0.0))
             if val:
                 vals[key] = val
         if vals:
@@ -1033,7 +1095,7 @@ def _hsl_luts(hsl: dict[str, dict[str, int]]) -> tuple[np.ndarray, ...]:
     return tuple(luts)
 
 
-def _apply_hsl(rgb: np.ndarray, hsl: dict[str, dict[str, int]]) -> np.ndarray:
+def _apply_hsl(rgb: np.ndarray, hsl: dict[str, dict[str, int]], pv: int = 1) -> np.ndarray:
     """Rotate, saturate and lighten each hue band.
 
     Every change is scaled by the pixel's own saturation, and that guard is the
@@ -1055,12 +1117,29 @@ def _apply_hsl(rgb: np.ndarray, hsl: dict[str, dict[str, int]]) -> np.ndarray:
     hls[..., 0] = np.mod(h + shift * grip, 360.0)
     gain = sat_lut[at] / 100.0
     hls[..., 2] = np.clip(sat * (1.0 + gain * grip), 0.0, 1.0)
-    k = lum_lut[at] / 100.0 * _HSL_LUM_MAX * grip
-    # Towards white or towards black, never past either: a multiplier would
-    # clip the brightest band members and flatten them into one another.
-    hls[..., 1] = np.clip(np.where(k >= 0.0, lum + (1.0 - lum) * k,
-                                   lum * (1.0 + k)), 0.0, 1.0)
-    return cv2.cvtColor(hls, cv2.COLOR_HLS2RGB)
+    if pv < 2:
+        k = lum_lut[at] / 100.0 * _HSL_LUM_MAX * grip
+        # Towards white or towards black, never past either: a multiplier would
+        # clip the brightest band members and flatten them into one another.
+        hls[..., 1] = np.clip(np.where(k >= 0.0, lum + (1.0 - lum) * k,
+                                       lum * (1.0 + k)), 0.0, 1.0)
+        return cv2.cvtColor(hls, cv2.COLOR_HLS2RGB)
+    # Process 2. Process 1 moved every pixel a fixed fraction of the way to
+    # white, so the darkest moved furthest, and HLS saturation, which its grey
+    # guard reads, inflates in the dark: a nearly grey bluish shadow counted as
+    # fully blue. Blue +10 lifted such a shadow three times as far as the sky.
+    # Now the light is multiplied, as an exposure change on that colour, and by
+    # how much colour the pixel really has (CIELAB chroma), so a shadow keeps
+    # its place and a grey is left alone.
+    out = cv2.cvtColor(hls, cv2.COLOR_HLS2RGB)
+    lum_v = lum_lut[at]
+    if not np.any(lum_v):
+        return out
+    lab = cv2.cvtColor(np.clip(rgb, 0.0, 1.0), cv2.COLOR_RGB2LAB)
+    chroma = np.hypot(lab[..., 1], lab[..., 2])
+    weight = 1.0 - (1.0 - np.minimum(chroma / _HSL_CHROMA_FULL, 1.0)) ** 2
+    gain = np.exp2(lum_v / 100.0 * _HSL_LUM_EV * weight).astype(np.float32)
+    return np.clip(_linear_to_srgb(_srgb_to_linear(out) * gain[..., None]), 0.0, 1.0)
 
 
 # ----- texture, dehaze and noise -----------------------------------------
@@ -1713,11 +1792,14 @@ def mask_alpha(mask: dict[str, Any], h: int, w: int,
     return alpha
 
 
-def _full_edit_from_adj(adj: dict[str, Any]) -> dict[str, Any]:
-    """Wrap a mask's local sliders in a full edit dict so `_grade` can run them."""
+def _full_edit_from_adj(adj: dict[str, Any], pv: int) -> dict[str, Any]:
+    """Wrap a mask's local sliders in a full edit dict so `_grade` can run them,
+    at the process version of the edit the mask belongs to."""
     e = dict(DEFAULT_EDIT)
     e["curve"] = [list(p) for p in DEFAULT_EDIT["curve"]]
     e.update(adj)
+    if pv != 1:
+        e["pv"] = pv
     return e
 
 
@@ -1725,7 +1807,8 @@ def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
                  roi: tuple[float, float, float, float],
                  auto: dict[str, np.ndarray] | None = None,
                  src: np.ndarray | None = None,
-                 frame_size: tuple[int, int] | None = None) -> np.ndarray:
+                 frame_size: tuple[int, int] | None = None,
+                 pv: int = 1) -> np.ndarray:
     """Blend a locally graded copy through each mask, in order. `img` is float32
     RGB clipped to [0,1] and is modified in place.
 
@@ -1766,7 +1849,7 @@ def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
         # (vignette is global-only, but blur/mosaic sizing is not) stay honest.
         sub_roi = (roi[0] + x0 / w * roi[2], roi[1] + y0 / h * roi[3],
                    (x1 - x0) / w * roi[2], (y1 - y0) / h * roi[3])
-        adj = _full_edit_from_adj(m["adj"])
+        adj = _full_edit_from_adj(m["adj"], pv)
         # Hand the grade 8-bit pixels so its white-balance/tone step can be a
         # lookup instead of an interpolation over every float in the crop —
         # about five times faster, and the crop is on its way to an 8-bit
@@ -1872,7 +1955,7 @@ def normalize_lut_ref(raw: Any) -> dict[str, Any] | None:
             or any(c not in "0123456789abcdef" for c in key):
         return None
     try:
-        amount = int(round(min(100.0, max(0.0, float(raw.get("amount", 100))))))
+        amount = sliders_mod.tenth(min(100.0, max(0.0, float(raw.get("amount", 100)))))
     except (TypeError, ValueError):
         amount = 100
     if amount == 0:
@@ -2031,7 +2114,7 @@ def _grade(img: np.ndarray, e: dict[str, Any],
     # The mixer before vibrance and saturation: it decides what each colour is,
     # and those two then decide how much of all of them there is.
     if e["hsl"] is not None:
-        img = _apply_hsl(img, e["hsl"])
+        img = _apply_hsl(img, e["hsl"], process_version(e))
     # The wheels after the mixer: the mixer says what a colour is, the wheels
     # then push a whole tonal region somewhere regardless of what was there.
     if e["grading"] is not None:
@@ -2242,7 +2325,7 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         img = _grade(img, e, roi, seed)
         img = np.clip(img, 0.0, 1.0)
         if e["masks"]:
-            img = _apply_masks(img, e["masks"], roi, auto, src, frame_size)
+            img = _apply_masks(img, e["masks"], roi, auto, src, frame_size, process_version(e))
         out = _to_u8(img)
     if do_geom:
         out = apply_geometry(out, e)
@@ -2355,16 +2438,48 @@ def auto_tone(rgb: np.ndarray) -> dict[str, Any]:
     pleasant midtone. Returns an edit dict (never saved implicitly)."""
     y = _luma(rgb.astype(np.float32) / 255.0)
     p1, p50, p99 = (float(v) for v in np.percentile(y, [1, 50, 99]))
-    exposure = float(np.clip(np.log2(0.45 / max(p50, 1e-3)), -1.5, 1.5))
+    # The median goes to 0.45 encoded, or as far towards it as a factor of
+    # 2^1.5 on the encoded value takes it (process 1's limit), said in stops.
+    target = max(p50, 1e-3) * 2.0 ** float(np.clip(np.log2(0.45 / max(p50, 1e-3)), -1.5, 1.5))
+    exposure = round(float(np.log2(_srgb_to_linear(min(target, 1.0))
+                                   / max(float(_srgb_to_linear(max(p50, 1e-3))), 1e-6))), 2)
     blacks = int(np.clip(round(-p1 * 300), -100, 0))
     whites = int(np.clip(round((1.0 - p99) * 300), 0, 100))
     contrast = 10 if (p99 - p1) < 0.6 else 0
     return normalize({
+        "pv": PROCESS_VERSION,
         "exposure": exposure,
         "blacks": blacks,
         "whites": whites,
         "contrast": contrast,
     })
+
+
+def _exposure_in_stops(old: float) -> float:
+    """A process-1 exposure as the process-2 one that puts mid grey in the same
+    place. Exact at mid grey and near it elsewhere; a value that sent mid grey
+    to white comes back as the stops that only just reach white."""
+    grey = float(_linear_to_srgb(np.float32(0.18)))
+    lifted = min(grey * 2.0 ** float(old), 1.0)
+    stops = float(np.log2(float(_srgb_to_linear(np.float32(lifted))) / 0.18))
+    lo, hi = _RANGES["exposure"]
+    return round(min(hi, max(lo, stops)), 2)
+
+
+def upgrade(edit: dict[str, Any] | None) -> dict[str, Any]:
+    """An edit at the current process version. Exposure is converted, for the
+    whole frame and every mask, so mid grey stays where it was; the colour
+    mixer's luminance has no equivalent number (process 1 treated a shadow and
+    a sky differently at the same setting), so it keeps its values and its new
+    meaning."""
+    e = normalize(edit)
+    if process_version(e) >= PROCESS_VERSION:
+        return e
+    e["exposure"] = _exposure_in_stops(e["exposure"])
+    for m in e["masks"]:
+        m["adj"]["exposure"] = _exposure_in_stops(m["adj"]["exposure"])
+    e["pv"] = PROCESS_VERSION
+    return normalize(e)
 
 
 # ----- white-balance picker -----------------------------------------------

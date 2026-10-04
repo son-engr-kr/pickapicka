@@ -50,6 +50,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from .sliders import tenth
 
 # ----- schema -------------------------------------------------------------
 
@@ -288,7 +289,7 @@ def _params(name: str, amount: int, dim: int, size: int,
     return {
         "enabled": True,
         "name": str(name)[:NAME_MAX],
-        "amount": int(round(_fnum(amount, 0.0, 100.0, 100.0))),
+        "amount": tenth(_fnum(amount, 0.0, 100.0, 100.0)),
         "dim": dim,
         "size": size,
         "domain_min": [float(v) for v in domain_min],
@@ -316,7 +317,7 @@ def normalize(raw: Any) -> dict[str, Any] | None:
     out["enabled"] = bool(raw.get("enabled", False))
     name = raw.get("name")
     out["name"] = str(name)[:NAME_MAX] if isinstance(name, str) else ""
-    out["amount"] = int(round(_fnum(raw.get("amount"), 0.0, 100.0, 100.0)))
+    out["amount"] = tenth(_fnum(raw.get("amount"), 0.0, 100.0, 100.0))
 
     blob = raw.get("table") or ""
     if not isinstance(blob, str) or not blob:

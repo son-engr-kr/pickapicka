@@ -105,6 +105,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from .sliders import tenth
 
 # ----- schema -------------------------------------------------------------
 
@@ -158,7 +159,7 @@ def normalize(raw: Any) -> dict[str, Any] | None:
     out = dict(DEFAULT_PORTRAIT)
     for key, (lo, hi) in _RANGES.items():
         try:
-            out[key] = int(round(min(hi, max(lo, float(raw.get(key, 0) or 0)))))
+            out[key] = tenth(min(hi, max(lo, float(raw.get(key, 0) or 0))))
         except (TypeError, ValueError):
             out[key] = 0
     return None if is_neutral(out) else out

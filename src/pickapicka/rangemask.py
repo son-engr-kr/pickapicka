@@ -37,6 +37,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from .sliders import tenth
 
 # ----- schema -------------------------------------------------------------
 #
@@ -178,6 +179,11 @@ def _inum(raw: Any, lo: float, hi: float, fallback: float) -> int:
     return int(round(_fnum(raw, lo, hi, fallback)))
 
 
+def _snum(raw: Any, lo: float, hi: float, fallback: float) -> int | float:
+    """A slider's value: tenths, like every slider (see the sliders module)."""
+    return tenth(_fnum(raw, lo, hi, fallback))
+
+
 # ----- normalization ------------------------------------------------------
 
 def normalize_luma(raw: Any) -> dict[str, int] | None:
@@ -195,10 +201,10 @@ def normalize_luma(raw: Any) -> dict[str, int] | None:
     if lo <= _EPS and hi >= 100 - _EPS:
         return None
     return {
-        "lo": int(round(lo)),
-        "hi": int(round(hi)),
-        "feather_lo": _inum(raw.get("feather_lo"), 0, 100, 10),
-        "feather_hi": _inum(raw.get("feather_hi"), 0, 100, 10),
+        "lo": tenth(lo),
+        "hi": tenth(hi),
+        "feather_lo": _snum(raw.get("feather_lo"), 0, 100, 10),
+        "feather_hi": _snum(raw.get("feather_hi"), 0, 100, 10),
     }
 
 
@@ -225,13 +231,13 @@ def normalize_color(raw: Any) -> dict[str, Any] | None:
     samples = _normalize_samples(raw.get("samples"))
     if not samples:
         return None
-    rng = _inum(raw.get("range"), 0, 100, 40)
+    rng = _snum(raw.get("range"), 0, 100, 40)
     if rng >= 100:
         return None
     return {
         "samples": samples,
         "range": rng,
-        "feather": _inum(raw.get("feather"), 0, 100, 25),
+        "feather": _snum(raw.get("feather"), 0, 100, 25),
     }
 
 

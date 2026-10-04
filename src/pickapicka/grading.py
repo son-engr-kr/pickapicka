@@ -34,6 +34,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from .sliders import tenth
 
 # ----- schema -------------------------------------------------------------
 #
@@ -110,7 +111,7 @@ def normalize(raw: Any) -> dict[str, Any] | None:
             continue
         vals: dict[str, int] = {}
         for key, (lo, hi) in _ZONE_RANGES.items():
-            val = int(round(_fnum(src.get(key), lo, hi, 0.0)))
+            val = tenth(_fnum(src.get(key), lo, hi, 0.0))
             if val:
                 vals[key] = val
         if not vals:
@@ -124,7 +125,7 @@ def normalize(raw: Any) -> dict[str, Any] | None:
         return None
     for key, (lo, hi) in _GLOBAL_RANGES.items():
         default = DEFAULT_GRADING[key]
-        val = int(round(_fnum(raw.get(key), lo, hi, float(default))))
+        val = tenth(_fnum(raw.get(key), lo, hi, float(default)))
         if val != default:
             out[key] = val
     return out

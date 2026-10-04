@@ -2695,3 +2695,9 @@ html.launching #intro { position: fixed; inset: 0; z-index: 1000; display: flex;
 .folder-tag.new { color: var(--accent); }
 .folder-tag.warn { color: var(--review); }
 #folders-status { flex: 1; font-size: var(--fs-xs); color: var(--review); }
+
+/* An edit made with process 1; the button moves it to the current one. */
+.edit-process { font-size: var(--fs-xs); padding: 2px 8px; border-radius: var(--r1);
+  border: 1px solid var(--review); color: var(--review); background: transparent; }
+.edit-process:hover { background: var(--raised); }
+.edit-process.hidden { display: none; }
