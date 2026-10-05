@@ -131,13 +131,14 @@ def test_leaving_a_folder_out_drops_its_photos_and_repairs_people(tmp_path) -> N
     data = db.load(db_path)
     face = {"bbox_xywh": [1, 1, 8, 8], "ear": None, "det_score": 0.9, "embedding_idx": 0}
     by_rel = {p["rel_path"]: p for p in data["photos"]}
-    by_rel["trailer/s0.jpg"]["faces"] = [dict(face, person_id="p0"), dict(face, person_id="p1")]
+    still = str(Path("trailer") / "s0.jpg")   # the platform's separator, as scanning stores it
+    by_rel[still]["faces"] = [dict(face, person_id="p0"), dict(face, person_id="p1")]
     by_rel["b2.jpg"]["faces"] = [dict(face, person_id="p0")]
     data["people"] = [
         {"id": "p0", "label": "Person 1", "priority": 1, "excluded": False, "count": 2,
-         "ref": {"rel_path": "trailer/s0.jpg", "face_idx": 0}},
+         "ref": {"rel_path": still, "face_idx": 0}},
         {"id": "p1", "label": "Person 2", "priority": 2, "excluded": False, "count": 1,
-         "ref": {"rel_path": "trailer/s0.jpg", "face_idx": 1}},
+         "ref": {"rel_path": still, "face_idx": 1}},
     ]
 
     assert drop_folders(data, {"trailer"}) == 2
