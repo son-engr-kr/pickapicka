@@ -14,6 +14,7 @@ import numpy as np
 from PIL import Image
 
 from . import db, exifinfo, hdr, raw, scenes
+from .projects import PHOTOS_SUBDIR as PROJECTS_SUBDIR
 from .scoring import blur as blur_mod
 from .scoring import exposure as exp_mod
 from .scoring import faces as faces_mod
@@ -153,8 +154,11 @@ def walk_files(root: Path, exclude_dirs: Iterable[Path] = ()) -> Iterator[Path]:
     Comparison is by resolved path so symlinked aliases are caught too."""
     excluded = {Path(p).resolve() for p in exclude_dirs}
     for dirpath, dirnames, filenames in root.walk():
+        # A `.pickapicka/` holds projects kept with their photos (projects.py),
+        # whichever project is being scanned: their caches are not photos.
         dirnames[:] = [
-            d for d in dirnames if (dirpath / d).resolve() not in excluded
+            d for d in dirnames
+            if d != PROJECTS_SUBDIR and (dirpath / d).resolve() not in excluded
         ]
         for fn in filenames:
             yield dirpath / fn

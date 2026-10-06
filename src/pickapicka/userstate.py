@@ -290,3 +290,64 @@ def forget_workspace(path: Path) -> None:
     if data.get("current_workspace") == p:
         data["current_workspace"] = data["workspaces"][0] if data["workspaces"] else None
     _save(data)
+
+
+# ----- where projects live ---------------------------------------------------
+# New projects go in the current workspace ("workspace") or inside their photo
+# folder's `.pickapicka/` ("photos"); see `projects`. A project kept with its
+# photos is in no workspace, so it is listed from `known_projects`, which every
+# create and open adds to.
+
+def get_project_location() -> str:
+    return _load().get("project_location", "workspace")
+
+
+def set_project_location(location: str) -> None:
+    assert location in ("workspace", "photos"), f"unknown project location: {location!r}"
+    data = _load()
+    data["project_location"] = location
+    _save(data)
+
+
+def known_projects() -> list[str]:
+    return _load().get("known_projects", [])
+
+
+def remember_project(project_dir: Path) -> None:
+    data = _load()
+    p = str(project_dir)
+    known = data.setdefault("known_projects", [])
+    if p not in known:
+        known.append(p)
+        _save(data)
+
+
+def forget_project(project_dir: Path) -> None:
+    data = _load()
+    p = str(project_dir)
+    data["known_projects"] = [k for k in data.get("known_projects", []) if k != p]
+    _save(data)
+
+
+def project_moved(old: Path, new: Path) -> None:
+    """Refile everything keyed by a project's folder under its new one: the
+    recents entry, the remembered view and the known-projects list. Without
+    this a moved project reopens on page 1 and lingers in recents at a path
+    that no longer exists."""
+    data = _load()
+    o, n = str(old), str(new)
+    o_db, n_db = str(old / "picks.json"), str(new / "picks.json")
+    for r in data.get("recents", []):
+        if r.get("project_dir") == o:
+            r["project_dir"] = n
+            r["db_path"] = n_db
+            r["name"] = new.name
+    if data.get("last_db_path") == o_db:
+        data["last_db_path"] = n_db
+    views = data.get("views", {})
+    if o in views:
+        views[n] = views.pop(o)
+    # The new path may be known already (opened from its new place first).
+    known = [k for k in data.get("known_projects", []) if k not in (o, n)]
+    data["known_projects"] = known + [n]
+    _save(data)

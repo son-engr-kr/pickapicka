@@ -12,13 +12,16 @@ from pathlib import Path
 from typing import Any
 
 from . import db
+from .projects import PHOTOS_SUBDIR
 
 
 def _basename_index(root: Path) -> dict[str, list[Path]]:
     idx: dict[str, list[Path]] = {}
     if not root.is_dir():
         return idx
-    for dirpath, _dirs, files in root.walk():
+    for dirpath, dirs, files in root.walk():
+        # Thumbnails in a project kept with the photos share the photos' names.
+        dirs[:] = [d for d in dirs if d != PHOTOS_SUBDIR]
         for fn in files:
             if fn.startswith("._"):
                 continue

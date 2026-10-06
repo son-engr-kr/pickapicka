@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import raw, scenes
-from .scorer import _is_supported, pair_group
+from .scorer import PROJECTS_SUBDIR, _is_supported, pair_group
 
 # Files looked at before stopping. Someone will pick a whole drive, and the
 # useful answer there ("lots of photos") is already in a partial count.
@@ -34,7 +34,7 @@ _TIME_WORKERS = 8
 
 def _skip_dir(parent: Path, name: str) -> bool:
     """A folder that holds the app's own files, not photos."""
-    return is_project_dir(parent / name) or (
+    return name == PROJECTS_SUBDIR or is_project_dir(parent / name) or (
         name.startswith("picks.json") and name.endswith(_LEGACY_CACHE_SUFFIXES))
 
 
@@ -87,6 +87,10 @@ def inspect(
             if is_project_dir(dirpath / d):
                 if dirpath == root:
                     info["projects"] += 1
+                continue
+            if d == PROJECTS_SUBDIR:
+                # Projects kept with these photos: not counted as projects, which
+                # would read the photo folder as a workspace.
                 continue
             if d.startswith("picks.json") and d.endswith(_LEGACY_CACHE_SUFFIXES):
                 continue
