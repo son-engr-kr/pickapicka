@@ -56,6 +56,11 @@ case-insensitive. When a shot has both a RAW and a same-named JPEG, the RAW is
 used. If your RAWs live in a separate `RAW/` tree, set the RAW subfolder under
 **Advanced** in the new-project wizard. Videos and sidecars are ignored.
 
+Two files with the same name in different subfolders of one scene (two camera
+bodies, or a counter that wrapped) are two photos. A RAW and a JPEG of the same
+name are one shot when they share a folder or sit in folders of the same name
+(`RAW/A` beside `JPEG/A`).
+
 Every subfolder is scanned. A folder that is not part of the shoot (video
 stills, exports, a working folder for a trailer) can be left out under
 **More → Folders…**; the project remembers it in `ignored_dirs` and no scan
