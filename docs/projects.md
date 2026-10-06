@@ -11,6 +11,8 @@
   file name). **Deleting a project never touches your photos**: it renames the
   project folder to `<name>.deleted-<timestamp>` and hides it from the list —
   decisions and edits stay inside, so renaming the folder back restores it.
+- **Exports** go to a dated folder in `~/Downloads` unless you choose another,
+  the same place a quick download goes.
 - **See how it works**: an animated walk-through of the above, from the photo
   folder to the workspace, a project pointing at the photos, the work filling
   the project, and what deleting and exporting do. It plays on the first-launch

@@ -1770,6 +1770,20 @@ def _sanitize_segment(name: str) -> str:
     return cleaned or "unnamed"
 
 
+def _downloads_folder(name: str) -> Path:
+    """A dated folder in Downloads that does not exist yet, for a batch of
+    photos to land in together: where both an export and a quick download put
+    them unless told otherwise, so there is one place to look."""
+    downloads = Path.home() / "Downloads"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M")
+    target = downloads / f"{_sanitize_segment(name)}_{stamp}"
+    n = 2
+    while target.exists():
+        target = downloads / f"{_sanitize_segment(name)}_{stamp}-{n}"
+        n += 1
+    return target
+
+
 def _autodetect_jpeg_subdir(photo_dir: Path) -> str:
     """If `photo_dir` has no top-level supported images but a common subfolder
     does, return that subfolder's name. Otherwise return ''."""
@@ -3220,7 +3234,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     def export_picks_preview() -> dict[str, Any]:
         _require_loaded()
         picks = [p for p in ctx.data["photos"] if p.get("decision") == "pick"]
-        default_target = ctx.db_path.parent / f"{ctx.db_path.stem}.picks"
+        default_target = _downloads_folder(
+            ctx.project_dir.name if ctx.project_dir else ctx.db_path.stem)
         return {"count": len(picks), "default_target": str(default_target),
                 "settings": ExportSettings(**userstate.get_export_settings()).model_dump()}
 
@@ -3254,7 +3269,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         target = (
             Path(payload.target_dir).expanduser()
             if payload.target_dir
-            else ctx.db_path.parent / f"{ctx.db_path.stem}.picks"
+            else _downloads_folder(ctx.project_dir.name if ctx.project_dir else ctx.db_path.stem)
         )
         if not target.is_absolute():
             raise HTTPException(status_code=400, detail="the target folder must be a full path")
@@ -3325,13 +3340,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         if len(payload.rel_paths) == 1:
             target = downloads
         else:
-            name = (ctx.project_dir.name if ctx.project_dir else ctx.db_path.stem)
-            stamp = datetime.now().strftime("%Y%m%d-%H%M")
-            target = downloads / f"{_sanitize_segment(name)}_{stamp}"
-            n = 2
-            while target.exists():
-                target = downloads / f"{_sanitize_segment(name)}_{stamp}-{n}"
-                n += 1
+            target = _downloads_folder(ctx.project_dir.name if ctx.project_dir else ctx.db_path.stem)
             target.mkdir(parents=True)
 
         # One click, so no choices: full size and all metadata, as a JPEG.

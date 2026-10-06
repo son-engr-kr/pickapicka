@@ -119,3 +119,10 @@ def _main() -> None:
 
 if __name__ == "__main__":
     _main()
+
+
+def test_an_export_lands_in_downloads_unless_told_otherwise() -> None:
+    from pickapicka.server import _downloads_folder
+    target = _downloads_folder("trip")
+    assert target.parent == Path.home() / "Downloads"
+    assert target.name.startswith("trip_") and not target.exists()
