@@ -818,6 +818,10 @@ def run_scoring(
         data["scene_grouping"] = grouping
     if ignored:
         data["ignored_dirs"] = ignored
+    # The project's own copies of the looks its edits use: without them an edit
+    # whose look has left the app's library, or another machine's, cannot render.
+    if (existing or {}).get("luts"):
+        data["luts"] = (existing or {})["luts"]
     data["photos"] = scored
     db.save(db_path, data)
 

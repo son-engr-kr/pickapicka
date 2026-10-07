@@ -52,7 +52,7 @@ def _scenes(data: dict) -> dict[str, list[str]]:
     return {k: sorted(v) for k, v in out.items()}
 
 
-def test_a_rescore_keeps_time_scenes_ignored_folders_and_edit_slots(tmp_path) -> None:
+def test_a_rescore_keeps_time_scenes_ignored_folders_edit_slots_and_looks(tmp_path) -> None:
     photos, proj = _shoot(tmp_path)
     db_path = proj / "picks.json"
     first = db.load(db_path)
@@ -64,6 +64,8 @@ def test_a_rescore_keeps_time_scenes_ignored_folders_and_edit_slots(tmp_path) ->
         if p["rel_path"] == "a1.jpg":
             p.update(decision="pick", edit_slots=[slot, None])
     first["ignored_dirs"] = ["trailer"]
+    # The project's own copy of a look its edits use (see userstate's look library).
+    first["luts"] = {"0123456789abcdef": {"name": "warm", "dim": 3, "size": 2}}
     db.save(db_path, first)
     _jpeg(photos / "trailer" / "work" / "still.jpg", 99)
 
@@ -72,6 +74,7 @@ def test_a_rescore_keeps_time_scenes_ignored_folders_and_edit_slots(tmp_path) ->
     assert again["scene_grouping"] == TIME_GAP, "the re-score dropped the time-gap grouping"
     assert _scenes(again) == _scenes(first), "the re-score regrouped by folder"
     assert again["ignored_dirs"] == ["trailer"]
+    assert again["luts"] == first["luts"], "the re-score dropped the project's looks"
     a1 = next(p for p in again["photos"] if p["rel_path"] == "a1.jpg")
     assert a1["decision"] == "pick"
     assert a1["edit_slots"] == [slot, None], "the re-score dropped the edit slots"
