@@ -8178,7 +8178,8 @@ function renderPrefWorkspaces() {
       <span class="pref-ws-name">${icon("folder")}<span title="${escapeAttr(w)}">${escapeHtml(basename(w) || w)}</span></span>
       <span class="pref-ws-path">${escapeHtml(w)}</span>
       ${w === workspaceState.current ? `<span class="pref-ws-now">Current</span>`
-        : `<button type="button" data-use="${escapeAttr(w)}">Use</button>`}
+        : `<button type="button" data-use="${escapeAttr(w)}">Use</button>
+           <button type="button" data-merge="${escapeAttr(w)}" title="Move its projects into the current workspace">Merge into current…</button>`}
       ${workspaceState.list.length > 1 ? `<button type="button" data-forget="${escapeAttr(w)}" title="Remove from the list (deletes nothing)" aria-label="Remove from the list">${icon("close")}</button>` : ""}
     </li>`).join("");
   ul.querySelectorAll("[data-use]").forEach((b) => b.addEventListener("click", async () => {
@@ -8186,6 +8187,8 @@ function renderPrefWorkspaces() {
     renderWorkspaceSelect();
     renderPrefWorkspaces();
   }));
+  ul.querySelectorAll("[data-merge]").forEach((b) => b.addEventListener("click", () =>
+    mergeWorkspace(b.dataset.merge, workspaceState.current)));
   ul.querySelectorAll("[data-forget]").forEach((b) => b.addEventListener("click", async () => {
     const res = await fetch("/api/workspaces/forget", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -8199,6 +8202,52 @@ function renderPrefWorkspaces() {
     renderPrefWorkspaces();
     if (currentModule() === "projects") loadWorkspaceProjects();
   }));
+}
+
+// Move every project of one workspace into another. Asked first with what will
+// happen: renames for names already taken, the open project staying, and
+// whether the old folder goes (only when nothing else of yours is in it).
+async function mergeWorkspace(source, target) {
+  let pre;
+  try {
+    pre = await postJSON("/api/workspaces/merge/preview", { source, target });
+  } catch (e) { alert("Cannot merge: " + e.message); return; }
+  const from = basename(source), into = basename(target);
+  const n = pre.projects + pre.deleted;
+  const lines = [
+    n ? `Move ${plural(pre.projects, "project")} from ${from} into ${into}?`
+      + (pre.deleted ? ` The ${plural(pre.deleted, "deleted project")} go too, so they can still be restored.` : "")
+      + " Photos are not touched."
+      : `${from} has no projects to move.`,
+  ];
+  if (pre.renamed.length) {
+    lines.push(`${into} already has a project of the same name, so these are renamed: `
+      + pre.renamed.map(([a, b]) => `${a} → ${b}`).join(", ") + ".");
+  }
+  if (pre.open) lines.push(`${pre.open} is open, so it stays in ${from}; close it and merge again.`);
+  lines.push(pre.open ? `${from} stays in the list until then.`
+    : pre.others.length
+      ? `${from} is then taken off the list. Its folder stays, since it also holds ${pre.others.slice(0, 3).join(", ")}${pre.others.length > 3 ? "…" : ""}.`
+      : `${from} is then taken off the list and its empty folder deleted.`);
+  const go = await askChoice("Merge workspaces", lines.join("\n\n"), [
+    { id: "cancel", label: "Cancel" },
+    { id: "merge", label: n ? `Move ${plural(n, "project")}` : "Remove from list", primary: true },
+  ]);
+  if (go !== "merge") return;
+  let out;
+  try {
+    out = await postJSON("/api/workspaces/merge", { source, target });
+  } catch (e) { alert("Merge failed: " + e.message); return; }
+  const failed = out.results.filter((r) => r.error);
+  if (failed.length) {
+    alert(`Not moved, so ${from} stays:\n\n` + failed.map((r) => `${r.name}: ${r.error}`).join("\n"));
+  }
+  workspaceState.list = out.workspaces || [];
+  workspaceState.current = out.current;
+  renderWorkspaceSelect();
+  renderPrefWorkspaces();
+  await loadWorkspaceProjects();
+  await renderRecents();
 }
 
 function filmstripOn() {

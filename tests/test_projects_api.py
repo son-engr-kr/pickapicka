@@ -105,3 +105,82 @@ def test_merge_preview_says_why_it_cannot(app, tmp_path) -> None:
         _route(app, "/api/projects/merge/preview", "POST")(server.MergePayload(
             project_dirs=[str(a), str(b)]))
     assert e.value.status_code == 400 and "not found" in e.value.detail
+
+
+def _ws(app, path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    userstate.add_workspace(path)
+    return path.resolve()
+
+
+def test_merging_a_workspace_moves_its_projects_and_removes_the_folder(app, tmp_path) -> None:
+    photos = tmp_path / "photos"
+    photos.mkdir()
+    old = _ws(app, tmp_path / "Old")
+    new = _ws(app, tmp_path / "New")   # current
+    _project(old / "trip", photos)
+    _project(old / "Wedding", photos)
+    _project(old / "gone.deleted-20261001-1200", photos)
+    (old / ".DS_Store").write_bytes(b"x")
+    _project(new / "wedding", photos)   # same name but for case
+    userstate.remember_open(old / "trip" / "picks.json", photos, "", kind="project",
+                            project_dir=old / "trip")
+
+    pre = _route(app, "/api/workspaces/merge/preview", "POST")(server.MergeWorkspacesPayload(
+        source=str(old), target=str(new)))
+    assert (pre["projects"], pre["deleted"], pre["others"], pre["open"]) == (2, 1, [], None)
+    assert pre["renamed"] == [["Wedding", "Wedding (Old)"]]
+
+    out = _route(app, "/api/workspaces/merge", "POST")(server.MergeWorkspacesPayload(
+        source=str(old), target=str(new)))
+    assert all(r.get("moved") for r in out["results"])
+    assert out["removed"] and not old.exists()
+    assert sorted(c.name for c in new.iterdir()) == [
+        "Wedding (Old)", "gone.deleted-20261001-1200", "trip", "wedding"]
+    assert out["workspaces"] == [str(new)] and out["current"] == str(new)
+    assert userstate.get_recents()[0]["project_dir"] == str(new / "trip")
+    # The deleted one is still hidden, and was not added to any list.
+    assert str(new / "gone.deleted-20261001-1200") not in userstate.known_projects()
+
+
+def test_a_workspace_with_other_files_keeps_its_folder(app, tmp_path) -> None:
+    old = _ws(app, tmp_path / "Old")
+    new = _ws(app, tmp_path / "New")
+    _project(old / "trip", tmp_path)
+    (old / "notes.txt").write_text("mine")
+    pre = _route(app, "/api/workspaces/merge/preview", "POST")(server.MergeWorkspacesPayload(
+        source=str(old), target=str(new)))
+    assert pre["others"] == ["notes.txt"]
+    out = _route(app, "/api/workspaces/merge", "POST")(server.MergeWorkspacesPayload(
+        source=str(old), target=str(new)))
+    assert not out["removed"] and (old / "notes.txt").is_file()
+    assert (new / "trip" / "picks.json").is_file()
+    assert out["workspaces"] == [str(new)]   # no projects left in it, so off the list
+
+
+def test_a_workspace_is_not_merged_into_itself(app, tmp_path) -> None:
+    ws = _ws(app, tmp_path / "W")
+    with pytest.raises(server.HTTPException) as e:
+        _route(app, "/api/workspaces/merge", "POST")(server.MergeWorkspacesPayload(
+            source=str(ws), target=str(ws)))
+    assert e.value.status_code == 400
+
+
+def test_a_project_that_cannot_move_keeps_the_old_workspace(app, tmp_path, monkeypatch) -> None:
+    from pickapicka import projects
+    old = _ws(app, tmp_path / "Old")
+    new = _ws(app, tmp_path / "New")
+    _project(old / "a", tmp_path)
+    _project(old / "b", tmp_path)
+    real = projects.move_project
+
+    def fail_b(src, dst):
+        if src.name == "b":
+            raise OSError("permission denied")
+        return real(src, dst)
+    monkeypatch.setattr(projects, "move_project", fail_b)
+    out = _route(app, "/api/workspaces/merge", "POST")(server.MergeWorkspacesPayload(
+        source=str(old), target=str(new)))
+    assert [r.get("error") for r in out["results"]] == [None, "permission denied"]
+    assert (old / "b" / "picks.json").is_file() and (new / "a" / "picks.json").is_file()
+    assert not out["removed"] and str(old) in out["workspaces"]

@@ -338,6 +338,11 @@ class MoveProjectsPayload(BaseModel):
     workspace_dir: str | None = None   # None: the current workspace
 
 
+class MergeWorkspacesPayload(BaseModel):
+    source: str
+    target: str
+
+
 class MergePayload(BaseModel):
     project_dirs: list[str]
     name: str = ""
@@ -2410,17 +2415,80 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         userstate.set_project_location(payload.location)
         return {"location": payload.location}
 
+    def _refuse_while_busy() -> None:
+        """Project folders are not moved while a task may be writing into one."""
+        with ctx.score_lock:
+            if (ctx.opening_state["running"] or ctx.scoring_state["running"]
+                    or ctx.cluster_state["running"] or ctx.export_state["running"]):
+                raise HTTPException(status_code=409, detail="another task is running")
+
+    def _workspace_pair(payload: MergeWorkspacesPayload) -> tuple[Path, Path]:
+        source = Path(payload.source).expanduser().resolve()
+        target = Path(payload.target).expanduser().resolve()
+        if source == target:
+            raise HTTPException(status_code=400, detail="a workspace cannot be merged into itself")
+        if not source.is_dir():
+            raise HTTPException(status_code=400, detail=f"workspace folder not found: {source}")
+        return source, target
+
+    @app.post("/api/workspaces/merge/preview")
+    def merge_workspaces_preview(payload: MergeWorkspacesPayload) -> dict[str, Any]:
+        source, target = _workspace_pair(payload)
+        plan = projects_mod.workspace_merge_plan(source, target, ctx.project_dir)
+        moves = plan["moves"]
+        return {
+            "source": str(source), "target": str(target),
+            "projects": sum(1 for m in moves if not m["deleted"]),
+            "deleted": sum(1 for m in moves if m["deleted"]),
+            "renamed": [[m["src"].name, m["dst"].name] for m in moves
+                        if m["src"].name != m["dst"].name and not m["deleted"]],
+            "open": next((m["src"].name for m in moves if m["open"]), None),
+            "others": plan["others"],
+        }
+
+    @app.post("/api/workspaces/merge")
+    def merge_workspaces(payload: MergeWorkspacesPayload) -> dict[str, Any]:
+        """Move every project folder of one workspace into another, then drop
+        the old one from the list, and delete its folder if nothing else of
+        the person's is in it. Each project reports on its own, and one that
+        could not move keeps the old workspace listed."""
+        _refuse_while_busy()
+        source, target = _workspace_pair(payload)
+        target.mkdir(parents=True, exist_ok=True)
+        plan = projects_mod.workspace_merge_plan(source, target, ctx.project_dir)
+        results: list[dict[str, Any]] = []
+        for m in plan["moves"]:
+            r: dict[str, Any] = {"name": m["src"].name, "to": m["dst"].name, "deleted": m["deleted"]}
+            results.append(r)
+            if m["open"]:
+                r["error"] = "open: close it first"
+                continue
+            try:
+                projects_mod.move_project(m["src"], m["dst"])
+            except OSError as exc:
+                r["error"] = str(exc)
+                continue
+            r["moved"] = True
+            if not m["deleted"]:   # a deleted one is in no list to refile
+                userstate.project_moved(m["src"].resolve(), m["dst"].resolve())
+        was_current = userstate.get_current_workspace() == str(source)
+        stuck = any("error" in r for r in results)
+        removed = not stuck and projects_mod.remove_if_empty(source)
+        if not stuck:
+            userstate.forget_workspace(source)
+        if was_current or str(target) not in userstate.get_workspaces():
+            userstate.set_current_workspace(target)
+        return {"results": results, "removed": removed, "kept_others": plan["others"],
+                "workspaces": userstate.get_workspaces(),
+                "current": userstate.get_current_workspace()}
+
     @app.post("/api/projects/move")
     def move_projects(payload: MoveProjectsPayload) -> dict[str, Any]:
         """Move projects to `location`: into their photo folder's .pickapicka/,
         or into a workspace. Each is reported on its own, since one photo
         folder being read-only says nothing about the next. The open project
         is not moved under its own feet."""
-        with ctx.score_lock:
-            if (ctx.opening_state["running"] or ctx.scoring_state["running"]
-                    or ctx.cluster_state["running"] or ctx.export_state["running"]):
-                # One of them may be writing into a project folder right now.
-                raise HTTPException(status_code=409, detail="another task is running")
+        _refuse_while_busy()
         workspace = Path(payload.workspace_dir or userstate.get_current_workspace()
                          or str(userstate.DEFAULT_WORKSPACE)).expanduser().resolve()
         results: list[dict[str, Any]] = []

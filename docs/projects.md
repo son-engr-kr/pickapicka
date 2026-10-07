@@ -11,6 +11,14 @@
   file name). **Deleting a project never touches your photos**: it renames the
   project folder to `<name>.deleted-<timestamp>` and hides it from the list —
   decisions and edits stay inside, so renaming the folder back restores it.
+- **A workspace is a plain folder** you choose; the app keeps nothing in it but
+  project folders, and the workspace list itself is in `state.json`.
+  **Merge into current…** (Preferences → Workspaces) moves every project of
+  another workspace into the current one, deleted ones too so they can still be
+  restored. A name already taken gets the old workspace's name added, as
+  `wedding (Old-Projects)`. The old workspace then leaves the list, and its
+  folder is deleted only if nothing else is in it; a project that could not
+  move (the open one, say) keeps it listed.
 - **Where a project is kept**: Preferences → Workspaces → **Keep new
   projects** chooses between *in the workspace* (above) and *with the photos*,
   a hidden `.pickapicka/<name>/` inside the photo folder. Kept with the photos,

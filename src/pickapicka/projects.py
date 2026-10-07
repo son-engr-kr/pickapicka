@@ -295,3 +295,53 @@ def merge_seed(plan: dict[str, Any]) -> dict[str, Any]:
     for rel, kept in sorted(plan["marks"].items()):
         data["photos"].append({"rel_path": rel, **kept})
     return data
+
+
+# ----- merging workspaces ---------------------------------------------------
+# A workspace is a plain folder the person chose. The app keeps nothing in it
+# but project folders, so merging one workspace into another is moving those
+# folders across, soft-deleted ones too, so restoring them by renaming still
+# works. The old folder goes only once nothing else is left in it.
+
+# What the OS leaves in any folder it has shown; not the person's files.
+OS_LITTER = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
+
+
+def workspace_merge_plan(source: Path, target: Path, open_dir: Path | None) -> dict[str, Any]:
+    """Each project folder in `source`, with where it goes in `target`, and
+    the other things in `source` that are not the app's.
+
+    A name already taken in `target` gets the source workspace's name added
+    rather than overwriting anything. Names compare without case, since macOS
+    and Windows do."""
+    from .userstate import is_deleted_project
+
+    assert source != target, "a workspace cannot be merged into itself"
+    taken = {c.name.casefold() for c in target.iterdir()} if target.is_dir() else set()
+    moves: list[dict[str, Any]] = []
+    others: list[str] = []
+    for c in sorted(source.iterdir(), key=lambda c: c.name.lower()):
+        if not (c / "picks.json").is_file():
+            if c.name not in OS_LITTER:
+                others.append(c.name)
+            continue
+        name, n = c.name, 1
+        while name.casefold() in taken:
+            name = f"{c.name} ({source.name})" if n == 1 else f"{c.name} ({source.name} {n})"
+            n += 1
+        taken.add(name.casefold())
+        moves.append({"src": c, "dst": target / name, "deleted": is_deleted_project(c.name),
+                      "open": open_dir is not None and open_dir == c.resolve()})
+    return {"moves": moves, "others": others}
+
+
+def remove_if_empty(folder: Path) -> bool:
+    """Delete `folder` when the OS's own litter is all that is in it. True
+    when it went."""
+    left = list(folder.iterdir())
+    if any(c.name not in OS_LITTER or not c.is_file() for c in left):
+        return False
+    for c in left:
+        c.unlink()
+    folder.rmdir()
+    return True
