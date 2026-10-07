@@ -83,8 +83,9 @@ import numpy as np
 #   opacity   0..100, how much of the repair is blended in
 #   method    "ns" | "telea", the diffusion used by heal and spot, or "ai":
 #             a patch made by `aifill`, which the op then names in
-#   fill      {"id": <64 hex>, "box": [x0, y0, x1, y1]}: the patch's name and
-#             where it sits, in frame fractions (ai only)
+#   fill      {"id": <64 hex>, "box": [x0, y0, x1, y1], "model": "aifill"}: the
+#             patch's name, where it sits in frame fractions, and what made it
+#             (ai only)
 #   enabled   a switched-off operation is kept (the UI toggles it) but does nothing
 
 FULL_ROI = (0.0, 0.0, 1.0, 1.0)
@@ -100,7 +101,8 @@ KINDS: tuple[str, ...] = ("heal", "clone", "spot")
 # So NS by default, TELEA kept selectable because on some real edges it is
 # crisper and this is cheap enough to offer.
 METHODS: dict[str, int] = {"ns": cv2.INPAINT_NS, "telea": cv2.INPAINT_TELEA}
-AI_METHOD = "ai"           # a patch made by a model; see `aifill`
+AI_METHOD = "ai"           # a patch made by a model; see `aifill` and `genfill`
+FILL_MODELS = ("aifill", "genfill")
 _AI_KINDS = ("heal", "spot")
 
 OP_MAX = 200               # healing operations per photo
@@ -206,7 +208,10 @@ def _normalize_fill(raw: Any) -> dict[str, Any] | None:
     b = [_fnum(v, 0.0, 1.0, -1.0) for v in box]
     if min(b) < 0.0 or b[2] <= b[0] or b[3] <= b[1]:
         return None
-    return {"id": fid, "box": b}
+    out: dict[str, Any] = {"id": fid, "box": b}
+    if raw.get("model") in FILL_MODELS:
+        out["model"] = raw["model"]      # which model made it, for the list; not read by the render
+    return out
 
 
 def fill_ids(params: Any) -> list[str]:

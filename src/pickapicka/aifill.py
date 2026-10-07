@@ -44,85 +44,51 @@ photo and stroke give the same patch.
 from __future__ import annotations
 
 import hashlib
-import shutil
 import threading
-import urllib.request
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-import cv2
 import numpy as np
 
 from . import healing as healing_mod
-from . import paths
+from . import modelstore
 
-MODEL_NAME = "migan_pipeline_v2.onnx"
-# The authors' own upload. Before a release, mirror it to this repository's
-# release assets (as the segmentation model is) so a fresh install does not
-# depend on someone else's link; the pin below is what makes that safe.
-MODEL_URL = "https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx"
-MODEL_SHA256 = "6f1f3530a1a2324b19752018ce756088b07973cda8d7d890034ace5c8a48c40b"
-MODEL_SIZE = 28079181   # bytes
+# The model file, its source and its pin live with the other optional models
+# (modelstore.PACKS["aifill"]); the editor downloads it, after saying so,
+# before the first fill.
 MODEL_LICENCE = "MIT (Picsart AI Research): code and weights"
 
 # How much of the photo round the hole the model is handed: the pipeline crops
 # its own square of the hole's box plus 256 px, and this is enough to hold it.
 _CONTEXT = 256
 
-_MODEL_DIR = paths.MODEL_DIR
 _session = None
 _SESSION_LOCK = threading.Lock()
 
 
-# ----- model file ---------------------------------------------------------
-
 def model_path() -> Path:
-    return _MODEL_DIR / MODEL_NAME
+    pack = modelstore.PACKS["aifill"]
+    return pack.folder / pack.files[0].name
 
 
 def is_model_ready() -> bool:
-    p = model_path()
-    return p.is_file() and p.stat().st_size == MODEL_SIZE
+    return modelstore.is_ready("aifill")
 
 
-def _digest(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        while chunk := fh.read(1 << 20):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def ensure_model(progress_cb: Callable[[int, int], None] | None = None) -> Path:
-    """Download the model on first use, checked against its pinned SHA-256
-    before it is moved into place (as `segment.ensure_model`)."""
-    dest = model_path()
-    if is_model_ready():
-        return dest
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(".part")
-    with urllib.request.urlopen(MODEL_URL, timeout=60) as resp, tmp.open("wb") as out:
-        total = int(resp.headers.get("Content-Length") or MODEL_SIZE)
-        done = 0
-        while chunk := resp.read(256 * 1024):
-            out.write(chunk)
-            done += len(chunk)
-            if progress_cb is not None:
-                progress_cb(done, total)
-    got = _digest(tmp)
-    if got != MODEL_SHA256:
-        tmp.unlink(missing_ok=True)
-        raise RuntimeError(f"model checksum mismatch for {MODEL_NAME}: expected {MODEL_SHA256}, got {got}")
-    shutil.move(str(tmp), str(dest))
-    return dest
+def release() -> None:
+    """Drop the loaded session, e.g. before the file is deleted."""
+    global _session
+    with _SESSION_LOCK:
+        _session = None
 
 
 def _get_session():
     global _session
     with _SESSION_LOCK:
         if _session is None:
+            assert is_model_ready(), "the AI fill model is not downloaded"
             import onnxruntime as ort
-            _session = ort.InferenceSession(str(ensure_model()), providers=["CPUExecutionProvider"])
+            _session = ort.InferenceSession(str(model_path()), providers=["CPUExecutionProvider"])
         return _session
 
 

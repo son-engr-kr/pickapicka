@@ -573,6 +573,7 @@
           <button type="button" role="tab" data-pane="general">General</button>
           <button type="button" role="tab" data-pane="workspaces">Workspaces</button>
           <button type="button" role="tab" data-pane="project">This project</button>
+          <button type="button" role="tab" data-pane="models">AI models</button>
           <button type="button" role="tab" data-pane="keyboard">Keyboard</button>
         </nav>
         <div class="prefs-panes">
@@ -622,6 +623,12 @@
                 <button type="button" id="pref-hdr">Adjust…</button></div>
             </div>
           </section>
+          <section data-pane="models" hidden>
+            <p class="prefs-lead">Models the app downloads when a feature first needs one, kept on
+              this computer only. A feature that is switched off, or whose model is not here, stays
+              in the editor and offers the download when you use it.</p>
+            <ul id="pref-models" class="pref-models"></ul>
+          </section>
           <section data-pane="keyboard" hidden>
             <p class="prefs-lead">Every screen has its keys along its bottom, and <kbd>?</kbd> lists them all.
               Decisions are <kbd>P</kbd> <kbd>R</kbd> <kbd>V</kbd>, stars <kbd>1</kbd>–<kbd>5</kbd> and colour labels
@@ -629,6 +636,34 @@
             <button type="button" id="pref-keys" data-icon="info">Show all shortcuts</button>
           </section>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- An optional model before it is used: what it is, its licence, its download (modelstore.py). -->
+  <div id="model-modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="model-title">
+    <div class="choice-box model-box">
+      <h2 id="model-title"></h2>
+      <p id="model-detail"></p>
+      <p class="model-facts" id="model-facts"></p>
+      <p class="model-warn hidden" id="model-warn"></p>
+      <div id="model-terms" class="hidden">
+        <p class="model-terms-lead">This model may be used commercially, but its licences forbid the
+          uses below (Attachment A). Downloading it means you agree to that, and anyone you pass
+          the files on to has to agree too.</p>
+        <pre class="model-restrictions" id="model-restrictions"></pre>
+        <details class="model-licences"><summary>The licences in full</summary>
+          <pre id="model-licence-text"></pre></details>
+        <label class="model-accept"><input type="checkbox" id="model-accept" /> I accept these use restrictions</label>
+      </div>
+      <div class="model-progress hidden" id="model-progress">
+        <div class="model-bar"><span id="model-bar-fill"></span></div>
+        <small id="model-progress-text"></small>
+      </div>
+      <p class="model-error hidden" id="model-error"></p>
+      <div class="choice-buttons">
+        <button type="button" id="model-cancel">Cancel</button>
+        <button type="button" id="model-go" class="primary">Download</button>
       </div>
     </div>
   </div>
@@ -1381,6 +1416,7 @@
                 <button type="button" data-repair-tool="spot" title="Click a dust spot or a blemish">Spot</button>
                 <button type="button" data-repair-tool="heal" title="Paint over something to fill it in from around it">Heal</button>
                 <button type="button" data-repair-tool="fill" title="Paint over something and a model draws what belongs there: skin with its pores, a jaw line carried through">AI fill</button>
+                <button type="button" data-repair-tool="gen" title="Generative fill: a diffusion model for larger regions where AI fill runs out (an eye bag, crow&apos;s feet, glasses across skin). About 20 seconds a stroke; an opt-in download">Generative</button>
                 <button type="button" data-repair-tool="clone" title="Alt-click where to copy from, then paint">Clone</button>
               </div>
               <label class="look-row"><span class="look-name">Size</span>
@@ -1390,7 +1426,8 @@
                 Heal fills in from the edges: right for dust, spots, a stray hair
                 or a wire against the sky, but it smears texture like skin,
                 fabric, grass or hair. AI fill draws that texture instead (a
-                28 MB MIT-licensed model, fetched the first time); Clone copies
+                28 MB MIT-licensed model), and Generative redraws larger
+                regions with a diffusion model (1.9 GB, opt-in); Clone copies
                 real texture from a place you choose. Runs before every other
                 adjustment.
               </p>

@@ -1,0 +1,30 @@
+Pickapicka generative fill model (sd15-inpaint-lcm)
+
+This is a modified version of two models, each under its own licence, both
+included here:
+
+  Stable Diffusion v1.5 inpainting, Runway ML, as mirrored at
+  https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-inpainting
+  Licence: CreativeML Open RAIL-M (LICENSE-CreativeML-OpenRAIL-M.txt)
+  Copyright (c) 2022 Robin Rombach and Patrick Esser and contributors
+
+  LCM-LoRA for Stable Diffusion v1.5, https://huggingface.co/latent-consistency/lcm-lora-sdv1-5
+  Licence: CreativeML Open RAIL++-M (LICENSE-CreativeML-OpenRAIL++-M.txt)
+
+What was changed, by the Pickapicka project:
+
+  - The LCM-LoRA was fused into the inpainting UNet's weights (scale 1.0).
+  - The UNet, the VAE encoder (returning the latent distribution's mean) and
+    the VAE decoder were exported to ONNX (opset 17): unet.onnx,
+    vae_encoder.onnx, vae_decoder.onnx and their .onnx.data weight files.
+  - The UNet's attention was exported through diffusers' classic attention
+    processor and fused by onnxruntime's transformer optimizer into
+    Attention and MultiHeadAttention nodes.
+  - Their float weights are stored as float16, each followed by a cast back
+    to float32 in the graph.
+  - The tokenizer and the text encoder are not included. empty_prompt.npy is
+    the text encoder's output for the empty prompt, computed once.
+
+Use of these files is subject to the use-based restrictions in Attachment A
+of both licences (paragraph 5). By downloading them in Pickapicka you agreed
+to those restrictions, and you must hold anyone you pass them on to to them.

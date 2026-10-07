@@ -4325,11 +4325,11 @@ async function removeBlemishes() {
   let fresh = ops.filter((o) => !have.some((h) => h.kind === "spot"
     && Math.hypot(h.points[0][0] - o.points[0][0], h.points[0][1] - o.points[0][1]) < Math.max(h.radius, o.radius)));
   if (fresh.length && $("#portrait-blemish-ai").checked) {
-    if (!(await ensureFillModel())) { status.textContent = "AI fill model download failed"; return; }
+    if (!(await needModel("aifill"))) { status.textContent = ""; return; }
     status.textContent = `filling ${fresh.length} blemish${fresh.length === 1 ? "" : "es"} with AI fill…`;
     const made = await fetch("/api/edit/fill", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rel_path: editSession.relPath, ops: fresh, edit: opticsPayload() }),
+      body: JSON.stringify({ rel_path: editSession.relPath, ops: fresh, edit: opticsPayload(), model: "aifill" }),
     });
     if (!made.ok) { status.textContent = `AI fill failed: ${made.status} ${await made.text()}`; return; }
     fresh = (await made.json()).ops;
@@ -4376,6 +4376,194 @@ function bindPortraitPanel() {
       previewDuringDrag();
     });
   }
+}
+
+// ---------- optional models (modelstore.py) ----------
+// A feature whose model is not downloaded, or is switched off, stays in the
+// editor; using it opens this dialog, which states the size and the licence,
+// asks for a licence's use restrictions to be accepted where it has them, and
+// downloads with progress, a cancel and a retry that resumes.
+const modelState = { id: null, resolve: null, poll: null };
+const JSON_POST = { method: "POST", headers: { "Content-Type": "application/json" } };
+
+function fmtBytes(b) { return b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${Math.round(b / 1e6)} MB`; }
+// Memory as the system states it (binary gigabytes, called GB), so a 24 GB
+// machine reads as 24 GB.
+function fmtMemory(b) { return `${Math.round(b / 2 ** 30)} GB`; }
+
+async function modelStatus(id) {
+  return (await fetch(`/api/models/${id}`, { cache: "no-store" })).json();
+}
+
+// True once the model is here and its feature is on, asking for both first if
+// need be; false if the person backs out.
+async function needModel(id) {
+  const st = await modelStatus(id);
+  if (st.ready && st.on) return true;
+  return openModelModal(st);
+}
+
+async function openModelModal(st) {
+  modelState.id = st.id;
+  const off = st.ready && !st.on;
+  $("#model-title").textContent = off ? `${st.title} is switched off` : `Download ${st.title}?`;
+  $("#model-detail").textContent = off ? `${st.detail} It was switched off in Preferences.` : st.detail;
+  $("#model-facts").textContent = `${fmtBytes(st.size)} · licence: ${st.licence}`
+    + (st.memory ? ` · uses about ${fmtMemory(st.memory)} of memory while it works;`
+       + ` this computer has ${fmtMemory(st.ram)}` : "");
+  $("#model-warn").textContent = st.tight
+    ? "That is close to all of this computer's memory: a fill may be very slow, and other apps may slow down while it runs."
+    : "";
+  $("#model-warn").classList.toggle("hidden", !st.tight);
+  const terms = !off && st.terms.length > 0 && !st.accepted;
+  $("#model-terms").classList.toggle("hidden", !terms);
+  if (terms) await loadModelTerms(st.terms);
+  $("#model-accept").checked = false;
+  $("#model-error").classList.add("hidden");
+  $("#model-progress").classList.add("hidden");
+  $("#model-go").textContent = off ? "Switch on" : "Download";
+  $("#model-go").disabled = terms;
+  $("#model-cancel").textContent = "Cancel";
+  $("#model-modal").classList.remove("hidden");
+  if (st.state === "downloading") watchModelDownload();
+  return new Promise((resolve) => { modelState.resolve = resolve; });
+}
+
+async function loadModelTerms(paths) {
+  const texts = await Promise.all(paths.map(async (p) => (await fetch(`/static/${p}`)).text()));
+  // The attachment itself, not the paragraph that refers to it.
+  const first = texts[0], at = first.lastIndexOf("Attachment A");
+  $("#model-restrictions").textContent = at >= 0 ? first.slice(at).trim() : first;
+  $("#model-licence-text").textContent = texts.join(`\n\n${"-".repeat(48)}\n\n`);
+}
+
+function closeModelModal(ok) {
+  clearInterval(modelState.poll);
+  modelState.poll = null;
+  $("#model-modal").classList.add("hidden");
+  const resolve = modelState.resolve;
+  modelState.resolve = null;
+  if (resolve) resolve(ok);
+  if (prefsOpen()) renderPrefModels();
+}
+
+async function modelGo() {
+  const id = modelState.id;
+  const st = await modelStatus(id);
+  if (st.ready) {
+    await fetch(`/api/models/${id}/on`, { ...JSON_POST, body: JSON.stringify({ on: true }) });
+    closeModelModal(true);
+    return;
+  }
+  const res = await fetch(`/api/models/${id}/download`,
+                          { ...JSON_POST, body: JSON.stringify({ accept_terms: $("#model-accept").checked }) });
+  if (!res.ok) { showModelError((await res.json()).detail || res.statusText); return; }
+  watchModelDownload();
+}
+
+function watchModelDownload() {
+  $("#model-progress").classList.remove("hidden");
+  $("#model-error").classList.add("hidden");
+  $("#model-go").disabled = true;
+  $("#model-cancel").textContent = "Cancel download";
+  clearInterval(modelState.poll);
+  modelState.poll = setInterval(async () => {
+    const st = await modelStatus(modelState.id);
+    const pct = st.total ? Math.min(100, (100 * st.done) / st.total) : 0;
+    $("#model-bar-fill").style.width = `${pct}%`;
+    $("#model-progress-text").textContent = `${fmtBytes(st.done)} of ${fmtBytes(st.total)}`;
+    if (st.state === "error") {
+      clearInterval(modelState.poll);
+      showModelError(st.error);
+    } else if (st.state !== "downloading" && st.ready) {
+      closeModelModal(true);
+    }
+  }, 500);
+}
+
+function showModelError(msg) {
+  $("#model-error").textContent = `The download stopped: ${msg}. Trying again picks up where it stopped.`;
+  $("#model-error").classList.remove("hidden");
+  $("#model-go").disabled = false;
+  $("#model-go").textContent = "Try again";
+  $("#model-cancel").textContent = "Cancel";
+}
+
+async function modelCancel() {
+  const st = await modelStatus(modelState.id);
+  if (st.state === "downloading") await fetch(`/api/models/${modelState.id}/cancel`, JSON_POST);
+  closeModelModal(false);
+}
+
+async function renderPrefModels() {
+  const { models } = await (await fetch("/api/models", { cache: "no-store" })).json();
+  $("#pref-models").innerHTML = models.map((m) => {
+    const busy = m.state === "downloading";
+    const pct = m.total ? Math.round((100 * m.done) / m.total) : 0;
+    const state = busy ? `Downloading… ${pct}% of ${fmtBytes(m.total)}`
+      : m.state === "error" ? `The download stopped: ${m.error}`
+      : m.ready ? `Downloaded · ${fmtBytes(m.size)}` : `Not downloaded · ${fmtBytes(m.size)}`;
+    const action = busy ? `<button type="button" data-model-cancel="${m.id}">Cancel</button>`
+      : m.ready ? `<button type="button" data-model-delete="${m.id}">Delete</button>`
+      : `<button type="button" data-model-get="${m.id}">${m.state === "error" ? "Try again" : "Download"}</button>`;
+    const memory = m.memory
+      ? `<label class="pm-memory" title="Kept loaded, the next fill starts at once; freed, each fill takes about five seconds more and the memory goes back to other apps">`
+        + `Between fills <select data-model-memory="${m.id}">`
+        + [["auto", `Automatic (${m.keep_loaded && m.memory_mode === "auto" ? "keep loaded" : m.memory_mode === "auto" ? "free memory" : "…"})`],
+           ["keep", "Keep loaded"], ["release", "Free memory"]]
+          .map(([v, label]) => `<option value="${v}"${m.memory_mode === v ? " selected" : ""}>${label}</option>`).join("")
+        + `</select></label>` : "";
+    const toggle = m.switchable
+      ? `<label title="Off keeps the feature in the editor, asking to be switched on when used">`
+        + `<input type="checkbox" data-model-on="${m.id}"${m.on ? " checked" : ""} /> On</label>` : "";
+    return `<li><span><b>${escapeHtml(m.title)}</b><small>${escapeHtml(m.detail)}</small>`
+      + `<small>Licence: ${escapeHtml(m.licence)}</small>`
+      + `<span class="pm-state${m.state === "error" ? " error" : ""}">${escapeHtml(state)}</span>${memory}</span>`
+      + `<span class="pm-actions">${toggle}${action}</span></li>`;
+  }).join("");
+  if (models.some((m) => m.state === "downloading")) {
+    setTimeout(() => { if (prefsOpen() && !$("#pref-models").closest("section").hidden) renderPrefModels(); }, 700);
+  }
+}
+
+function bindModels() {
+  $("#model-go").addEventListener("click", modelGo);
+  $("#model-cancel").addEventListener("click", modelCancel);
+  $("#model-accept").addEventListener("change", (e) => { $("#model-go").disabled = !e.target.checked; });
+  $("#pref-models").addEventListener("click", async (e) => {
+    const get = e.target.closest("[data-model-get]");
+    const del = e.target.closest("[data-model-delete]");
+    const cancel = e.target.closest("[data-model-cancel]");
+    if (get) {
+      // The dialog, so a licence that asks for acceptance gets it.
+      openModelModal(await modelStatus(get.dataset.modelGet));
+    } else if (cancel) {
+      await fetch(`/api/models/${cancel.dataset.modelCancel}/cancel`, JSON_POST);
+      renderPrefModels();
+    } else if (del) {
+      const st = await modelStatus(del.dataset.modelDelete);
+      const ok = await askChoice(`Delete ${st.title}?`,
+        `Frees ${fmtBytes(st.size)}. The feature stays, and asks to download it again when it is next used. `
+        + "What it has already made in your photos stays as it is.",
+        [{ id: "cancel", label: "Cancel" }, { id: "delete", label: "Delete", danger: true }]);
+      if (ok !== "delete") return;
+      const res = await fetch(`/api/models/${st.id}/delete`, JSON_POST);
+      if (!res.ok) await askChoice("Could not delete it", (await res.json()).detail, [{ id: "ok", label: "OK", primary: true }]);
+      renderPrefModels();
+    }
+  });
+  $("#pref-models").addEventListener("change", async (e) => {
+    const mem = e.target.closest("[data-model-memory]");
+    if (mem) {
+      await fetch(`/api/models/${mem.dataset.modelMemory}/memory`, { ...JSON_POST, body: JSON.stringify({ mode: mem.value }) });
+      renderPrefModels();
+      return;
+    }
+    const on = e.target.closest("[data-model-on]");
+    if (!on) return;
+    await fetch(`/api/models/${on.dataset.modelOn}/on`, { ...JSON_POST, body: JSON.stringify({ on: on.checked }) });
+    renderPrefModels();
+  });
 }
 
 // ---------- lens & perspective ----------
@@ -4528,13 +4716,15 @@ function bindOpticsPanel() {
 // Stored as the server normalizes them, in original-frame fractions: healing
 // is {ops: [...]} and red-eye {enabled, corrections: [...]}, each null when
 // empty. A radius is a fraction of the frame WIDTH, as a brush stroke's is.
-const REPAIR_TOOLS = ["spot", "heal", "fill", "clone", "redeye", "peteye"];
+const REPAIR_TOOLS = ["spot", "heal", "fill", "gen", "clone", "redeye", "peteye"];
+// The model each AI tool fills with (modelstore.PACKS).
+const FILL_TOOL_MODEL = { fill: "aifill", gen: "genfill" };
 const REPAIR_LABELS = { spot: "Spot", heal: "Heal", clone: "Clone" };
 const repairState = { size: 20, cloneSrc: null };   // size in 1/1000 of the width
 const EYE_CLICK_RADIUS = 0.02;   // a click with no drag: an eye in a portrait
 
 function isRepairTool(t) { return REPAIR_TOOLS.includes(t); }
-function isRepairBrush(t) { return t === "spot" || t === "heal" || t === "fill" || t === "clone"; }
+function isRepairBrush(t) { return t === "spot" || t === "heal" || t === "fill" || t === "gen" || t === "clone"; }
 // AI fill strokes waiting for their patch: drawn, not yet part of the edit.
 const pendingFills = [];
 function healOps() { return (editSession.edit.healing && editSession.edit.healing.ops) || []; }
@@ -4561,7 +4751,9 @@ function renderRepairPanel() {
   const ops = healOps(), fixes = eyeFixes();
   $("#repair-list").innerHTML = ops.map((op, i) =>
     `<div class="repair-item"><label><input type="checkbox" data-heal-on="${i}"`
-    + `${op.enabled === false ? "" : " checked"} /> ${op.method === "ai" ? "AI fill" : (REPAIR_LABELS[op.kind] || op.kind)} ${i + 1}</label>`
+    + `${op.enabled === false ? "" : " checked"} /> ${op.method === "ai" ? (op.fill && op.fill.model === "genfill" ? "Generative" : "AI fill") : (REPAIR_LABELS[op.kind] || op.kind)} ${i + 1}</label>`
+    + (op.method === "ai" && op.fill && op.fill.model === "genfill"
+       ? `<button type="button" class="quiet" data-heal-again="${i}" title="Draw it again, differently">Again</button>` : "")
     + `<button type="button" class="quiet" data-heal-del="${i}" aria-label="Remove">×</button></div>`).join("");
   $("#redeye-list").innerHTML = fixes.map((c, i) =>
     `<div class="repair-item"><span>${c.kind === "pet" ? "Pet eye" : "Red eye"} ${i + 1}</span>`
@@ -4586,9 +4778,10 @@ function repairDown(e, f) {
     drawOverlay();
     return;
   }
-  if (tool === "fill") {
+  if (tool === "fill" || tool === "gen") {
     // Painted like a heal; the pixels come from the model once it is let go.
-    editSession.drag = { kind: "repair-fill", op: { ...base, kind: "heal", points: [[f.x, f.y]] } };
+    editSession.drag = { kind: "repair-fill", model: FILL_TOOL_MODEL[tool],
+                         op: { ...base, kind: "heal", points: [[f.x, f.y]] } };
     $("#edit-overlay").setPointerCapture(e.pointerId);
     drawOverlay();
     return;
@@ -4634,29 +4827,20 @@ function repairMove(e, f, d) {
   previewDuringDrag();
 }
 
-async function ensureFillModel() {
-  const info = await (await fetch("/api/fill/status", { cache: "no-store" })).json();
-  if (info.model_ready) return true;
-  const mb = Math.round((info.size || 0) / 1e6);
-  $("#repair-status").textContent = `fetching the AI fill model (${mb} MB, ${info.licence})…`;
-  const done = await (await fetch("/api/fill/download", { method: "POST" })).json();
-  $("#repair-status").textContent = done.model_ready ? "" : "AI fill model download failed";
-  return !!done.model_ready;
-}
-
 // One stroke at a time goes to the model; the stroke stays on the overlay
 // meanwhile so it is clear what is being filled.
-async function fillStroke(op) {
+async function fillStroke(op, model) {
   const rel = editSession.relPath;
   pendingFills.push(op);
   drawOverlay();
   const status = $("#repair-status");
   try {
-    if (!(await ensureFillModel())) return;
-    status.textContent = "filling…";
+    if (!(await needModel(model))) return;
+    status.textContent = model === "genfill" ? "generating… (about 20 seconds; the first one also loads the model)"
+      : "filling…";
     const res = await fetch("/api/edit/fill", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rel_path: rel, ops: [op], edit: opticsPayload() }),
+      body: JSON.stringify({ rel_path: rel, ops: [op], edit: opticsPayload(), model }),
     });
     if (!res.ok) { status.textContent = `AI fill failed: ${res.status} ${await res.text()}`; return; }
     const made = (await res.json()).ops;
@@ -4670,9 +4854,40 @@ async function fillStroke(op) {
   }
 }
 
+// A generative fill drawn again from other noise, in its place in the list.
+async function fillAgain(i) {
+  const old = healOps()[i];
+  if (!old || !(await needModel("genfill"))) return;
+  const rel = editSession.relPath;
+  const status = $("#repair-status");
+  const op = { ...old, method: "ns", fill: null };
+  pendingFills.push(op);
+  drawOverlay();
+  status.textContent = "drawing it again… (about 20 seconds)";
+  try {
+    const res = await fetch("/api/edit/fill", {
+      ...JSON_POST, body: JSON.stringify({ rel_path: rel, ops: [op], edit: opticsPayload(), model: "genfill",
+                                           seed: Math.floor(Math.random() * 2 ** 31) }),
+    });
+    if (!res.ok) { status.textContent = `Generative fill failed: ${res.status} ${await res.text()}`; return; }
+    const [made] = (await res.json()).ops;
+    if (editSession.relPath !== rel) return;
+    status.textContent = "";
+    const ops = healOps().slice();
+    const at = ops.indexOf(old);
+    if (at < 0) return;                       // removed meanwhile
+    ops[at] = { ...made, enabled: old.enabled };
+    setHealOps(ops);
+    repairChanged();
+  } finally {
+    pendingFills.splice(pendingFills.indexOf(op), 1);
+    drawOverlay();
+  }
+}
+
 async function repairUp(d) {
   if (d.kind === "repair-paint") { repairChanged(); return; }
-  if (d.kind === "repair-fill") { fillStroke(d.op); return; }
+  if (d.kind === "repair-fill") { fillStroke(d.op, d.model); return; }
   const status = $("#repair-status");
   const r = d.r < 0.004 ? EYE_CLICK_RADIUS : d.r;
   status.textContent = "checking the eye…";
@@ -4809,8 +5024,11 @@ function drawRepairs(ctx, mr) {
 }
 
 function bindRepairPanel() {
-  $$("#edit-repair-group [data-repair-tool]").forEach((b) => b.addEventListener("click", () => {
+  $$("#edit-repair-group [data-repair-tool]").forEach((b) => b.addEventListener("click", async () => {
     const tool = b.dataset.repairTool;
+    // A tool whose model is not here, or is switched off, asks for it now
+    // rather than after a stroke has been painted for nothing.
+    if (FILL_TOOL_MODEL[tool] && editSession.tool !== tool && !(await needModel(FILL_TOOL_MODEL[tool]))) return;
     // A mask selected under a repair tool would draw its handles over the work.
     if (editSession.tool !== tool) selectMask(-1, { silent: true });
     setEditTool(editSession.tool === tool ? null : tool);
@@ -4823,6 +5041,8 @@ function bindRepairPanel() {
   });
   $("#redeye-auto").addEventListener("click", findRedEyes);
   $("#repair-list").addEventListener("click", (e) => {
+    const again = e.target.closest("[data-heal-again]");
+    if (again) { fillAgain(Number(again.dataset.healAgain)); return; }
     const del = e.target.closest("[data-heal-del]");
     if (del) { setHealOps(healOps().filter((_, i) => i !== Number(del.dataset.healDel))); repairChanged(); }
   });
@@ -5187,6 +5407,7 @@ function setEditTool(tool) {
     : tool === "spot" ? "Click a dust spot or blemish · [ ] = size"
     : tool === "heal" ? "Paint over what should go; it fills from around it · [ ] = size"
     : tool === "fill" ? "Paint over what should go; a model draws skin, hair or whatever is around it · [ ] = size"
+    : tool === "gen" ? "Paint over a larger area; a diffusion model redraws it in about 20 seconds · [ ] = size"
     : tool === "clone" ? (repairState.cloneSrc ? "Paint where the copy goes · Alt-click to pick a new source"
                                                : "Alt-click (or click) where to copy from")
     : tool === "redeye" ? "Drag from the centre of the pupil out to the edge of the iris"
@@ -7505,6 +7726,11 @@ function bindKeys() {
       e.preventDefault();
       return;
     }
+    // A model's download dialog: Esc backs out (and stops a download).
+    if (!$("#model-modal").classList.contains("hidden")) {
+      if (e.key === "Escape") { modelCancel(); e.preventDefault(); }
+      return;
+    }
     // Preferences: ⌘, or Ctrl+, as everywhere; Esc closes; nothing else gets
     // through to the photos behind.
     if ((e.metaKey || e.ctrlKey) && e.key === ",") { e.preventDefault(); openPrefs(); return; }
@@ -8248,6 +8474,7 @@ function closePrefs() { $("#prefs-modal").classList.add("hidden"); }
 function showPrefsPane(pane) {
   $$("#prefs-modal .prefs-nav button").forEach((b) => b.classList.toggle("active", b.dataset.pane === pane));
   $$("#prefs-modal .prefs-panes > section").forEach((sec) => { sec.hidden = sec.dataset.pane !== pane; });
+  if (pane === "models") renderPrefModels();
 }
 
 function renderPrefWorkspaces() {
@@ -8535,6 +8762,7 @@ function bindUi() {
   bindEditSplitter();
   bindLookPanel();
   bindRepairPanel();
+  bindModels();
   bindOpticsPanel();
   bindPortraitPanel();
   bindTour();

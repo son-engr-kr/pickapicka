@@ -29,7 +29,8 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
 from . import (
-    aifill as aifill_mod, cameras, db, editing, healing as healing_mod, exifinfo, exporting, film as film_mod, folderinfo, fsutil, hdr, imfile,
+    aifill as aifill_mod, cameras, db, editing, genfill as genfill_mod, healing as healing_mod,
+    modelstore, exifinfo, exporting, film as film_mod, folderinfo, fsutil, hdr, imfile,
     launch, lut as lut_mod, metadata as metadata_mod, portrait as portrait_mod, presets as presets_mod,
     projects as projects_mod,
     redeye as redeye_mod, transform as transform_mod, raw, relink, scenes, segment as segment_mod,
@@ -292,6 +293,22 @@ class FillPayload(BaseModel):
     rel_path: str
     ops: list[dict[str, Any]]            # heals and spots, as the editor drew them
     edit: dict[str, Any] | None = None   # only its optics are read
+    model: Literal["aifill", "genfill"] = "aifill"
+    # A variation: generative fill's noise from this seed instead of the
+    # stroke's own. AI fill has no noise and ignores it.
+    seed: int | None = None
+
+
+class ModelDownloadPayload(BaseModel):
+    accept_terms: bool = False
+
+
+class ModelOnPayload(BaseModel):
+    on: bool
+
+
+class ModelMemoryPayload(BaseModel):
+    mode: Literal["auto", "keep", "release"]
 
 
 class UprightPayload(BaseModel):
@@ -1898,6 +1915,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     # Checks only once serve() starts it, so building an app (the tests) stays offline.
     updater = updater_mod.Updater()
     app.state.updater = updater
+    downloads = modelstore.Downloads()
+    app.state.downloads = downloads
 
     @app.middleware("http")
     async def _no_cache_for_web_assets(request: Request, call_next):
@@ -3139,17 +3158,76 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         full = ctx.get_corrected_full(payload.rel_path, payload.edit)
         return {"ops": portrait_mod.find_blemishes(full, faces), "faces": len(faces)}
 
-    @app.get("/api/fill/status")
-    def fill_status() -> dict[str, Any]:
-        return {"model_ready": aifill_mod.is_model_ready(), "size": aifill_mod.MODEL_SIZE,
-                "licence": aifill_mod.MODEL_LICENCE}
+    # ----- optional models -------------------------------------------
 
-    @app.post("/api/fill/download")
-    def fill_download() -> dict[str, Any]:
-        """Fetch the AI fill model. Blocking, as the segmentation model's is:
-        28 MB, once ever."""
-        aifill_mod.ensure_model()
-        return {"model_ready": aifill_mod.is_model_ready()}
+    def _pack(pack_id: str) -> modelstore.Pack:
+        if pack_id not in modelstore.PACKS:
+            raise HTTPException(status_code=404, detail=f"no such model: {pack_id}")
+        return modelstore.PACKS[pack_id]
+
+    @app.get("/api/models")
+    def list_models() -> dict[str, Any]:
+        return {"models": [downloads.status(k) for k in modelstore.PACKS]}
+
+    @app.get("/api/models/{pack_id}")
+    def model_status(pack_id: str) -> dict[str, Any]:
+        _pack(pack_id)
+        return downloads.status(pack_id)
+
+    @app.post("/api/models/{pack_id}/download")
+    def download_model(pack_id: str, payload: ModelDownloadPayload) -> dict[str, Any]:
+        """Start (or resume) a pack's download in the background; poll its
+        status for progress. A pack whose licence carries use restrictions is
+        only downloaded once they have been accepted, and the acceptance is
+        recorded. Asking for a download is asking for the feature, so it is
+        switched on too."""
+        pack = _pack(pack_id)
+        if pack.terms and not userstate.get_model_terms(pack_id):
+            if not payload.accept_terms:
+                raise HTTPException(status_code=400, detail="the licence's use restrictions must be accepted first")
+            modelstore.accept_terms(pack_id)
+        if pack.switchable:
+            userstate.set_model_on(pack_id, True)
+        downloads.start(pack_id)
+        return downloads.status(pack_id)
+
+    @app.post("/api/models/{pack_id}/cancel")
+    def cancel_model(pack_id: str) -> dict[str, Any]:
+        _pack(pack_id)
+        downloads.cancel(pack_id)
+        return downloads.status(pack_id)
+
+    @app.post("/api/models/{pack_id}/delete")
+    def delete_model(pack_id: str) -> dict[str, Any]:
+        """Delete a pack's files (a partial download too). The feature stays
+        where it is in the editor and asks for the download again."""
+        _pack(pack_id)
+        if downloads.status(pack_id)["state"] == "downloading":
+            raise HTTPException(status_code=409, detail="cancel the download first")
+        aifill_mod.release()
+        genfill_mod.release()
+        modelstore.delete(pack_id)
+        return downloads.status(pack_id)
+
+    @app.post("/api/models/{pack_id}/memory")
+    def model_memory(pack_id: str, payload: ModelMemoryPayload) -> dict[str, Any]:
+        """Whether a model stays loaded between uses: automatic by this
+        machine's memory, always, or freed after each use."""
+        _pack(pack_id)
+        userstate.set_model_memory(pack_id, payload.mode)
+        if not modelstore.keep_loaded(pack_id):
+            genfill_mod.release()
+        return downloads.status(pack_id)
+
+    @app.post("/api/models/{pack_id}/on")
+    def switch_model(pack_id: str, payload: ModelOnPayload) -> dict[str, Any]:
+        pack = _pack(pack_id)
+        if not pack.switchable:
+            raise HTTPException(status_code=400, detail=f"{pack.title} cannot be switched off")
+        userstate.set_model_on(pack_id, payload.on)
+        if not payload.on:
+            genfill_mod.release() if pack_id == "genfill" else aifill_mod.release()
+        return downloads.status(pack_id)
 
     @app.post("/api/edit/fill")
     def ai_fill(payload: FillPayload) -> dict[str, Any]:
@@ -3162,8 +3240,14 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         _require_loaded()
         if ctx.photo_index.get(payload.rel_path) is None:
             raise HTTPException(status_code=404, detail="photo not found")
-        if not aifill_mod.is_model_ready():
-            raise HTTPException(status_code=409, detail="the AI fill model is not downloaded")
+        if not modelstore.usable(payload.model):
+            raise HTTPException(status_code=409, detail=f"{modelstore.PACKS[payload.model].title} "
+                                                        "is not downloaded or is switched off")
+        if payload.model == "aifill":
+            make = aifill_mod.make_fill
+        else:
+            def make(frame, op):
+                return genfill_mod.make_fill(frame, op, seed=payload.seed)
         ops = [healing_mod.normalize_op({**raw, "method": "ns", "fill": None}) for raw in payload.ops]
         if not ops or any(op is None or op["kind"] not in ("heal", "spot") for op in ops):
             raise HTTPException(status_code=400, detail="an AI fill is a heal or a spot")
@@ -3171,13 +3255,16 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         assert ctx.fills_root is not None
         made = []
         for op in ops:
-            patch, box = aifill_mod.make_fill(full, op)
+            patch, box = make(full, op)
             fid = aifill_mod.fill_id(patch, box)
             dst = ctx.fills_root / f"{fid}.png"
             if not dst.is_file():
                 with _atomic_write(dst) as tmp:
                     imfile.imwrite(tmp, cv2.cvtColor(patch, cv2.COLOR_RGB2BGR))
-            made.append({**op, "method": healing_mod.AI_METHOD, "fill": {"id": fid, "box": box}})
+            made.append({**op, "method": healing_mod.AI_METHOD,
+                         "fill": {"id": fid, "box": box, "model": payload.model}})
+        if payload.model == "genfill" and not modelstore.keep_loaded("genfill"):
+            genfill_mod.release()       # give its gigabytes back until the next one
         return {"ops": made}
 
     @app.post("/api/edit/upright")

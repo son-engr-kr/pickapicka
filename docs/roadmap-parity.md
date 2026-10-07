@@ -285,8 +285,14 @@ edits name. On real skin it keeps 95% of the fine texture where `cv2.inpaint`
 keeps 31%. That covers the small-to-medium half of the list below on the
 permissive path; big-lama turned out to have no written weights licence at all
 (only maintainers' comments that it is Apache-2.0), so it stays off the default
-path, and diffusion (SD 1.5 inpainting, CreativeML OpenRAIL-M, whose use
-restrictions must be passed on to every user) is still undecided.
+path. Diffusion is now the opt-in path for larger regions: **Generative**
+(`genfill.py`), SD 1.5 inpainting with the LCM-LoRA fused in, four steps,
+about 15 s a stroke on a laptop CPU through onnxruntime, built by
+`packaging/models/build_genfill.py` and downloaded (1.9 GB) only after its
+licences' use restrictions (CreativeML OpenRAIL-M, OpenRAIL++-M) are shown and
+accepted, as section 4 of those licences requires of a redistributor. All
+optional models are listed in Preferences, **AI models** (`modelstore.py`),
+with download, delete and on/off.
 
 This is the fork in the road. A generative edit cannot be a scalar, so it needs:
 a per-photo raster layer stored beside `picks.json`, content-addressed by the

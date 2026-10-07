@@ -97,6 +97,26 @@ Two stages that fix the captured image rather than interpret it, and they run
     does not make it stale.
   - **Remove blemishes** in the Portrait panel uses AI fill for every spot it
     finds when **with AI fill** is ticked (the default).
+- **Generative** is the heavier tool for larger regions, where AI fill runs
+  out: an eye bag, a fan of crow's feet, a glasses frame or a strand of hair
+  across skin. It is Stable Diffusion 1.5 inpainting with the LCM-LoRA fused
+  in, four steps on the CPU, about 15 seconds a stroke on a recent laptop (22
+  the first time), longer on an older one. On a 6% hole under an eye AI fill
+  left dark dashes where the creases ran in and this redrew the lid's fold;
+  across a glasses frame AI fill broke the frame and this carried it through.
+  - Each stroke's noise comes from the stroke itself, so the same stroke gives
+    the same fill. **Again**, next to a generative fill in the list, draws it
+    differently.
+  - What it draws is matched to the photo's colour round it: the model's
+    decoder leaves a slow colour drift, measured on the ring of known pixels
+    round the hole and taken out inside it.
+  - It is an opt-in download of 1.9 GB, and its licences (CreativeML
+    OpenRAIL-M, and OpenRAIL++-M for the LCM-LoRA) allow commercial use but
+    forbid a list of uses (Attachment A), which the download shows and asks
+    you to accept. It is never in the installer.
+  - It uses 10 to 12 GB of memory while it works. The download states how much
+    this computer has and warns when that is tight.
+
 - **Red-eye and pet-eye**, which are genuinely different problems and not one
   control with a switch. Red-eye pulls a flash-reddened pupil to a neutral built
   from the channels the flash did *not* contaminate, and **protects the
@@ -477,6 +497,26 @@ noise actually lives, and negative texture can be brushed onto skin alone.
 - **Shooting info**: camera, lens, focal length, aperture, shutter and ISO are
   read once at scoring time and shown in the viewer — and available to the
   watermark. RAW files get theirs from the embedded preview.
+
+## AI models
+
+Preferences, **AI models**, lists every model the app downloads (AI fill,
+Generative fill, the automatic masks, subject detection) with its size, its
+licence and whether it is here.
+
+- **Download** and **Delete** are there for each. A download runs in the
+  background with its progress; one that stops (a dropped connection, a server
+  error) says why, and **Try again** picks up where it stopped. Every file is
+  checked against its pinned SHA-256 and thrown away if it does not match.
+- AI fill and Generative fill can be switched **off**. A feature that is off,
+  or whose model is not here, stays where it is in the editor; using it opens
+  the download, or asks to switch it back on. Deleting a model leaves what it
+  already made in your photos as it is.
+- **Between fills** says whether Generative fill stays loaded after a fill,
+  so the next starts at once, or is freed, giving its memory back for about
+  five seconds more a fill. **Automatic**, the default, keeps it loaded only
+  on a computer with at least two and a half times the memory it uses (32 GB
+  and up).
 
 ## Working at full resolution
 
