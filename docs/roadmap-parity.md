@@ -230,8 +230,17 @@ Skin — the frequency-separation family, all as sliders on a skin mask:
   adds them to the photo as spot heals (`portrait.find_blemishes`). Precision
   checked on clear skin, recall only on planted spots.
 - AI Frequency Separation, AI Dodge and Burn (skin contouring)
-- Facial Wrinkle Remover, AI Frown Lines Remover, Remove Marionette Lines,
-  Remove Dark Circles, Freckles Filter
+- ~~Facial Wrinkle Remover, AI Frown Lines Remover~~ `done` as **Wrinkles**:
+  the band between the pores and a scale wider than the crease, taken out of
+  every channel where Frangi's line measure finds a long dark valley, on the
+  face's skin with the lids, eyes, mouth and nose left out and glasses cut out
+  by the segmenter's accessories class. Marionette and smile lines are only
+  softened where they are fine; the broad fold is shape and stays. The same
+  stage on the body skin under the jaw is **Neck lines**, which is not in
+  either product's list. ~~Remove Dark Circles~~ `done` as **Dark circles**:
+  the low band of a crescent under each eye moved, lighter only, to the
+  cheek's colour measured below it. No new model for any of the three.
+- Remove Marionette Lines (beyond softening), Freckles Filter
 - AI Rosy Complexion, AI Skin Tone Changer
 
 Eyes, mouth, brows:

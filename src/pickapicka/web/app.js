@@ -4263,10 +4263,11 @@ function buildFilmFields() {
 const portraitState = { faces: null, rel: null, key: "" };
 // Mirrors portrait.DEFAULT_PORTRAIT, every one neutral at 0: the skin, eyes and
 // teeth are 0..100, the face's shape -100..100 (reshape.SHAPE_KEYS).
-const PORTRAIT_KEYS = ["smooth", "teeth", "eyes",
+const PORTRAIT_KEYS = ["smooth", "wrinkles", "dark_circles", "neck", "teeth", "eyes",
                        "eye_size", "face_width", "jaw_width", "chin_length", "nose_width", "mouth_width"];
 // What the panel's summary calls each, when it is set.
-const PORTRAIT_SHORT = { smooth: "smooth", teeth: "teeth", eyes: "eyes", eye_size: "eye size",
+const PORTRAIT_SHORT = { smooth: "smooth", wrinkles: "wrinkles", dark_circles: "circles",
+                         neck: "neck", teeth: "teeth", eyes: "eyes", eye_size: "eye size",
                          face_width: "face", jaw_width: "jaw", chin_length: "chin",
                          nose_width: "nose", mouth_width: "mouth" };
 
@@ -10442,7 +10443,7 @@ const TOURS = {
     { target: "#edit-optics-group", title: "Lens & perspective",
       body: "Straighten leaning buildings with <b>Upright</b>, and correct distortion, colour fringes and dark corners." },
     { target: "#edit-portrait-group", title: "Portrait",
-      body: "Smooth skin, whiten teeth and eyes, remove blemishes, and reshape the eyes, face, jaw, chin, nose and mouth, sized to each face it finds." },
+      body: "Smooth skin, soften wrinkles and neck lines, lift dark circles, whiten teeth and eyes, remove blemishes, and reshape the eyes, face, jaw, chin, nose and mouth, sized to each face it finds." },
     { target: "#edit-repair-group", title: "Heal & red eye",
       body: "Remove dust and small things by hand, and fix red eyes." },
     { target: "#edit-save", title: "Save",

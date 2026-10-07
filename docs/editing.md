@@ -130,6 +130,30 @@ Two stages that fix the captured image rather than interpret it, and they run
   wide zone round the eyes are left out, as is the edge of the skin. On two
   real, clear-skinned faces it found the one small dark spot each had and
   nothing else. It has not been measured on real acne.
+- **Wrinkles** softens the lines on the face: crow's feet, the lines under the
+  eyes and across the forehead, and the fine part of the smile lines. A line is
+  a long, narrow valley, found with Frangi's line measure at two scales sized
+  to the face, and what comes out is the band between the pores and a scale
+  wider than the crease, in every channel, so the softened line goes back to
+  the skin's colour instead of turning into a lighter orange one. The pores
+  are finer than that band and stay. On a test face a line kept 30% of its
+  depth at full strength and a round spot of the same depth kept 72%: spots
+  are for **Remove blemishes**. The upper lids (up to the brows), the eyes,
+  the mouth and the nose are left alone, since their folds are their shape,
+  and so are glasses and earrings, which the segmenter finds: on a real face
+  with wire-rimmed glasses the rims were untouched.
+- **Dark circles** lifts the shadow under each eye towards the colour of the
+  cheek just below it, measured once per photo. Only the low band moves, so
+  the texture of the skin rides along, and only ever lighter: an under-eye
+  that is already bright is not darkened.
+- **Neck lines** does what Wrinkles does, on the neck: the segmenter's skin
+  under the jaw line, with a wider band, since neck creases are broader than
+  the lines round the eyes. The shadow under the jaw is shape, not a line, and
+  stays.
+- The skin stages run in that order (lines and shadows on the skin as it was
+  shot, then the smoothing, then the whitening), so each one sees what it was
+  tuned on.
+
 ### Face shape
 
 - **Eye size, Face width, Jaw, Chin, Nose width and Mouth width**, each -100 to
