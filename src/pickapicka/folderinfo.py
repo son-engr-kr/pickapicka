@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import raw, scenes
-from .scorer import _is_supported
+from .scorer import PROJECTS_SUBDIR, _is_supported, pair_group
 
 # Files looked at before stopping. Someone will pick a whole drive, and the
 # useful answer there ("lots of photos") is already in a partial count.
@@ -34,7 +34,7 @@ _TIME_WORKERS = 8
 
 def _skip_dir(parent: Path, name: str) -> bool:
     """A folder that holds the app's own files, not photos."""
-    return is_project_dir(parent / name) or (
+    return name == PROJECTS_SUBDIR or is_project_dir(parent / name) or (
         name.startswith("picks.json") and name.endswith(_LEGACY_CACHE_SUFFIXES))
 
 
@@ -88,6 +88,10 @@ def inspect(
                 if dirpath == root:
                     info["projects"] += 1
                 continue
+            if d == PROJECTS_SUBDIR:
+                # Projects kept with these photos: not counted as projects, which
+                # would read the photo folder as a workspace.
+                continue
             if d.startswith("picks.json") and d.endswith(_LEGACY_CACHE_SUFFIXES):
                 continue
             keep.append(d)
@@ -136,7 +140,8 @@ def shots(
     capture times, for the new-project wizard to preview scene grouping on.
 
     A shot is what scoring makes one photo of: files with the same stem in the
-    same first-level folder, so a RAW and its JPEG are one shot, and its time
+    same first-level folder, paired as `scorer.pair_group` does, so a RAW and
+    its JPEG are one shot, and its time
     is the RAW's when it has one (`scorer` pairs them on exactly that key and
     takes the RAW's time from libraw). RAWs are looked for under `raw_root`
     when the project keeps them in a subfolder of their own, as scoring does.
@@ -151,7 +156,7 @@ def shots(
     root = root.expanduser().resolve()
     assert root.is_dir(), f"not a folder: {root}"
     raw_root = root if raw_root is None else raw_root.expanduser().resolve()
-    by_key: dict[tuple[str, str], dict[str, Path]] = {}
+    by_key: dict[tuple[str, str], dict[str, list[Path]]] = {}
     truncated = False
     # One walk when the RAWs sit among the JPEGs, two when they have a folder.
     walks = [(root, ("jpeg", "raw"))] if raw_root == root else \
@@ -170,30 +175,32 @@ def shots(
                 if key not in by_key and len(by_key) >= limit:
                     truncated = True
                     break
-                by_key.setdefault(key, {})[kind] = f
+                by_key.setdefault(key, {"jpeg": [], "raw": []})[kind].append(f)
             if truncated:
                 break
         if truncated:
             break
 
-    def when(files: dict[str, Path]) -> float | None:
-        if "raw" in files:
+    def when(shot: tuple[Path | None, Path | None]) -> float | None:
+        raw_f, jpeg_f = shot
+        if raw_f is not None:
             # From the file's head where the format allows (raw.head_capture_time):
             # libraw unpacks the whole file for it, half a second a frame.
-            t = raw.read_capture_time(files["raw"])
+            t = raw.read_capture_time(raw_f)
         else:
-            t = scenes.read_capture_time(files["jpeg"])
+            t = scenes.read_capture_time(jpeg_f)
         return _wall_seconds(t) if t is not None else None
 
-    keys = sorted(by_key)
+    found = [(k[0], shot) for k in sorted(by_key)
+             for shot in pair_group(by_key[k]["jpeg"], by_key[k]["raw"])]
     with ThreadPoolExecutor(max_workers=_TIME_WORKERS) as pool:
-        times = list(pool.map(lambda k: when(by_key[k]), keys))
+        times = list(pool.map(lambda f: when(f[1]), found))
     timed = sorted(t for t in times if t is not None)
-    counts = Counter(k[0] for k in keys)
+    counts = Counter(scene for scene, _ in found)
     return {
-        "shots": len(keys),
+        "shots": len(found),
         "times": timed,
-        "untimed": len(keys) - len(timed),
+        "untimed": len(found) - len(timed),
         "folders": [{"name": n, "count": c} for n, c in sorted(counts.items())],
         "truncated": truncated,
     }

@@ -137,6 +137,14 @@
               <option value="photos">Most photos</option>
             </select>
           </label>
+          <button type="button" id="projects-select">Select</button>
+        </div>
+        <div class="projects-selbar hidden" id="projects-selbar">
+          <span id="projects-selcount">Click projects to select them.</span>
+          <button type="button" id="projects-merge">Merge…</button>
+          <button type="button" id="projects-to-photos">Move into photo folders</button>
+          <button type="button" id="projects-to-workspace">Move to this workspace</button>
+          <button type="button" id="projects-select-done">Done</button>
         </div>
         <div id="workspace-projects" class="project-grid"></div>
       </section>
@@ -591,6 +599,10 @@
               <button type="button" id="pref-tours">Show them again</button></div>
           </section>
           <section data-pane="workspaces" hidden>
+            <div class="prefs-row"><span><b>Keep new projects</b><small>In a workspace, apart from the photos, or in a hidden <code>.pickapicka</code> folder inside the photo folder, so moving the photos takes the project along. Changing this offers to move the existing ones.</small></span>
+              <div class="prefs-seg" id="pref-project-location" role="group">
+                <button type="button" data-loc="workspace">In the workspace</button><button type="button" data-loc="photos">With the photos</button>
+              </div></div>
             <p class="prefs-lead">The folders your projects are kept in, one subfolder per project.
               New projects go into the current one. Removing one from this list deletes nothing.</p>
             <ul id="pref-workspaces"></ul>

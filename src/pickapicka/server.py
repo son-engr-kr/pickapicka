@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from . import (
     cameras, db, editing, exifinfo, exporting, film as film_mod, folderinfo, fsutil, hdr, imfile,
     launch, lut as lut_mod, metadata as metadata_mod, portrait as portrait_mod, presets as presets_mod,
+    projects as projects_mod,
     redeye as redeye_mod, transform as transform_mod, raw, relink, scenes, segment as segment_mod,
     updater as updater_mod, userstate, watermark as watermark_mod,
 )
@@ -319,10 +320,29 @@ class CreateProjectPayload(BaseModel):
     scene_grouping_mode: Literal["folder", "time_gap"] = "folder"
     scene_grouping_gap_minutes: int = 30
     subject_classes: list[str] = []
+    # None: wherever Preferences says new projects go.
+    location: Literal["workspace", "photos"] | None = None
 
 
 class DeleteProjectPayload(BaseModel):
     project_dir: str
+
+
+class LocationPayload(BaseModel):
+    location: Literal["workspace", "photos"]
+
+
+class MoveProjectsPayload(BaseModel):
+    project_dirs: list[str]
+    location: Literal["workspace", "photos"]
+    workspace_dir: str | None = None   # None: the current workspace
+
+
+class MergePayload(BaseModel):
+    project_dirs: list[str]
+    name: str = ""
+    location: Literal["workspace", "photos"] | None = None
+    workspace_dir: str | None = None
 
 
 class DownloadPayload(BaseModel):
@@ -1770,6 +1790,20 @@ def _sanitize_segment(name: str) -> str:
     return cleaned or "unnamed"
 
 
+def _downloads_folder(name: str) -> Path:
+    """A dated folder in Downloads that does not exist yet, for a batch of
+    photos to land in together: where both an export and a quick download put
+    them unless told otherwise, so there is one place to look."""
+    downloads = Path.home() / "Downloads"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M")
+    target = downloads / f"{_sanitize_segment(name)}_{stamp}"
+    n = 2
+    while target.exists():
+        target = downloads / f"{_sanitize_segment(name)}_{stamp}-{n}"
+        n += 1
+    return target
+
+
 def _autodetect_jpeg_subdir(photo_dir: Path) -> str:
     """If `photo_dir` has no top-level supported images but a common subfolder
     does, return that subfolder's name. Otherwise return ''."""
@@ -2076,6 +2110,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             ctx.opening_state["message"] = "Loading project…"
             if project_dir is not None:
                 ctx.load_project(project_dir)
+                userstate.remember_project(project_dir)
                 userstate.remember_open(
                     db_path, photo_dir, jpeg_subdir,
                     kind="project", project_dir=project_dir,
@@ -2131,7 +2166,23 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         """Open an existing project directory (created via the wizard)."""
         _claim_open_lock()
         project_dir = Path(payload.project_dir).expanduser().resolve()
+        kept = project_dir / projects_mod.PHOTOS_SUBDIR
+        if not (project_dir / "picks.json").is_file() and kept.is_dir():
+            # A photo folder was picked: open the project kept in it, if just one.
+            inside = [c for c in kept.iterdir() if (c / "picks.json").is_file()
+                      and not userstate.is_deleted_project(c.name)]
+            if len(inside) == 1:
+                project_dir = inside[0]
         db_path = project_dir / "picks.json"
+        if not project_dir.exists() and projects_mod.is_with_photos(project_dir):
+            # Kept with its photos, and the photo folder has moved: the client
+            # asks where it went (relink, which then finds the project in it).
+            ctx.opening_state["running"] = False
+            raise HTTPException(status_code=404, detail={
+                "missing": True, "project_dir": str(project_dir),
+                "photo_dir": str(project_dir.parent.parent),
+                "message": f"photo folder not found: {project_dir.parent.parent}",
+            })
         if not db_path.is_file():
             ctx.opening_state["running"] = False
             ctx.opening_state["error"] = (
@@ -2141,10 +2192,12 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                 status_code=400,
                 detail=f"not a project directory (no picks.json found): {project_dir}",
             )
-        # photo_dir/jpeg_subdir come from the picks.json itself.
+        # photo_dir/jpeg_subdir come from the picks.json itself, except that a
+        # project kept with its photos is wherever its photo folder now is.
         try:
+            projects_mod.heal_photo_root(project_dir)
             data = db.load(db_path)
-            photo_dir = Path(data["photo_root"]).expanduser().resolve()
+            photo_dir = projects_mod.photo_root_of(project_dir, data).resolve()
             jpeg_subdir = data.get("jpeg_subdir", "") or ""
         except Exception as exc:
             ctx.opening_state["running"] = False
@@ -2165,13 +2218,15 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
 
     @app.post("/api/project/create")
     def create_project(payload: CreateProjectPayload) -> dict[str, Any]:
-        """Create a project *by name* inside the chosen workspace and trigger the
-        initial score+cluster. The project folder is <workspace>/<name>/."""
+        """Create a project *by name* and trigger the initial score+cluster. The
+        project folder is <workspace>/<name>/, or <photos>/.pickapicka/<name>/
+        when projects are kept with their photos."""
         _claim_open_lock()
         name = _sanitize_segment(payload.name)
         workspace_dir = Path(payload.workspace_dir).expanduser().resolve()
-        project_dir = (workspace_dir / name).resolve()
         photo_dir = Path(payload.photo_dir).expanduser().resolve()
+        location = payload.location or userstate.get_project_location()
+        project_dir = projects_mod.target_dir(name, photo_dir, location, workspace_dir).resolve()
         if not payload.name.strip():
             ctx.opening_state["running"] = False
             ctx.opening_state["error"] = "project name is required"
@@ -2182,13 +2237,16 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=ctx.opening_state["error"])
         if (project_dir / "picks.json").exists():
             ctx.opening_state["running"] = False
-            ctx.opening_state["error"] = f"a project named '{name}' already exists in this workspace"
+            ctx.opening_state["error"] = (
+                f"a project named '{name}' already exists in this "
+                + ("photo folder" if location == "photos" else "workspace"))
             raise HTTPException(status_code=400, detail=ctx.opening_state["error"])
         jpeg_root = (
             (photo_dir / payload.jpeg_subdir).resolve()
             if payload.jpeg_subdir else photo_dir
         )
-        if (
+        # Inside the photos is fine in `.pickapicka/`, which scanning skips.
+        if location == "workspace" and (
             project_dir == jpeg_root
             or project_dir.is_relative_to(jpeg_root)
             or jpeg_root.is_relative_to(project_dir)
@@ -2207,7 +2265,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             ctx.opening_state["running"] = False
             ctx.opening_state["error"] = f"could not create project directory: {exc}"
             raise HTTPException(status_code=400, detail=ctx.opening_state["error"])
-        userstate.add_workspace(workspace_dir)  # remember + make current
+        if location == "workspace":
+            userstate.add_workspace(workspace_dir)  # remember + make current
+        userstate.remember_project(project_dir)
         threading.Thread(
             target=_do_open,
             kwargs=dict(
@@ -2240,7 +2300,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             cur = str(userstate.DEFAULT_WORKSPACE)
             ws = [cur]
         return {"workspaces": ws, "current": cur, "first_run": first_run,
-                "default": str(userstate.DEFAULT_WORKSPACE), "sep": os.sep}
+                "default": str(userstate.DEFAULT_WORKSPACE), "sep": os.sep,
+                "project_location": userstate.get_project_location()}
 
     @app.post("/api/workspaces")
     def add_workspace(payload: WorkspacePayload) -> dict[str, Any]:
@@ -2264,41 +2325,191 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         return {"workspaces": userstate.get_workspaces(),
                 "current": userstate.get_current_workspace()}
 
+    def _project_card(pdir: Path, opened: dict[str, Any]) -> dict[str, Any] | None:
+        """A project as the project list shows it; None when `pdir` is not one.
+        A known project whose folder is gone (kept with photos that moved) is
+        still listed, as missing, so it can be found again."""
+        pj = pdir / "picks.json"
+        if not pj.is_file():
+            if pdir.exists() or not projects_mod.is_with_photos(pdir):
+                return None
+            return {"name": pdir.name, "project_dir": str(pdir),
+                    "photo_dir": str(pdir.parent.parent), "location": "photos",
+                    "project_missing": True, "photos_exist": False,
+                    "photos": 0, "decided": 0, "picks": 0, "scored_at": None,
+                    "opened_at": opened.get(str(pdir)), "cover": None}
+        try:
+            data = db.load(pj)
+        except Exception:
+            return None
+        photo_root = str(projects_mod.photo_root_of(pdir, data))
+        photos = data.get("photos", [])
+        return {
+            "name": pdir.name,
+            "project_dir": str(pdir),
+            "photo_dir": photo_root,
+            "jpeg_subdir": data.get("jpeg_subdir", ""),
+            "location": projects_mod.location_of(pdir),
+            "photos": len(photos),
+            "decided": sum(1 for p in photos if p.get("decision")),
+            "picks": sum(1 for p in photos if p.get("decision") == "pick"),
+            "scored_at": data.get("scored_at"),
+            "opened_at": opened.get(str(pdir)),
+            "cover": _project_cover(pdir, photos),
+            "photos_exist": Path(photo_root).is_dir(),
+            "project_missing": False,
+        }
+
+    def _workspace_children(wdir: Path) -> list[Path]:
+        if not wdir.is_dir():
+            return []
+        return [c for c in sorted(wdir.iterdir(), key=lambda c: c.name.lower())
+                if not userstate.is_deleted_project(c.name)]  # renamed away by a delete
+
     @app.get("/api/workspaces/projects")
     def list_workspace_projects(workspace: str | None = None) -> dict[str, Any]:
-        """List the projects (subfolders with a picks.json) in a workspace."""
+        """The projects in a workspace (subfolders with a picks.json), and the
+        projects kept with their photos, which belong to no workspace."""
         target = workspace or userstate.get_current_workspace() or str(userstate.DEFAULT_WORKSPACE)
         wdir = Path(target).expanduser()
-        projects: list[dict[str, Any]] = []
         opened = {r.get("project_dir"): r.get("opened_at") for r in userstate.get_recents()}
-        if wdir.is_dir():
-            for child in sorted(wdir.iterdir(), key=lambda c: c.name.lower()):
-                if userstate.is_deleted_project(child.name):
-                    continue  # renamed away by a delete; still on disk, just hidden
-                pj = child / "picks.json"
-                if not pj.is_file():
-                    continue
-                try:
-                    data = db.load(pj)
-                except Exception:
-                    continue
-                photo_root = data.get("photo_root", "")
-                photos = data.get("photos", [])
-                decided = sum(1 for p in photos if p.get("decision"))
-                projects.append({
-                    "name": child.name,
-                    "project_dir": str(child),
-                    "photo_dir": photo_root,
-                    "jpeg_subdir": data.get("jpeg_subdir", ""),
-                    "photos": len(photos),
-                    "decided": decided,
-                    "picks": sum(1 for p in photos if p.get("decision") == "pick"),
-                    "scored_at": data.get("scored_at"),
-                    "opened_at": opened.get(str(child)),
-                    "cover": _project_cover(child, photos),
-                    "photos_exist": bool(photo_root and Path(photo_root).is_dir()),
-                })
-        return {"workspace": str(wdir), "projects": projects}
+        cards = [_project_card(c, opened) for c in _workspace_children(wdir)]
+        with_photos = [_project_card(Path(k), opened) for k in userstate.known_projects()
+                       if projects_mod.is_with_photos(Path(k))]
+        return {"workspace": str(wdir),
+                "projects": [c for c in cards if c],
+                "with_photos": [c for c in with_photos if c]}
+
+    @app.get("/api/projects/all")
+    def list_all_projects() -> dict[str, Any]:
+        """Every project the app knows of: each workspace's, and the known list."""
+        opened = {r.get("project_dir"): r.get("opened_at") for r in userstate.get_recents()}
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        dirs = [c for w in userstate.get_workspaces() for c in _workspace_children(Path(w))]
+        dirs += [Path(k) for k in userstate.known_projects()]
+        for d in dirs:
+            if str(d) in seen:
+                continue
+            seen.add(str(d))
+            card = _project_card(d, opened)
+            if card:
+                card["workspace"] = (str(d.parent) if card["location"] == "workspace" else None)
+                out.append(card)
+        return {"projects": out, "location": userstate.get_project_location(),
+                "current_workspace": userstate.get_current_workspace()
+                or str(userstate.DEFAULT_WORKSPACE),
+                "open": str(ctx.project_dir) if ctx.project_dir else None}
+
+    @app.get("/api/projects/location")
+    def get_project_location() -> dict[str, Any]:
+        return {"location": userstate.get_project_location()}
+
+    @app.post("/api/projects/location")
+    def set_project_location(payload: LocationPayload) -> dict[str, Any]:
+        userstate.set_project_location(payload.location)
+        return {"location": payload.location}
+
+    @app.post("/api/projects/move")
+    def move_projects(payload: MoveProjectsPayload) -> dict[str, Any]:
+        """Move projects to `location`: into their photo folder's .pickapicka/,
+        or into a workspace. Each is reported on its own, since one photo
+        folder being read-only says nothing about the next. The open project
+        is not moved under its own feet."""
+        with ctx.score_lock:
+            if (ctx.opening_state["running"] or ctx.scoring_state["running"]
+                    or ctx.cluster_state["running"] or ctx.export_state["running"]):
+                # One of them may be writing into a project folder right now.
+                raise HTTPException(status_code=409, detail="another task is running")
+        workspace = Path(payload.workspace_dir or userstate.get_current_workspace()
+                         or str(userstate.DEFAULT_WORKSPACE)).expanduser().resolve()
+        results: list[dict[str, Any]] = []
+        for raw_dir in payload.project_dirs:
+            src = Path(raw_dir).expanduser().resolve()
+            r: dict[str, Any] = {"project_dir": str(src), "name": src.name}
+            results.append(r)
+            if not (src / "picks.json").is_file():
+                r["error"] = "project folder not found"
+                continue
+            if ctx.project_dir is not None and ctx.project_dir == src:
+                r["error"] = "open: close it first"
+                continue
+            data = db.load(src / "picks.json")
+            photo_root = projects_mod.photo_root_of(src, data)
+            if payload.location == "photos" and not photo_root.is_dir():
+                # Moving in would make the folder up at its old path.
+                r["error"] = f"photo folder not found: {photo_root}"
+                continue
+            dst = projects_mod.target_dir(
+                src.name, photo_root.resolve(), payload.location, workspace).resolve()
+            if dst == src:
+                r["skipped"] = "already there"
+                continue
+            if dst.exists():
+                r["error"] = f"already exists: {dst}"
+                continue
+            try:
+                projects_mod.move_project(src, dst)
+            except OSError as exc:
+                r["error"] = str(exc)
+                continue
+            userstate.project_moved(src, dst)
+            r["moved_to"] = str(dst)
+        if payload.location == "workspace" and any("moved_to" in r for r in results):
+            userstate.set_current_workspace(workspace)
+        return {"results": results}
+
+    def _merge_plan(raw_dirs: list[str]) -> dict[str, Any]:
+        dirs = list(dict.fromkeys(Path(d).expanduser().resolve() for d in raw_dirs))
+        for d in dirs:
+            if not (d / "picks.json").is_file():
+                raise HTTPException(status_code=400, detail=f"not a project: {d}")
+        try:
+            return projects_mod.merge_plan(dirs)
+        except projects_mod.MergeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/projects/merge/preview")
+    def merge_preview(payload: MergePayload) -> dict[str, Any]:
+        plan = _merge_plan(payload.project_dirs)
+        return {"root": str(plan["root"]), "ignored_dirs": plan["ignored_dirs"],
+                "still_scanned": plan["still_scanned"], "notes": plan["notes"],
+                "carried": len(plan["marks"]), "conflicts": plan["conflicts"],
+                "photos": plan["photos"], "source_photos": plan["source_photos"],
+                "names": plan["names"]}
+
+    @app.post("/api/projects/merge")
+    def merge_projects(payload: MergePayload) -> dict[str, Any]:
+        """Merge projects into a new one over their common photo folder, then
+        open it, which scores it. The source projects are left as they were."""
+        plan = _merge_plan(payload.project_dirs)
+        name = _sanitize_segment(payload.name or " + ".join(plan["names"]))
+        location = payload.location or userstate.get_project_location()
+        workspace = Path(payload.workspace_dir or userstate.get_current_workspace()
+                         or str(userstate.DEFAULT_WORKSPACE)).expanduser().resolve()
+        project_dir = projects_mod.target_dir(name, plan["root"], location, workspace).resolve()
+        if project_dir.exists():
+            raise HTTPException(status_code=400, detail=f"already exists: {project_dir}")
+        _claim_open_lock()
+        try:
+            (project_dir / ".cache").mkdir(parents=True)
+            db.save(project_dir / "picks.json", projects_mod.merge_seed(plan))
+        except OSError as exc:
+            ctx.opening_state["running"] = False
+            ctx.opening_state["error"] = f"could not create project directory: {exc}"
+            raise HTTPException(status_code=400, detail=ctx.opening_state["error"])
+        if location == "workspace":
+            userstate.add_workspace(workspace)
+        userstate.remember_project(project_dir)
+        threading.Thread(
+            target=_do_open,
+            kwargs=dict(
+                photo_dir=plan["root"], jpeg_subdir="", db_path=project_dir / "picks.json",
+                project_dir=project_dir, allow_autodetect_subdir=False,
+            ),
+            daemon=True,
+        ).start()
+        return {"started": True, "project_dir": str(project_dir)}
 
     @app.get("/api/projects/cover")
     def project_cover(project_dir: str, rel: str) -> Response:
@@ -2306,7 +2517,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         workspace this app knows, and only from that project's thumbnail cache."""
         pdir = _lexical(Path(project_dir).expanduser())
         known = [_lexical(Path(w)) for w in userstate.get_workspaces()]
-        if pdir.parent not in known or not (pdir / "picks.json").is_file():
+        listed = {_lexical(Path(k)) for k in userstate.known_projects()}
+        if (pdir.parent not in known and pdir not in listed) or not (pdir / "picks.json").is_file():
             raise HTTPException(status_code=403, detail="not a project in a known workspace")
         thumbs = pdir / ".cache" / "thumbs"
         f = _lexical(thumbs / rel)
@@ -2323,6 +2535,12 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         on disk under the new name, so renaming it back restores the project.
         """
         pdir = Path(payload.project_dir).expanduser().resolve()
+        if not pdir.exists() and str(pdir) in userstate.known_projects():
+            # Kept with photos that moved and were not found again: there is
+            # nothing on disk here to rename, only the list entry to drop.
+            userstate.forget(pdir)
+            userstate.forget_project(pdir)
+            return {"deleted": True, "forgotten": True, "name": pdir.name}
         if not (pdir / "picks.json").is_file():
             raise HTTPException(
                 status_code=400,
@@ -2340,11 +2558,27 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=f"could not rename: {exc}") from exc
         userstate.forget(pdir)
         userstate.forget(pdir / "picks.json")
+        userstate.forget_project(pdir)
         return {"deleted": True, "renamed_to": str(target), "name": target.name}
 
     @app.post("/api/project/relink")
     def relink_project(payload: RelinkPayload) -> dict[str, Any]:
-        """Re-resolve a project's photos to a new folder (move/rename recovery)."""
+        """Re-resolve a project's photos to a new folder (move/rename recovery).
+
+        A project kept with its photos moved along with them, so it is found
+        again rather than re-linked: it is <new folder>/.pickapicka/<name>."""
+        if payload.project_dir and projects_mod.is_with_photos(
+                Path(payload.project_dir).expanduser()):
+            old = Path(payload.project_dir).expanduser().resolve()
+            new_photo = Path(payload.new_photo_dir).expanduser().resolve()
+            found = new_photo / projects_mod.PHOTOS_SUBDIR / old.name
+            if not (found / "picks.json").is_file():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"no project named '{old.name}' in {new_photo / projects_mod.PHOTOS_SUBDIR}")
+            projects_mod.heal_photo_root(found)
+            userstate.project_moved(old, found)
+            return {"located": True, "project_dir": str(found)}
         if payload.project_dir:
             db_path = (Path(payload.project_dir).expanduser() / "picks.json").resolve()
         elif payload.db_path:
@@ -3220,7 +3454,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     def export_picks_preview() -> dict[str, Any]:
         _require_loaded()
         picks = [p for p in ctx.data["photos"] if p.get("decision") == "pick"]
-        default_target = ctx.db_path.parent / f"{ctx.db_path.stem}.picks"
+        default_target = _downloads_folder(
+            ctx.project_dir.name if ctx.project_dir else ctx.db_path.stem)
         return {"count": len(picks), "default_target": str(default_target),
                 "settings": ExportSettings(**userstate.get_export_settings()).model_dump()}
 
@@ -3254,7 +3489,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         target = (
             Path(payload.target_dir).expanduser()
             if payload.target_dir
-            else ctx.db_path.parent / f"{ctx.db_path.stem}.picks"
+            else _downloads_folder(ctx.project_dir.name if ctx.project_dir else ctx.db_path.stem)
         )
         if not target.is_absolute():
             raise HTTPException(status_code=400, detail="the target folder must be a full path")
@@ -3325,13 +3560,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         if len(payload.rel_paths) == 1:
             target = downloads
         else:
-            name = (ctx.project_dir.name if ctx.project_dir else ctx.db_path.stem)
-            stamp = datetime.now().strftime("%Y%m%d-%H%M")
-            target = downloads / f"{_sanitize_segment(name)}_{stamp}"
-            n = 2
-            while target.exists():
-                target = downloads / f"{_sanitize_segment(name)}_{stamp}-{n}"
-                n += 1
+            target = _downloads_folder(ctx.project_dir.name if ctx.project_dir else ctx.db_path.stem)
             target.mkdir(parents=True)
 
         # One click, so no choices: full size and all metadata, as a JPEG.

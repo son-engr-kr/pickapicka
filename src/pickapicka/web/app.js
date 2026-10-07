@@ -8157,6 +8157,8 @@ async function openPrefs(pane = "general") {
   $("#pref-launch-sound").checked = launchSoundOn();
   applyPhotoBg(photoBg());
   renderPrefWorkspaces();
+  $$("#pref-project-location button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.loc === workspaceState.location));
   showPrefsPane(pane);
   $("#prefs-modal").classList.remove("hidden");
 }
@@ -8290,6 +8292,13 @@ function bindUi() {
     renderProjectGrid(lastProjects);
   });
   try { $("#projects-sort").value = localStorage.getItem("pcls.projectsSort") || "opened"; } catch { /* private */ }
+  $("#projects-select").addEventListener("click", () => setProjectSelecting(true));
+  $("#projects-select-done").addEventListener("click", () => setProjectSelecting(false));
+  $("#projects-merge").addEventListener("click", mergeSelectedProjects);
+  $("#projects-to-photos").addEventListener("click", () => moveSelectedProjects("photos"));
+  $("#projects-to-workspace").addEventListener("click", () => moveSelectedProjects("workspace"));
+  $$("#pref-project-location button").forEach((b) =>
+    b.addEventListener("click", () => setProjectLocation(b.dataset.loc)));
   restoreEditGroups();
   bindSliderLooks();
   bindMenu("#more-btn", "#more-menu");
@@ -9022,7 +9031,9 @@ async function fetchState() {
 // ---------- workspaces ----------
 // `firstRun` is the server saying no workspace has ever been chosen; the list
 // then holds only the default it suggests, which does not exist on disk yet.
-const workspaceState = { current: null, list: [], firstRun: false, defaultDir: null, sep: "/" };
+// location: where new projects go, "workspace" or "photos" (Preferences).
+const workspaceState = { current: null, list: [], firstRun: false, defaultDir: null, sep: "/",
+  location: "workspace" };
 
 async function loadWorkspaces() {
   try {
@@ -9034,6 +9045,7 @@ async function loadWorkspaces() {
       workspaceState.firstRun = !!d.first_run;
       workspaceState.defaultDir = d.default || null;
       workspaceState.sep = d.sep || "/";
+      workspaceState.location = d.project_location || "workspace";
     }
   } catch {}
   renderOnboarding();
@@ -9384,7 +9396,12 @@ async function loadWorkspaceProjects() {
   try {
     const q = workspaceState.current ? `?workspace=${encodeURIComponent(workspaceState.current)}` : "";
     const res = await fetch("/api/workspaces/projects" + q, { cache: "no-store" });
-    if (res.ok) projects = (await res.json()).projects || [];
+    if (res.ok) {
+      const d = await res.json();
+      // Projects kept with their photos belong to no workspace, so every
+      // workspace lists them.
+      projects = (d.projects || []).concat(d.with_photos || []);
+    }
   } catch {}
   renderProjectGrid(projects);
 }
@@ -9404,10 +9421,17 @@ function sinceText(iso) {
 
 let lastProjects = [];
 
+// Selecting projects, to merge or move them: a set of project_dirs.
+const projectSel = { on: false, dirs: new Set() };
+
 function renderProjectGrid(projects) {
   lastProjects = projects;
   const wrap = $("#workspace-projects");
   wrap.innerHTML = "";
+  wrap.classList.toggle("selecting", projectSel.on);
+  const present = new Set(projects.map((p) => p.project_dir));
+  for (const d of [...projectSel.dirs]) if (!present.has(d)) projectSel.dirs.delete(d);
+  syncProjectSelbar();
   $("#workspace-proj-count").textContent = projects.length || "";
   if (!projects.length) {
     wrap.innerHTML = `<div class="project-empty">
@@ -9426,9 +9450,11 @@ function renderProjectGrid(projects) {
 
   for (const p of sorted) {
     const card = document.createElement("div");
-    card.className = "project-card" + (p.photos_exist ? "" : " missing");
+    card.className = "project-card" + (p.photos_exist ? "" : " missing")
+      + (projectSel.dirs.has(p.project_dir) ? " selected" : "");
     const pct = p.photos ? (100 * p.decided / p.photos) : 0;
-    const counts = p.scored_at
+    const counts = p.project_missing ? "Not found"
+      : p.scored_at
       ? `${plural(p.photos, "photo")}${p.picks ? ` · ${plural(p.picks, "pick")}` : ""}`
       : "Not scored yet";
     const cover = p.cover
@@ -9439,14 +9465,27 @@ function renderProjectGrid(projects) {
       <span class="project-body">
         <span class="project-name">${escapeHtml(p.name)}</span>
         <span class="project-meta">${counts}</span>
-        <span class="project-progress" title="${p.decided} of ${p.photos} decided"><i style="width:${pct.toFixed(1)}%"></i></span>
-        <span class="project-foot"><span>${p.decided} of ${p.photos} decided</span><span>${sinceText(p.opened_at)}</span></span>
+        ${p.project_missing ? "" : `<span class="project-progress" title="${p.decided} of ${p.photos} decided"><i style="width:${pct.toFixed(1)}%"></i></span>
+        <span class="project-foot"><span>${p.decided} of ${p.photos} decided</span><span>${sinceText(p.opened_at)}</span></span>`}
         <span class="project-path" title="${escapeHtml(p.photo_dir || "")}">${icon("folder")} ${escapeHtml(basename(p.photo_dir || ""))}</span>
-        ${p.photos_exist ? "" : `<span class="project-missing">${icon("warning")} Photos not found. Click to re-link.</span>`}
+        <span class="project-where">${p.location === "photos" ? "Kept with the photos" : "In the workspace"}</span>
+        ${p.project_missing ? `<span class="project-missing">${icon("warning")} Photo folder moved. Click to find it.</span>`
+          : p.photos_exist ? "" : `<span class="project-missing">${icon("warning")} Photos not found. Click to re-link.</span>`}
       </span>
       <button class="project-del" type="button" aria-label="Delete this project"
         title="Delete this project (photos are kept)">${icon("trash")}</button>`;
-    card.addEventListener("click", () => openProjectByDir(p.project_dir));
+    card.addEventListener("click", () => {
+      if (projectSel.on) {
+        if (projectSel.dirs.has(p.project_dir)) projectSel.dirs.delete(p.project_dir);
+        else projectSel.dirs.add(p.project_dir);
+        card.classList.toggle("selected", projectSel.dirs.has(p.project_dir));
+        syncProjectSelbar();
+      } else if (p.project_missing) {
+        openRelinkModal({ project_dir: p.project_dir, photo_dir: p.photo_dir });
+      } else {
+        openProjectByDir(p.project_dir);
+      }
+    });
     card.querySelector(".project-del").addEventListener("click", (e) => {
       e.stopPropagation();   // don't open the project we're deleting
       deleteProject(p);
@@ -9455,7 +9494,124 @@ function renderProjectGrid(projects) {
   }
 }
 
+function syncProjectSelbar() {
+  $("#projects-selbar").classList.toggle("hidden", !projectSel.on);
+  $("#projects-select").classList.toggle("hidden", projectSel.on);
+  const sel = lastProjects.filter((p) => projectSel.dirs.has(p.project_dir));
+  const n = sel.length;
+  $("#projects-selcount").textContent = n ? `${plural(n, "project")} selected` : "Click projects to select them.";
+  $("#projects-merge").disabled = n < 2 || sel.some((p) => !p.photos_exist);
+  $("#projects-to-photos").disabled = !sel.some((p) => p.location !== "photos" && p.photos_exist);
+  $("#projects-to-workspace").disabled = !sel.some((p) => p.location === "photos" && !p.project_missing);
+}
+
+function setProjectSelecting(on) {
+  projectSel.on = on;
+  projectSel.dirs.clear();
+  renderProjectGrid(lastProjects);
+}
+
+async function postJSON(url, body) {
+  const res = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(typeof d.detail === "string" ? d.detail : `${url}: ${res.status}`);
+  return d;
+}
+
+// Move projects to "photos" or "workspace" and say what happened to each; a
+// read-only photo folder fails on its own without stopping the rest.
+async function moveProjects(dirs, location) {
+  const { results } = await postJSON("/api/projects/move", {
+    project_dirs: dirs, location, workspace_dir: workspaceState.current,
+  });
+  const moved = results.filter((r) => r.moved_to).length;
+  const failed = results.filter((r) => r.error);
+  if (failed.length) {
+    alert(`Moved ${plural(moved, "project")}. Not moved:\n\n`
+      + failed.map((r) => `${r.name}: ${r.error}`).join("\n"));
+  }
+  await loadWorkspaceProjects();
+  await renderRecents();
+  return moved;
+}
+
+async function moveSelectedProjects(location) {
+  const dirs = lastProjects
+    .filter((p) => projectSel.dirs.has(p.project_dir) && !p.project_missing && p.location !== location
+      && (location !== "photos" || p.photos_exist))
+    .map((p) => p.project_dir);
+  if (!dirs.length) return;
+  await moveProjects(dirs, location);
+  setProjectSelecting(false);
+}
+
+async function mergeSelectedProjects() {
+  const dirs = [...projectSel.dirs];
+  let plan;
+  try {
+    plan = await postJSON("/api/projects/merge/preview", { project_dirs: dirs });
+  } catch (e) { alert("Cannot merge: " + e.message); return; }
+  const lines = [
+    `A new project over ${plan.root}, with ${plural(plan.photos, "photo")}`
+      + ` (the projects have ${plan.source_photos.toLocaleString()} together), scored afresh.`,
+    `Decisions, stars, labels and edits on ${plural(plan.carried, "photo")} are carried across.`,
+  ];
+  if (plan.conflicts) lines.push(`${plural(plan.conflicts, "photo")} marked in more than one project keep the most recent call.`);
+  if (plan.ignored_dirs.length) lines.push(`Left out: ${plan.ignored_dirs.join(", ")}.`);
+  if (plan.still_scanned.length) lines.push(`Left out of a project but scanned in the merged one: ${plan.still_scanned.join(", ")}. Leave them out again with More → Folders.`);
+  for (const n of plan.notes) lines.push(n.charAt(0).toUpperCase() + n.slice(1) + ".");
+  lines.push("People names are made again. The original projects are kept.");
+  const go = await askChoice("Merge projects", lines.join("\n\n"), [
+    { id: "cancel", label: "Cancel" },
+    { id: "merge", label: "Merge", primary: true },
+  ]);
+  if (go !== "merge") return;
+  const name = prompt("Name of the merged project", plan.names.join(" + "));
+  if (name === null) return;
+  try {
+    await postJSON("/api/projects/merge", {
+      project_dirs: dirs, name: name.trim(), workspace_dir: workspaceState.current,
+    });
+  } catch (e) { alert("Merge failed: " + e.message); return; }
+  setProjectSelecting(false);
+  showOpenProgress("Merging projects…");
+}
+
+// The preference for where new projects go, and the offer to move the ones
+// already kept the other way so they do not end up split across both.
+async function setProjectLocation(location) {
+  await postJSON("/api/projects/location", { location });
+  workspaceState.location = location;
+  $$("#pref-project-location button").forEach((b) => b.classList.toggle("active", b.dataset.loc === location));
+  const all = await (await fetch("/api/projects/all", { cache: "no-store" })).json();
+  // Moving in needs the photo folder to be there; one on an unplugged drive waits.
+  const others = all.projects.filter((p) => p.location !== location && !p.project_missing
+    && p.project_dir !== all.open && (location !== "photos" || p.photos_exist));
+  if (!others.length) return;
+  const where = location === "photos" ? "into their photo folders" : `to the workspace ${basename(workspaceState.current || "")}`;
+  const go = await askChoice("Move existing projects?",
+    `${plural(others.length, "project")} ${others.length === 1 ? "is" : "are"} kept the other way. `
+    + `Move ${others.length === 1 ? "it" : "them"} ${where} too? Photos are not touched.`
+    + (all.open && all.projects.some((p) => p.project_dir === all.open && p.location !== location)
+      ? "\n\nThe open project stays where it is; move it from the project list after closing it." : ""),
+    [{ id: "keep", label: "Only new projects" }, { id: "move", label: `Move ${plural(others.length, "project")}`, primary: true }]);
+  if (go !== "move") return;
+  await moveProjects(others.map((p) => p.project_dir), location);
+}
+
 async function deleteProject(p) {
+  if (p.project_missing) {
+    // Nothing on disk to rename: its photo folder, project inside, moved away.
+    if (!confirm(`Remove "${p.name}" from the list?\n\nIts photo folder is no longer at\n${p.photo_dir}\n`
+      + "and nothing is deleted. If the folder turns up, open the project from it again.")) return;
+    await postJSON("/api/projects/delete", { project_dir: p.project_dir });
+    await loadWorkspaceProjects();
+    await renderRecents();
+    return;
+  }
   const ok = confirm(
     `Delete the project "${p.name}"?\n\n` +
     `Your photos are NOT touched — nothing under\n${p.photo_dir}\nis modified or removed.\n\n` +
@@ -9527,7 +9683,9 @@ async function confirmRelink() {
   }
   const rep = await res.json();
   closeRelinkModal();
-  if (relinkState.projectDir) openProjectByDir(relinkState.projectDir);
+  // A project kept with its photos is found in the new folder, at a new path.
+  if (rep.located) openProjectByDir(rep.project_dir);
+  else if (relinkState.projectDir) openProjectByDir(relinkState.projectDir);
   else if (relinkState.dbPath) openLegacyDb({ db_path: relinkState.dbPath, photo_dir: newDir, jpeg_subdir: "" });
 }
 
@@ -9667,6 +9825,12 @@ async function openProjectByDir(projectDir) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
+    if (err.detail && err.detail.missing) {
+      // Kept with its photos, and the photo folder moved: ask where to.
+      $("#landing-status").textContent = "";
+      openRelinkModal(err.detail);
+      return;
+    }
     $("#landing-status").textContent = "Failed: " + (err.detail || res.status);
     return;
   }
@@ -10390,10 +10554,18 @@ function showWizardStep(n) {
   if (onLast) renderWizardSummary();
 }
 
-function syncWizardTargetHint() {
+// Where the new project's folder will be made.
+function wizardTargetDir() {
   const name = $("#wiz-project-name").value.trim() || "<name>";
-  const ws = workspaceState.current || "<workspace>";
-  $("#wiz-target-hint").textContent = joinPath(ws, name) + (workspaceState.sep || "/");
+  if (workspaceState.location === "photos") {
+    const photos = $("#wiz-photo-dir").value.trim() || "<photos>";
+    return joinPath(joinPath(photos, ".pickapicka"), name);
+  }
+  return joinPath(workspaceState.current || "<workspace>", name);
+}
+
+function syncWizardTargetHint() {
+  $("#wiz-target-hint").textContent = wizardTargetDir() + (workspaceState.sep || "/");
 }
 
 // A believable path for this machine, built from the home folder the default
@@ -10608,8 +10780,8 @@ function suggestSceneMode(shots) {
 
 function renderWizardSummary() {
   const items = [
-    ["Workspace", workspaceState.current || ""],
     ["Project name", $("#wiz-project-name").value],
+    ["Saved in", wizardTargetDir()],
     ["Photos", $("#wiz-photo-dir").value],
     ["JPEG subfolder", $("#wiz-jpeg-subdir").value || "(none)"],
     ["RAW subfolder", $("#wiz-raw-subdir").value || "(none)"],

@@ -2701,3 +2701,14 @@ html.launching #intro { position: fixed; inset: 0; z-index: 1000; display: flex;
   border: 1px solid var(--review); color: var(--review); background: transparent; }
 .edit-process:hover { background: var(--raised); }
 .edit-process.hidden { display: none; }
+
+/* Selecting projects to merge or move. */
+.projects-selbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -4px 0 12px;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r3); background: var(--panel);
+  font-size: var(--fs-sm); color: var(--ink-dim); }
+.projects-selbar #projects-selcount { flex: 1; min-width: 160px; }
+.projects-selbar.hidden, #projects-select.hidden { display: none; }
+.project-grid.selecting .project-card .project-del { display: none; }
+.project-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+.project-where { font-size: var(--fs-xs); color: var(--ink-faint); }
+#choice-body { white-space: pre-line; }

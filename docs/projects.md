@@ -11,6 +11,33 @@
   file name). **Deleting a project never touches your photos**: it renames the
   project folder to `<name>.deleted-<timestamp>` and hides it from the list —
   decisions and edits stay inside, so renaming the folder back restores it.
+- **Where a project is kept**: Preferences → Workspaces → **Keep new
+  projects** chooses between *in the workspace* (above) and *with the photos*,
+  a hidden `.pickapicka/<name>/` inside the photo folder. Kept with the photos,
+  the project travels with them: move or copy the photo folder and the project
+  goes along, with nothing to re-link. Every scan skips `.pickapicka/`, so its
+  thumbnails are never scored. Changing the setting offers to move the existing
+  projects across (the open one stays put until it is closed). A project kept
+  with its photos is in every workspace's list; if its photo folder has moved,
+  its card says so and clicking it asks where the folder went.
+- **Selecting projects** (the **Select** button above the list) moves the chosen
+  ones either way, or **merges** two or more into a new project over the folder
+  their photos have in common. Decisions, stars, labels and edits are carried
+  across by each photo's path (the most recent call wins where two projects
+  disagree), including onto a merged HDR result that is detected again and onto
+  a RAW that now takes the place of the JPEG a project had scored. Everything
+  else is scored again. Top-level folders under the common folder that belong
+  to none of them are left out, and so are the folders a project left out,
+  where the merged project can express that (the preview names the ones it
+  cannot). What any project detected (subjects, faces) is detected; a setting
+  they disagree on goes back to its default. Scenes by folder would make each
+  project one scene, so a merged project groups by time gap unless one of the
+  projects already covered the whole common folder. The preview shows how many
+  photos the merged project will have against the projects' total before
+  anything is written. People names are made again, and the original projects
+  are kept.
+- **Exports** go to a dated folder in `~/Downloads` unless you choose another,
+  the same place a quick download goes.
 - **See how it works**: an animated walk-through of the above, from the photo
   folder to the workspace, a project pointing at the photos, the work filling
   the project, and what deleting and exporting do. It plays on the first-launch
@@ -55,6 +82,11 @@ Supported extensions: `.jpg`, `.jpeg`, `.png` plus common RAW formats
 case-insensitive. When a shot has both a RAW and a same-named JPEG, the RAW is
 used. If your RAWs live in a separate `RAW/` tree, set the RAW subfolder under
 **Advanced** in the new-project wizard. Videos and sidecars are ignored.
+
+Two files with the same name in different subfolders of one scene (two camera
+bodies, or a counter that wrapped) are two photos. A RAW and a JPEG of the same
+name are one shot when they share a folder or sit in folders of the same name
+(`RAW/A` beside `JPEG/A`).
 
 Every subfolder is scanned. A folder that is not part of the shoot (video
 stills, exports, a working folder for a trailer) can be left out under

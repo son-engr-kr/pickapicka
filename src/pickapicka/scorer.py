@@ -14,6 +14,7 @@ import numpy as np
 from PIL import Image
 
 from . import db, exifinfo, hdr, raw, scenes
+from .projects import PHOTOS_SUBDIR as PROJECTS_SUBDIR
 from .scoring import blur as blur_mod
 from .scoring import exposure as exp_mod
 from .scoring import faces as faces_mod
@@ -153,11 +154,39 @@ def walk_files(root: Path, exclude_dirs: Iterable[Path] = ()) -> Iterator[Path]:
     Comparison is by resolved path so symlinked aliases are caught too."""
     excluded = {Path(p).resolve() for p in exclude_dirs}
     for dirpath, dirnames, filenames in root.walk():
+        # A `.pickapicka/` holds projects kept with their photos (projects.py),
+        # whichever project is being scanned: their caches are not photos.
         dirnames[:] = [
-            d for d in dirnames if (dirpath / d).resolve() not in excluded
+            d for d in dirnames
+            if d != PROJECTS_SUBDIR and (dirpath / d).resolve() not in excluded
         ]
         for fn in filenames:
             yield dirpath / fn
+
+
+def pair_group(jpegs: list[Path], raws: list[Path]) -> list[tuple[Path | None, Path | None]]:
+    """Shots, as (raw, jpeg), from the files sharing one (scene, stem) key.
+
+    The usual group is one RAW and its JPEG, or either alone, and that is one
+    shot. A group can hold more: the same file name in two subfolders of one
+    scene, from two camera bodies or a counter that wrapped. Every file then
+    stays a photo of its own, and a JPEG is only folded into a RAW it plainly
+    belongs to: one in the same folder, else one in a folder of the same name
+    (RAW/A beside JPEG/A). This used to keep the last file under the key and
+    drop the rest without a word."""
+    if len(jpegs) <= 1 and len(raws) <= 1:
+        return [(raws[0] if raws else None, jpegs[0] if jpegs else None)]
+    jl, rl = sorted(jpegs), sorted(raws)
+    shots: list[tuple[Path | None, Path | None]] = []
+    for same in (lambda r, j: r.parent == j.parent,
+                 lambda r, j: r.parent.name == j.parent.name):
+        for j in list(jl):
+            match = [r for r in rl if same(r, j)]
+            if len(match) == 1:
+                shots.append((match[0], j))
+                jl.remove(j)
+                rl.remove(match[0])
+    return shots + [(r, None) for r in rl] + [(None, j) for j in jl]
 
 
 def _collect_jpegs(
@@ -621,41 +650,38 @@ def run_scoring(
     # ----- pair RAW + JPEG (prefer RAW) and assemble scoring targets -----
     raw_cache_root = raw_cache_dir(db_path, project_dir)
 
-    def _key(scene: str, path: Path) -> tuple[str, str]:
-        return (scene, path.stem.lower())
-
-    raw_by_key: dict[tuple[str, str], tuple[str, Path]] = {}
+    groups: dict[tuple[str, str], tuple[list[Path], list[Path]]] = {}
     for scene, abs_raw in raw_collected:
-        raw_by_key[_key(scene, abs_raw)] = (scene, abs_raw)
-    jpeg_by_key: dict[tuple[str, str], tuple[str, Path, str]] = {}
+        groups.setdefault((scene, abs_raw.stem.lower()), ([], []))[1].append(abs_raw)
     for scene, jpg in collected:
-        rel = str(jpg.relative_to(jpeg_root))
-        if rel in bracketed:
+        if str(jpg.relative_to(jpeg_root)) in bracketed:
             continue  # consumed by an HDR merge
-        jpeg_by_key[_key(scene, jpg)] = (scene, jpg, rel)
+        groups.setdefault((scene, jpg.stem.lower()), ([], []))[0].append(jpg)
+    # (scene, raw, jpeg) per shot; the RAW wins when a shot has both.
+    shots = [(key[0], r, j) for key in sorted(groups) for r, j in pair_group(*groups[key])]
+    raws_to_prepare = [r for _, r, _ in shots if r is not None]
 
     # Every RAW gets its preview decoded and cached before anything is scored.
     # This is the one part of a scan that threads cleanly — libraw releases the
     # GIL — and on a RAW shoot it is the part that would otherwise dominate:
     # ~700 ms a frame serially against ~100 ms across eight workers, which is
     # quicker than pulling the camera's embedded JPEG used to be.
-    prepared: dict[tuple[str, str], tuple[Path, datetime | None]] = {}
-    if raw_by_key:
-        def _prepare(key: tuple[str, str]) -> tuple[Path, datetime | None]:
-            _scene, abs_raw = raw_by_key[key]
+    prepared: dict[Path, tuple[Path, datetime | None]] = {}
+    if raws_to_prepare:
+        def _prepare(abs_raw: Path) -> tuple[Path, datetime | None]:
             rel = str(abs_raw.relative_to(raw_root))
             return (raw.ensure_cache(abs_raw, raw_cache_root, rel),
                     raw.read_capture_time(abs_raw))
 
-        raw_keys = sorted(raw_by_key)
         if verbose:
-            click.echo(f"Preparing {len(raw_keys)} RAW preview(s)…")
+            click.echo(f"Preparing {len(raws_to_prepare)} RAW preview(s)…")
         pool = ThreadPoolExecutor(max_workers=RAW_PREVIEW_WORKERS)
         try:
-            for n, (key, done) in enumerate(zip(raw_keys, pool.map(_prepare, raw_keys)), 1):
-                prepared[key] = done
+            for n, (abs_raw, done) in enumerate(
+                    zip(raws_to_prepare, pool.map(_prepare, raws_to_prepare)), 1):
+                prepared[abs_raw] = done
                 if progress_cb is not None:
-                    progress_cb(0, 0, f"Preparing RAW previews… ({n}/{len(raw_keys)})")
+                    progress_cb(0, 0, f"Preparing RAW previews… ({n}/{len(raws_to_prepare)})")
         finally:
             # A progress callback may raise to stop the run; the previews
             # still queued are then dropped, not decoded first. Only those
@@ -663,11 +689,10 @@ def run_scoring(
             pool.shutdown(wait=True, cancel_futures=True)
 
     targets: list[dict[str, Any]] = []
-    for key in sorted(set(raw_by_key) | set(jpeg_by_key)):
-        if key in raw_by_key:  # RAW wins when a shot has both
-            scene, abs_raw = raw_by_key[key]
+    for scene, abs_raw, jpg in shots:
+        if abs_raw is not None:  # RAW wins when a shot has both
             rel = str(abs_raw.relative_to(raw_root))
-            score_path, captured = prepared[key]
+            score_path, captured = prepared[abs_raw]
             targets.append({
                 "scene": scene, "score_path": score_path, "rel": rel,
                 "members": None, "kind": "raw",
@@ -676,7 +701,8 @@ def run_scoring(
                 "captured_at": captured.isoformat() if captured else None,
             })
         else:
-            scene, jpg, rel = jpeg_by_key[key]
+            assert jpg is not None
+            rel = str(jpg.relative_to(jpeg_root))
             captured = scenes.read_capture_time(jpg)
             targets.append({
                 "scene": scene, "score_path": jpg, "rel": rel,
