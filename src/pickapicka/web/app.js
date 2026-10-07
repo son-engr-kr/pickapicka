@@ -7417,19 +7417,21 @@ function bindKeys() {
       e.preventDefault();
       return;
     }
+    // A question on screen takes Esc (the answer that changes nothing) and
+    // Enter (the primary one), and nothing else. First, as it sits above
+    // everything, Preferences included: one asked from there was left
+    // unanswered while Esc closed Preferences behind it.
+    if (!$("#choice-modal").classList.contains("hidden")) {
+      if (e.key === "Escape") answerChoice($("#choice-modal").dataset.escape);
+      else if (e.key === "Enter") answerChoice($("#choice-modal").dataset.enter);
+      e.preventDefault();
+      return;
+    }
     // Preferences: ⌘, or Ctrl+, as everywhere; Esc closes; nothing else gets
     // through to the photos behind.
     if ((e.metaKey || e.ctrlKey) && e.key === ",") { e.preventDefault(); openPrefs(); return; }
     if (prefsOpen()) {
       if (e.key === "Escape") { closePrefs(); e.preventDefault(); }
-      return;
-    }
-    // A question on screen takes Esc (the answer that changes nothing) and
-    // Enter (the primary one), and nothing else.
-    if (!$("#choice-modal").classList.contains("hidden")) {
-      if (e.key === "Escape") answerChoice($("#choice-modal").dataset.escape);
-      else if (e.key === "Enter") answerChoice($("#choice-modal").dataset.enter);
-      e.preventDefault();
       return;
     }
     // The shortcut sheet: ? opens it where you are and ? or Esc closes it;
@@ -9581,25 +9583,32 @@ async function mergeSelectedProjects() {
 }
 
 // The preference for where new projects go, and the offer to move the ones
-// already kept the other way so they do not end up split across both.
+// already kept the other way so they do not end up split across both. Asked
+// before anything is saved, so Cancel leaves the setting as it was.
 async function setProjectLocation(location) {
-  await postJSON("/api/projects/location", { location });
-  workspaceState.location = location;
-  $$("#pref-project-location button").forEach((b) => b.classList.toggle("active", b.dataset.loc === location));
+  if (location === workspaceState.location) return;
   const all = await (await fetch("/api/projects/all", { cache: "no-store" })).json();
   // Moving in needs the photo folder to be there; one on an unplugged drive waits.
   const others = all.projects.filter((p) => p.location !== location && !p.project_missing
     && p.project_dir !== all.open && (location !== "photos" || p.photos_exist));
-  if (!others.length) return;
-  const where = location === "photos" ? "into their photo folders" : `to the workspace ${basename(workspaceState.current || "")}`;
-  const go = await askChoice("Move existing projects?",
-    `${plural(others.length, "project")} ${others.length === 1 ? "is" : "are"} kept the other way. `
-    + `Move ${others.length === 1 ? "it" : "them"} ${where} too? Photos are not touched.`
-    + (all.open && all.projects.some((p) => p.project_dir === all.open && p.location !== location)
-      ? "\n\nThe open project stays where it is; move it from the project list after closing it." : ""),
-    [{ id: "keep", label: "Only new projects" }, { id: "move", label: `Move ${plural(others.length, "project")}`, primary: true }]);
-  if (go !== "move") return;
-  await moveProjects(others.map((p) => p.project_dir), location);
+  let move = false;
+  if (others.length) {
+    const where = location === "photos" ? "into their photo folders" : `to the workspace ${basename(workspaceState.current || "")}`;
+    const go = await askChoice("Move existing projects?",
+      `${plural(others.length, "project")} ${others.length === 1 ? "is" : "are"} kept the other way. `
+      + `Move ${others.length === 1 ? "it" : "them"} ${where} too? Photos are not touched.`
+      + (all.open && all.projects.some((p) => p.project_dir === all.open && p.location !== location)
+        ? "\n\nThe open project stays where it is; move it from the project list after closing it." : ""),
+      [{ id: "cancel", label: "Cancel" },
+       { id: "keep", label: "Only new projects" },
+       { id: "move", label: `Move ${plural(others.length, "project")}`, primary: true }]);
+    if (go === "cancel") return;
+    move = go === "move";
+  }
+  await postJSON("/api/projects/location", { location });
+  workspaceState.location = location;
+  $$("#pref-project-location button").forEach((b) => b.classList.toggle("active", b.dataset.loc === location));
+  if (move) await moveProjects(others.map((p) => p.project_dir), location);
 }
 
 async function deleteProject(p) {
