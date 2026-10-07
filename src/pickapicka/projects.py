@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -345,3 +346,102 @@ def remove_if_empty(folder: Path) -> bool:
         c.unlink()
     folder.rmdir()
     return True
+
+
+# ----- finding projects again after a move ---------------------------------
+# Photos (and projects kept with them) are moved with the OS, a whole drive's
+# worth at a time; these put the projects back in touch in one go rather than
+# one re-link per project.
+
+def ensure_id(project_dir: Path) -> str:
+    """The project's id, given one if it has none. It stays with the project
+    wherever its folder goes (a re-score keeps it), so a project found in a
+    new place can be told apart from another of the same name."""
+    db_path = project_dir / "picks.json"
+    data = db.load(db_path)
+    if not data.get("project_id"):
+        data["project_id"] = uuid.uuid4().hex
+        db.save(db_path, data)
+    return data["project_id"]
+
+
+def moved_prefix(old: Path, new: Path) -> tuple[Path, Path]:
+    """The folder that moved, as (where it was, where it is now): both paths
+    with the tail they share taken off. A shoot re-linked from
+    /A/Photos/2024/x to /B/Archive/2024/x says /A/Photos went to /B/Archive,
+    and other shoots under /A/Photos are looked for there. A renamed shoot
+    shares no tail, and only what was under it follows."""
+    o, n = old.parts, new.parts
+    k = 0
+    while k < min(len(o), len(n)) - 1 and o[-1 - k] == n[-1 - k]:
+        k += 1
+    return Path(*o[:len(o) - k]), Path(*n[:len(n) - k])
+
+
+def photos_found(data: dict[str, Any], root: Path, sample: int = 20) -> tuple[int, int]:
+    """How many of a sample of the project's photos are under `root`, of how
+    many looked for: whether a folder really is this project's photos, not
+    just one of the same name."""
+    sub = data.get("jpeg_subdir") or ""
+    photos = [p for p in data.get("photos", []) if p.get("type") != "hdr"]
+    step = max(1, len(photos) // sample)
+    picked = photos[::step][:sample]
+    found = 0
+    for p in picked:
+        f = root / p.get("src", p["rel_path"]) if p.get("type") == "raw" else \
+            (root / sub if sub else root) / p["rel_path"]
+        found += f.is_file()
+    return found, len(picked)
+
+
+def relink_candidates(project_dirs: list[Path], was: Path, now: Path) -> list[dict[str, Any]]:
+    """Workspace projects whose photos are missing and were under `was`, where
+    the same folder under `now` exists and holds at least half of a sample of
+    their photos."""
+    out = []
+    for d in project_dirs:
+        if is_with_photos(d) or not (d / "picks.json").is_file():
+            continue
+        data = db.load(d / "picks.json")
+        root = Path(data["photo_root"])
+        if root.is_dir() or not root.is_relative_to(was):
+            continue
+        there = now / root.relative_to(was)
+        if not there.is_dir():
+            continue
+        found, checked = photos_found(data, there)
+        if checked and 2 * found >= checked:
+            out.append({"project_dir": str(d), "name": d.name, "photo_dir": str(root),
+                        "new_photo_dir": str(there), "found": found, "checked": checked})
+    return out
+
+
+# Folders a search for projects does not go into: the OS's own, app and photo
+# library bundles, and everything hidden but `.pickapicka` itself.
+SEARCH_SKIP = frozenset({"Library", "node_modules", "$RECYCLE.BIN", "System Volume Information"})
+SEARCH_SKIP_SUFFIXES = (".app", ".photoslibrary", ".lrdata", ".cocatalog")
+
+
+def find_kept_projects(root: Path, max_dirs: int = 200_000) -> tuple[list[Path], bool]:
+    """Every project kept with its photos (`<folder>/.pickapicka/<name>`) under
+    `root`, and whether the search stopped at `max_dirs` folders before the
+    end. Only folders are walked, and a project or `.pickapicka` is not gone
+    into, so a drive of photos is a matter of seconds."""
+    from .userstate import is_deleted_project
+
+    found: list[Path] = []
+    seen = 0
+    for dirpath, dirnames, _ in root.walk():
+        seen += 1
+        if seen > max_dirs:
+            return found, True
+        if PHOTOS_SUBDIR in dirnames:
+            for c in sorted((dirpath / PHOTOS_SUBDIR).iterdir()):
+                if (c / "picks.json").is_file() and not is_deleted_project(c.name):
+                    found.append(c)
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if not d.startswith(".") and d not in SEARCH_SKIP
+            and not d.endswith(SEARCH_SKIP_SUFFIXES)
+            and not (dirpath / d / "picks.json").is_file())
+    return found, False

@@ -822,6 +822,9 @@ def run_scoring(
     # whose look has left the app's library, or another machine's, cannot render.
     if (existing or {}).get("luts"):
         data["luts"] = (existing or {})["luts"]
+    # Which project this is, wherever its folder goes (projects.ensure_id).
+    if (existing or {}).get("project_id"):
+        data["project_id"] = (existing or {})["project_id"]
     data["photos"] = scored
     db.save(db_path, data)
 

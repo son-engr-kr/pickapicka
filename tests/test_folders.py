@@ -66,6 +66,7 @@ def test_a_rescore_keeps_time_scenes_ignored_folders_edit_slots_and_looks(tmp_pa
     first["ignored_dirs"] = ["trailer"]
     # The project's own copy of a look its edits use (see userstate's look library).
     first["luts"] = {"0123456789abcdef": {"name": "warm", "dim": 3, "size": 2}}
+    first["project_id"] = "a" * 32
     db.save(db_path, first)
     _jpeg(photos / "trailer" / "work" / "still.jpg", 99)
 
@@ -75,6 +76,7 @@ def test_a_rescore_keeps_time_scenes_ignored_folders_edit_slots_and_looks(tmp_pa
     assert _scenes(again) == _scenes(first), "the re-score regrouped by folder"
     assert again["ignored_dirs"] == ["trailer"]
     assert again["luts"] == first["luts"], "the re-score dropped the project's looks"
+    assert again["project_id"] == first["project_id"], "the re-score dropped the project's id"
     a1 = next(p for p in again["photos"] if p["rel_path"] == "a1.jpg")
     assert a1["decision"] == "pick"
     assert a1["edit_slots"] == [slot, None], "the re-score dropped the edit slots"
@@ -107,7 +109,9 @@ def test_opening_a_changed_folder_asks_instead_of_rescoring(tmp_path, monkeypatc
 
     app = create_app()
     assert _open(app, proj)["files_changed"]
-    assert db_path.read_text(encoding="utf-8") == before, "the open re-scored on its own"
+    after = json.loads(db_path.read_text(encoding="utf-8"))
+    assert after.pop("project_id"), "the open gave the project no id"
+    assert after == json.loads(before), "the open re-scored on its own"
 
     report = _route(app, "/api/folders", "GET")()
     rows = {r["name"]: r for r in report["folders"]}

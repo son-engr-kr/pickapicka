@@ -294,6 +294,20 @@ def set_current_workspace(path: Path) -> None:
     _save(data)
 
 
+def relocate_workspace(old: Path, new: Path) -> None:
+    """A workspace's folder moved: list it at `new` in `old`'s place, current
+    if `old` was. The projects inside are refiled with `project_moved`."""
+    data = _load()
+    o, n = str(old), str(new)
+    ws = [w for w in data.get("workspaces", []) if w != n]   # `new` may be listed already
+    data["workspaces"] = [n if w == o else w for w in ws]
+    if n not in data["workspaces"]:
+        data["workspaces"].insert(0, n)
+    if data.get("current_workspace") == o:
+        data["current_workspace"] = n
+    _save(data)
+
+
 def forget_workspace(path: Path) -> None:
     data = _load()
     p = str(path)
@@ -337,7 +351,24 @@ def forget_project(project_dir: Path) -> None:
     data = _load()
     p = str(project_dir)
     data["known_projects"] = [k for k in data.get("known_projects", []) if k != p]
+    data.get("project_ids", {}).pop(p, None)
     _save(data)
+
+
+# Each project's id (projects.ensure_id) by the folder it was last seen in. A
+# project's folder can vanish, moved along with its photos; its id is then the
+# only way to tell it is the one found later somewhere else.
+
+def project_ids() -> dict[str, str]:
+    return _load().get("project_ids", {})
+
+
+def note_project_id(project_dir: Path, project_id: str) -> None:
+    data = _load()
+    ids = data.setdefault("project_ids", {})
+    if ids.get(str(project_dir)) != project_id:
+        ids[str(project_dir)] = project_id
+        _save(data)
 
 
 def project_moved(old: Path, new: Path) -> None:
@@ -361,4 +392,7 @@ def project_moved(old: Path, new: Path) -> None:
     # The new path may be known already (opened from its new place first).
     known = [k for k in data.get("known_projects", []) if k not in (o, n)]
     data["known_projects"] = known + [n]
+    ids = data.get("project_ids", {})
+    if o in ids:
+        ids[n] = ids.pop(o)
     _save(data)

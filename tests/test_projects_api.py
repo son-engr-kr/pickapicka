@@ -221,3 +221,86 @@ def test_merging_into_another_workspace_keeps_the_current_one(app, tmp_path) -> 
     out = _route(app, "/api/workspaces/merge", "POST")(server.MergeWorkspacesPayload(
         source=str(here), target=str(new)))
     assert out["current"] == str(new) and out["workspaces"] == [str(new)]
+
+
+# ----- finding projects again after a move ---------------------------------
+
+def test_a_moved_workspace_is_located_and_its_projects_refiled(app, tmp_path) -> None:
+    old = _ws(app, tmp_path / "Old")
+    _ws(app, tmp_path / "Other")
+    userstate.set_current_workspace(old)
+    photos = tmp_path / "photos"
+    photos.mkdir()
+    _project(old / "trip", photos)
+    _project(old / "lost", tmp_path / "unplugged")
+    userstate.remember_open(old / "trip" / "picks.json", photos, "", kind="project",
+                            project_dir=old / "trip")
+    userstate.set_view(str(old / "trip"), {"page": 4})
+    new = tmp_path / "Moved"
+    old.rename(new)
+    new = new.resolve()
+
+    ws = _route(app, "/api/workspaces", "GET")()
+    assert ws["missing"] == [str(old)]
+    out = _route(app, "/api/workspaces/relocate", "POST")(server.RelocateWorkspacePayload(
+        old=str(old), new=str(new)))
+    assert (out["projects"], out["photos_missing"]) == (2, 1)
+    # In the old one's place in the list, and current as it was.
+    assert out["workspaces"] == [str(tmp_path.resolve() / "Other"), str(new)]
+    assert out["current"] == str(new)
+    assert userstate.get_recents()[0]["project_dir"] == str(new / "trip")
+    assert userstate.get_view(str(new / "trip"))["page"] == 4
+
+
+def test_one_relink_offers_the_projects_that_moved_with_it(app, tmp_path) -> None:
+    old, new = tmp_path / "A" / "Photos", tmp_path / "B" / "Archive"
+    _shoot_files = lambda root, *names: [  # noqa: E731
+        (root / n).parent.mkdir(parents=True, exist_ok=True) or (root / n).write_bytes(b"x")
+        for n in names]
+    _shoot_files(new, "2024/x/a.jpg", "2024/y/b.jpg")
+    ws = _ws(app, tmp_path / "ws")
+    x = _project(ws / "x", old / "2024" / "x", [{"rel_path": "a.jpg"}])
+    y = _project(ws / "y", old / "2024" / "y", [{"rel_path": "b.jpg", "decision": "pick"}])
+
+    rep = _route(app, "/api/project/relink", "POST")(server.RelinkPayload(
+        project_dir=str(x), new_photo_dir=str(new / "2024" / "x")))
+    assert rep["moved"] == [str(old), str(new)]
+    assert [o["name"] for o in rep["others"]] == ["y"]
+
+    out = _route(app, "/api/projects/relink-many", "POST")(server.RelinkManyPayload(
+        items=[server.RelinkItem(**{k: rep["others"][0][k] for k in ("project_dir", "new_photo_dir")})]))
+    assert out["results"][0]["resolved"] == 1
+    data = db.load(y / "picks.json")
+    assert data["photo_root"] == str((new / "2024" / "y").resolve())
+    assert data["photos"][0]["decision"] == "pick"
+
+
+def test_find_lists_new_projects_and_refiles_moved_ones(app, tmp_path) -> None:
+    from pickapicka import projects
+    drive_a, drive_b = tmp_path / "A", tmp_path / "B"
+    moved = _project(drive_a / "trip" / ".pickapicka" / "trip", drive_a / "trip")
+    pid = projects.ensure_id(moved)
+    userstate.remember_project(moved.resolve())
+    userstate.note_project_id(moved.resolve(), pid)
+    userstate.remember_open(moved / "picks.json", drive_a / "trip", "", kind="project",
+                            project_dir=moved.resolve())
+    # The photo folder goes to the other drive, project and all.
+    (drive_b).mkdir()
+    (drive_a / "trip").rename(drive_b / "trip")
+    _project(drive_b / "hike" / ".pickapicka" / "hike", drive_b / "hike")
+    # A different project that happens to share the name: not taken for the moved one.
+    _project(drive_b / "x" / ".pickapicka" / "trip", drive_b / "x")
+
+    out = _route(app, "/api/projects/find", "POST")(server.FindProjectsPayload(root=str(drive_b)))
+    status = {Path(r["project_dir"]).relative_to(drive_b.resolve()).parts[0]: r["status"]
+              for r in out["results"]}
+    assert status == {"hike": "new", "trip": "moved", "x": "new"}
+    known = userstate.known_projects()
+    assert str(moved.resolve()) not in known
+    new_trip = drive_b.resolve() / "trip" / ".pickapicka" / "trip"
+    assert str(new_trip) in known
+    assert userstate.get_recents()[0]["project_dir"] == str(new_trip)
+    assert db.load(new_trip / "picks.json")["photo_root"] == str(drive_b.resolve() / "trip")
+    # Looking again finds them listed.
+    again = _route(app, "/api/projects/find", "POST")(server.FindProjectsPayload(root=str(drive_b)))
+    assert {r["status"] for r in again["results"]} == {"listed"}

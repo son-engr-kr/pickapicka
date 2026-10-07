@@ -8177,14 +8177,20 @@ function showPrefsPane(pane) {
 
 function renderPrefWorkspaces() {
   const ul = $("#pref-workspaces");
-  ul.innerHTML = workspaceState.list.map((w) => `<li class="${w === workspaceState.current ? "current" : ""}">
+  ul.innerHTML = workspaceState.list.map((w) => {
+    const missing = workspaceState.missing.includes(w);
+    return `<li class="${w === workspaceState.current ? "current" : ""}">
       <span class="pref-ws-name">${icon("folder")}<span title="${escapeAttr(w)}">${escapeHtml(basename(w) || w)}</span></span>
-      <span class="pref-ws-path">${escapeHtml(w)}</span>
-      ${w === workspaceState.current ? `<span class="pref-ws-now">Current</span>`
+      <span class="pref-ws-path${missing ? " pref-ws-missing" : ""}">${missing ? "Folder not found: " : ""}${escapeHtml(w)}</span>
+      ${missing ? `<button type="button" data-locate="${escapeAttr(w)}" title="Point to where its folder is now">Locate…</button>`
+        : w === workspaceState.current ? `<span class="pref-ws-now">Current</span>`
         : `<button type="button" data-use="${escapeAttr(w)}">Use</button>`}
-      <button type="button" data-merge="${escapeAttr(w)}" title="Move its projects into another workspace">Merge into…</button>
+      ${missing ? "" : `<button type="button" data-merge="${escapeAttr(w)}" title="Move its projects into another workspace">Merge into…</button>`}
       ${workspaceState.list.length > 1 ? `<button type="button" data-forget="${escapeAttr(w)}" title="Remove from the list (deletes nothing)" aria-label="Remove from the list">${icon("close")}</button>` : ""}
-    </li>`).join("");
+    </li>`;
+  }).join("");
+  ul.querySelectorAll("[data-locate]").forEach((b) => b.addEventListener("click", () =>
+    locateWorkspace(b.dataset.locate)));
   ul.querySelectorAll("[data-use]").forEach((b) => b.addEventListener("click", async () => {
     await switchWorkspace(b.dataset.use);
     renderWorkspaceSelect();
@@ -8351,6 +8357,7 @@ function bindUi() {
   });
   try { $("#projects-sort").value = localStorage.getItem("pcls.projectsSort") || "opened"; } catch { /* private */ }
   $("#projects-select").addEventListener("click", () => setProjectSelecting(true));
+  $("#projects-find").addEventListener("click", findProjects);
   $("#projects-select-done").addEventListener("click", () => setProjectSelecting(false));
   $("#projects-merge").addEventListener("click", mergeSelectedProjects);
   $("#projects-to-photos").addEventListener("click", () => moveSelectedProjects("photos"));
@@ -9090,8 +9097,9 @@ async function fetchState() {
 // `firstRun` is the server saying no workspace has ever been chosen; the list
 // then holds only the default it suggests, which does not exist on disk yet.
 // location: where new projects go, "workspace" or "photos" (Preferences).
+// missing: listed workspaces whose folder is not there (moved, or unplugged).
 const workspaceState = { current: null, list: [], firstRun: false, defaultDir: null, sep: "/",
-  location: "workspace" };
+  location: "workspace", missing: [] };
 
 async function loadWorkspaces() {
   try {
@@ -9104,6 +9112,7 @@ async function loadWorkspaces() {
       workspaceState.defaultDir = d.default || null;
       workspaceState.sep = d.sep || "/";
       workspaceState.location = d.project_location || "workspace";
+      workspaceState.missing = d.missing || [];
     }
   } catch {}
   renderOnboarding();
@@ -9515,6 +9524,7 @@ function renderProjectGrid(projects) {
   const present = new Set(projects.map((p) => p.project_dir));
   for (const d of [...projectSel.dirs]) if (!present.has(d)) projectSel.dirs.delete(d);
   syncProjectSelbar();
+  renderProjectsBanner(projects);
   $("#workspace-proj-count").textContent = projects.length || "";
   if (!projects.length) {
     wrap.innerHTML = `<div class="project-empty">
@@ -9755,9 +9765,11 @@ function showLandingToast(text) {
 }
 
 // ---------- relink ----------
-const relinkState = { projectDir: null, dbPath: null };
+// openAfter: open the project once re-linked (false from the banner on the list).
+const relinkState = { projectDir: null, dbPath: null, openAfter: true };
 
-function openRelinkModal(info) {
+function openRelinkModal(info, { openAfter = true } = {}) {
+  relinkState.openAfter = openAfter;
   relinkState.projectDir = info.project_dir || null;
   relinkState.dbPath = info.db_path || null;
   $("#relink-old").textContent =
@@ -9791,10 +9803,115 @@ async function confirmRelink() {
   }
   const rep = await res.json();
   closeRelinkModal();
+  // Before opening: the others are re-linked while nothing else is running.
+  if (rep.others && rep.others.length) await relinkOthers(rep);
+  if (!relinkState.openAfter) {
+    await loadWorkspaceProjects();
+    return;
+  }
   // A project kept with its photos is found in the new folder, at a new path.
   if (rep.located) openProjectByDir(rep.project_dir);
   else if (relinkState.projectDir) openProjectByDir(relinkState.projectDir);
   else if (relinkState.dbPath) openLegacyDb({ db_path: relinkState.dbPath, photo_dir: newDir, jpeg_subdir: "" });
+}
+
+// One re-link says where a folder of shoots went; offer the other projects
+// whose photos were in it and are found in the same place now.
+async function relinkOthers(rep) {
+  const [was, now] = rep.moved;
+  const list = rep.others.map((o) => `• ${o.name}` + (o.found < o.checked
+    ? ` (${o.found} of ${o.checked} photos checked are there)` : "")).join("\n");
+  const go = await askChoice("Re-link the others too?",
+    `Photos that were in ${was} are in ${now} now. `
+    + `${plural(rep.others.length, "other project")} had ${rep.others.length === 1 ? "its" : "their"} photos there too:\n\n${list}`,
+    [{ id: "cancel", label: "Just this one" },
+     { id: "all", label: `Re-link ${plural(rep.others.length, "project")}`, primary: true }]);
+  if (go !== "all") return;
+  const out = await postJSON("/api/projects/relink-many", {
+    items: rep.others.map((o) => ({ project_dir: o.project_dir, new_photo_dir: o.new_photo_dir })),
+  });
+  const failed = out.results.filter((r) => r.error);
+  if (failed.length) alert("Not re-linked:\n\n" + failed.map((r) => `${r.name}: ${r.error}`).join("\n"));
+  else showLandingToast(`Re-linked ${plural(out.results.length + 1, "project")}`);
+}
+
+// The workspace's folder moved: point to its new place.
+async function locateWorkspace(old) {
+  const dir = await browseWorkspaceFolder();
+  if (!dir) return;
+  let out;
+  try {
+    out = await postJSON("/api/workspaces/relocate", { old, new: dir });
+  } catch (e) { alert("Could not use that folder: " + e.message); return; }
+  workspaceState.list = out.workspaces || [];
+  workspaceState.current = out.current;
+  workspaceState.missing = workspaceState.missing.filter((w) => w !== old);
+  renderWorkspaceSelect();
+  if (prefsOpen()) renderPrefWorkspaces();
+  showLandingToast(`Found ${plural(out.projects, "project")} in ${basename(dir)}`
+    + (out.photos_missing ? `; ${out.photos_missing} cannot find their photos` : ""));
+  await loadWorkspaceProjects();
+  await renderRecents();
+}
+
+// Look under a folder or drive for projects kept with their photos.
+async function findProjects() {
+  const status = $("#landing-status");
+  status.textContent = BROWSE_WAITING;
+  const res = await fetch("/api/browse-folder", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ initial: null, purpose: "find" }),
+  });
+  const picked = res.ok ? await res.json() : {};
+  if (!picked.path) { status.textContent = ""; return; }
+  status.textContent = `Looking for projects in ${picked.path}…`;
+  let out;
+  try {
+    out = await postJSON("/api/projects/find", { root: picked.path });
+  } catch (e) { status.textContent = "Could not look there: " + e.message; return; }
+  status.textContent = "";
+  const n = (s) => out.results.filter((r) => r.status === s).length;
+  const parts = [n("new") && `${n("new")} new`, n("moved") && `${n("moved")} found again`,
+                 n("listed") && `${n("listed")} already listed`].filter(Boolean);
+  showLandingToast(out.results.length
+    ? `Found ${plural(out.results.length, "project")}: ${parts.join(", ")}`
+      + (out.truncated ? ". Stopped early; choose a smaller folder to look further." : "")
+    : `No projects kept with their photos in ${basename(out.root)}`
+      + (out.truncated ? " (stopped early; choose a smaller folder)" : ""));
+  await loadWorkspaceProjects();
+  await renderRecents();
+}
+
+// Above the project list, what needs finding again after something moved.
+function renderProjectsBanner(projects) {
+  const el = $("#projects-banner");
+  const rows = [];
+  if (workspaceState.current && workspaceState.missing.includes(workspaceState.current)) {
+    rows.push([`This workspace's folder is not at ${workspaceState.current}. Moved it, or is its drive unplugged?`,
+               "locate", "Locate…"]);
+  }
+  const unlinked = projects.filter((p) => !p.project_missing && !p.photos_exist);
+  if (unlinked.length) {
+    rows.push([`${plural(unlinked.length, "project")} cannot find ${unlinked.length === 1 ? "its" : "their"} photos. `
+      + "Re-link one, and the others that moved with it are found too.", "relink", "Re-link…"]);
+  }
+  const lost = projects.filter((p) => p.project_missing);
+  if (lost.length) {
+    rows.push([`${plural(lost.length, "project")} kept with ${lost.length === 1 ? "its" : "their"} photos `
+      + `${lost.length === 1 ? "is" : "are"} not where ${lost.length === 1 ? "it was" : "they were"}. `
+      + `Look for ${lost.length === 1 ? "it" : "them"} where the photos went.`, "find", "Find projects…"]);
+  }
+  el.classList.toggle("hidden", !rows.length);
+  el.innerHTML = rows.map(([text, act, label]) =>
+    `<div>${icon("warning")}<span>${escapeHtml(text)}</span><button type="button" data-act="${act}">${label}</button></div>`).join("");
+  el.querySelector('[data-act="locate"]')?.addEventListener("click", () => locateWorkspace(workspaceState.current));
+  el.querySelector('[data-act="find"]')?.addEventListener("click", findProjects);
+  el.querySelector('[data-act="relink"]')?.addEventListener("click", () => {
+    // The one opened last is the likeliest to be remembered by where it went.
+    const p = unlinked.slice().sort((a, b) => (b.opened_at || "").localeCompare(a.opened_at || ""))[0];
+    openRelinkModal({ project_dir: p.project_dir, photo_dir: p.photo_dir, jpeg_subdir: p.jpeg_subdir },
+                    { openAfter: false });
+  });
 }
 
 function showLanding() {

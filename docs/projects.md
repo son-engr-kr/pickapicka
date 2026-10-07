@@ -44,6 +44,23 @@
   photos the merged project will have against the projects' total before
   anything is written. People names are made again, and the original projects
   are kept.
+- **Moving to another drive**: move the folders with Finder (or Explorer), then
+  let the app catch up, all at once rather than a project at a time.
+  - A **workspace** whose folder moved is flagged above the project list and
+    in Preferences → Workspaces; **Locate…** points it at the new place, and
+    its projects, recents and remembered views follow.
+  - **Photos** of workspace projects: re-link one project (the banner above the
+    list starts it). The app works out which folder moved (`/A/Photos` →
+    `/B/Archive` from `/A/Photos/2024/x` → `/B/Archive/2024/x`) and offers the
+    other projects whose photos were in it, each checked against a sample of
+    its photos at the new place.
+  - Projects **kept with their photos** moved along with them. **Find
+    projects…** looks through a folder or drive for every `.pickapicka`
+    project in it and lists them. One the app knew somewhere else is
+    recognised by an id kept in its `picks.json` and moved in the list rather
+    than listed twice; a project not opened since this version has no id yet,
+    so its old entry is removed by hand.
+  The app never moves photos itself.
 - **Exports** go to a dated folder in `~/Downloads` unless you choose another,
   the same place a quick download goes.
 - **See how it works**: an animated walk-through of the above, from the photo

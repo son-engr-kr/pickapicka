@@ -338,6 +338,24 @@ class MoveProjectsPayload(BaseModel):
     workspace_dir: str | None = None   # None: the current workspace
 
 
+class RelocateWorkspacePayload(BaseModel):
+    old: str
+    new: str
+
+
+class RelinkItem(BaseModel):
+    project_dir: str
+    new_photo_dir: str
+
+
+class RelinkManyPayload(BaseModel):
+    items: list[RelinkItem]
+
+
+class FindProjectsPayload(BaseModel):
+    root: str
+
+
 class MergeWorkspacesPayload(BaseModel):
     source: str
     target: str
@@ -362,7 +380,7 @@ class BrowsePayload(BaseModel):
     initial: str | None = None
     # What the folder is for, which picks the dialog's title. A fixed set rather
     # than free text: the title is spliced into an AppleScript on macOS.
-    purpose: Literal["photos", "workspace", "project", "relink", "export"] = "photos"
+    purpose: Literal["photos", "workspace", "project", "relink", "export", "find"] = "photos"
 
 
 class InspectPayload(BaseModel):
@@ -1730,6 +1748,7 @@ _BROWSE_PROMPTS = {
     "project": "Select a project folder",
     "relink": "Select the new location of the photos",
     "export": "Select a folder to copy the picks into",
+    "find": "Select a folder or drive to look for projects in",
 }
 
 
@@ -2114,6 +2133,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             ctx.opening_state["phase"] = "loading"
             ctx.opening_state["message"] = "Loading project…"
             if project_dir is not None:
+                # Before loading, so the id is in what the app saves back.
+                userstate.note_project_id(project_dir, projects_mod.ensure_id(project_dir))
                 ctx.load_project(project_dir)
                 userstate.remember_project(project_dir)
                 userstate.remember_open(
@@ -2306,7 +2327,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             ws = [cur]
         return {"workspaces": ws, "current": cur, "first_run": first_run,
                 "default": str(userstate.DEFAULT_WORKSPACE), "sep": os.sep,
-                "project_location": userstate.get_project_location()}
+                "project_location": userstate.get_project_location(),
+                # Listed but not there: moved, or on a drive not plugged in.
+                "missing": [w for w in ws if not first_run and not Path(w).is_dir()]}
 
     @app.post("/api/workspaces")
     def add_workspace(payload: WorkspacePayload) -> dict[str, Any]:
@@ -2323,6 +2346,29 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         wdir = Path(payload.dir).expanduser().resolve()
         userstate.set_current_workspace(wdir)
         return {"workspaces": userstate.get_workspaces(), "current": str(wdir)}
+
+    @app.post("/api/workspaces/relocate")
+    def relocate_workspace(payload: RelocateWorkspacePayload) -> dict[str, Any]:
+        """A workspace's folder was moved: list it at its new place, and refile
+        the recents, views and known projects of everything in it there. Its
+        projects' photos may have moved too; how many cannot find theirs is
+        returned, for the client to offer re-linking."""
+        old = Path(payload.old).expanduser()
+        new = Path(payload.new).expanduser().resolve()
+        if str(old) not in userstate.get_workspaces():
+            raise HTTPException(status_code=400, detail=f"not a listed workspace: {old}")
+        if not new.is_dir():
+            raise HTTPException(status_code=400, detail=f"folder not found: {new}")
+        found = [c for c in _workspace_children(new) if (c / "picks.json").is_file()]
+        for c in found:
+            userstate.project_moved(old / c.name, c)
+        userstate.relocate_workspace(old, new)
+        photos_missing = sum(
+            1 for c in found
+            if not Path(db.load(c / "picks.json")["photo_root"]).is_dir())
+        return {"projects": len(found), "photos_missing": photos_missing,
+                "workspaces": userstate.get_workspaces(),
+                "current": userstate.get_current_workspace()}
 
     @app.post("/api/workspaces/forget")
     def forget_workspace(payload: WorkspacePayload) -> dict[str, Any]:
@@ -2349,6 +2395,10 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             return None
         photo_root = str(projects_mod.photo_root_of(pdir, data))
         photos = data.get("photos", [])
+        if data.get("project_id"):
+            # Read, never written here: a listing must not race a scoring
+            # run that is writing this same file.
+            userstate.note_project_id(pdir, data["project_id"])
         return {
             "name": pdir.name,
             "project_dir": str(pdir),
@@ -2385,18 +2435,19 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                 "projects": [c for c in cards if c],
                 "with_photos": [c for c in with_photos if c]}
 
+    def _all_project_dirs() -> list[Path]:
+        """Every folder that is or was a project the app knows of: each
+        workspace's subfolders, and the known list. Unique, in that order."""
+        dirs = [c for w in userstate.get_workspaces() for c in _workspace_children(Path(w))]
+        dirs += [Path(k) for k in userstate.known_projects()]
+        return list(dict.fromkeys(dirs))
+
     @app.get("/api/projects/all")
     def list_all_projects() -> dict[str, Any]:
         """Every project the app knows of: each workspace's, and the known list."""
         opened = {r.get("project_dir"): r.get("opened_at") for r in userstate.get_recents()}
-        seen: set[str] = set()
         out: list[dict[str, Any]] = []
-        dirs = [c for w in userstate.get_workspaces() for c in _workspace_children(Path(w))]
-        dirs += [Path(k) for k in userstate.known_projects()]
-        for d in dirs:
-            if str(d) in seen:
-                continue
-            seen.add(str(d))
+        for d in _all_project_dirs():
             card = _project_card(d, opened)
             if card:
                 card["workspace"] = (str(d.parent) if card["location"] == "workspace" else None)
@@ -2463,6 +2514,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             if m["open"]:
                 r["error"] = "open: close it first"
                 continue
+            if not m["deleted"]:
+                userstate.note_project_id(m["src"], projects_mod.ensure_id(m["src"]))
             try:
                 projects_mod.move_project(m["src"], m["dst"])
             except OSError as exc:
@@ -2512,6 +2565,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                 continue
             dst = projects_mod.target_dir(
                 src.name, photo_root.resolve(), payload.location, workspace).resolve()
+            userstate.note_project_id(src, projects_mod.ensure_id(src))
             if dst == src:
                 r["skipped"] = "already there"
                 continue
@@ -2661,8 +2715,69 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         new_photo = Path(payload.new_photo_dir).expanduser().resolve()
         if not new_photo.is_dir():
             raise HTTPException(status_code=400, detail=f"folder not found: {new_photo}")
+        was_root = Path(db.load(db_path)["photo_root"])
         report = relink.relink_project(db_path, new_photo)
+        if payload.project_dir:
+            # Photos are moved by the folderful: whatever else lived where
+            # these did is offered too, for one re-link to bring back all.
+            was, now = projects_mod.moved_prefix(was_root, new_photo)
+            others = [d for d in _all_project_dirs()
+                      if d.resolve() != db_path.parent and d.resolve() != ctx.project_dir]
+            report["moved"] = [str(was), str(now)]
+            report["others"] = projects_mod.relink_candidates(others, was, now)
         return report
+
+    @app.post("/api/projects/relink-many")
+    def relink_many(payload: RelinkManyPayload) -> dict[str, Any]:
+        """Re-link several projects, each to its own new photo folder: the
+        others a re-link found (see relink_project). Each reports on its own."""
+        _refuse_while_busy()
+        results: list[dict[str, Any]] = []
+        for item in payload.items:
+            pdir = Path(item.project_dir).expanduser().resolve()
+            new_photo = Path(item.new_photo_dir).expanduser().resolve()
+            r: dict[str, Any] = {"project_dir": str(pdir), "name": pdir.name}
+            results.append(r)
+            if ctx.project_dir is not None and ctx.project_dir == pdir:
+                r["error"] = "open: close it first"
+            elif not (pdir / "picks.json").is_file():
+                r["error"] = "project folder not found"
+            elif projects_mod.is_with_photos(pdir):
+                r["error"] = "kept with its photos: find it in their folder instead"
+            elif not new_photo.is_dir():
+                r["error"] = f"folder not found: {new_photo}"
+            else:
+                r.update(relink.relink_project(pdir / "picks.json", new_photo))
+        return {"results": results}
+
+    @app.post("/api/projects/find")
+    def find_projects(payload: FindProjectsPayload) -> dict[str, Any]:
+        """List every project kept with its photos under a folder or drive.
+        One the app knew at another path, gone from there, is recognised by
+        its id and refiled rather than listed twice; one never seen is added."""
+        _refuse_while_busy()   # ids are written into projects found
+        root = Path(payload.root).expanduser().resolve()
+        if not root.is_dir():
+            raise HTTPException(status_code=400, detail=f"folder not found: {root}")
+        found, truncated = projects_mod.find_kept_projects(root)
+        known = set(userstate.known_projects())
+        gone = {pid: Path(p) for p, pid in userstate.project_ids().items() if not Path(p).exists()}
+        results: list[dict[str, Any]] = []
+        for d in found:
+            pid = projects_mod.ensure_id(d)
+            projects_mod.heal_photo_root(d)
+            r: dict[str, Any] = {"project_dir": str(d), "name": d.name}
+            if str(d) in known:
+                r["status"] = "listed"
+            elif pid in gone:
+                userstate.project_moved(gone.pop(pid), d)
+                r["status"] = "moved"
+            else:
+                userstate.remember_project(d)
+                r["status"] = "new"
+            userstate.note_project_id(d, pid)
+            results.append(r)
+        return {"root": str(root), "results": results, "truncated": truncated}
 
     # ----- viewer data -----------------------------------------------
 

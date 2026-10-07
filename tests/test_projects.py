@@ -240,3 +240,56 @@ def test_project_moved_refiles_recents_and_view(tmp_path) -> None:
     assert userstate.get_view(str(old)) == {}
     assert userstate.known_projects() == [str(new)]
     assert userstate.get_last_db_path() == new / "picks.json"
+
+
+# ----- finding projects again after a move ---------------------------------
+
+def test_moved_prefix_takes_off_the_shared_tail() -> None:
+    p = Path
+    assert projects.moved_prefix(p("/A/Photos/2024/x"), p("/B/Archive/2024/x")) == \
+        (p("/A/Photos"), p("/B/Archive"))
+    # A renamed shoot shares no tail: only what was under it follows.
+    assert projects.moved_prefix(p("/A/Photos/x"), p("/B/x-2024")) == (p("/A/Photos/x"), p("/B/x-2024"))
+    # Never down to nothing on the shorter side.
+    assert projects.moved_prefix(p("/x"), p("/B/x")) == (p("/"), p("/B"))
+
+
+def test_photos_found_samples_the_project(tmp_path) -> None:
+    root = _shoot(tmp_path / "shoot", "a.jpg", "RAW/b.cr3")
+    data = {"jpeg_subdir": "", "photos": [
+        {"rel_path": "a.jpg"}, {"rel_path": "b.cr3", "type": "raw", "src": "RAW/b.cr3"},
+        {"rel_path": "gone.jpg"}, {"rel_path": "__hdr__/m.jpg", "type": "hdr"}]}
+    assert projects.photos_found(data, root) == (2, 3)
+
+
+def test_relink_candidates_need_the_photos_there(tmp_path) -> None:
+    new = tmp_path / "B" / "Archive"
+    _shoot(new, "2024/x/a.jpg", "2024/y/b.jpg", "2023/z/other.jpg")
+    old = tmp_path / "A" / "Photos"
+    ws = tmp_path / "ws"
+    y = _project(ws / "y", old / "2024" / "y", photos=[{"rel_path": "b.jpg"}])
+    z = _project(ws / "z", old / "2023" / "z", photos=[{"rel_path": "z.jpg"}])   # not there
+    w = _project(ws / "w", tmp_path / "C" / "w", photos=[{"rel_path": "b.jpg"}])  # moved elsewhere
+    found = projects.relink_candidates([y, z, w], old, new)
+    assert [(c["name"], c["new_photo_dir"], c["found"], c["checked"]) for c in found] == \
+        [("y", str(new / "2024" / "y"), 1, 1)]
+
+
+def test_find_kept_projects(tmp_path) -> None:
+    drive = tmp_path / "drive"
+    for d in ("2024/x/.pickapicka/x", "2024/x/.pickapicka/old.deleted-20260101-0000",
+              "2023/y/.pickapicka/y", ".hidden/z/.pickapicka/z", "Lib.photoslibrary/.pickapicka/p"):
+        _project(drive / d, drive)
+    _project(drive / "ws" / "proj", drive)          # a workspace project: not gone into
+    _shoot(drive, "ws/proj/sub/.pickapicka/inner/picks.json")
+    found, truncated = projects.find_kept_projects(drive)
+    assert [str(f.relative_to(drive)) for f in found] == [
+        str(Path("2023/y/.pickapicka/y")), str(Path("2024/x/.pickapicka/x"))]
+    assert not truncated
+    assert projects.find_kept_projects(drive, max_dirs=1)[1]
+
+
+def test_ensure_id_is_given_once(tmp_path) -> None:
+    pdir = _project(tmp_path / "p", tmp_path)
+    pid = projects.ensure_id(pdir)
+    assert len(pid) == 32 and projects.ensure_id(pdir) == pid

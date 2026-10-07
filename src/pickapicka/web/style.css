@@ -2714,4 +2714,12 @@ html.launching #intro { position: fixed; inset: 0; z-index: 1000; display: flex;
 .project-grid.selecting .project-card .project-del { display: none; }
 .project-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
 .project-where { font-size: var(--fs-xs); color: var(--ink-faint); }
+/* What needs finding again after a move, above the project list. */
+.projects-banner { display: flex; flex-direction: column; gap: 6px; margin: -4px 0 12px; }
+.projects-banner.hidden { display: none; }
+.projects-banner > div { display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border: 1px solid var(--review); border-radius: var(--r3); font-size: var(--fs-sm); color: var(--ink-dim); }
+.projects-banner > div > span { flex: 1; min-width: 0; }
+.projects-banner .icon { color: var(--review); width: 14px; height: 14px; flex: none; }
+.pref-ws-missing { color: var(--review); }
 #choice-body { white-space: pre-line; }
