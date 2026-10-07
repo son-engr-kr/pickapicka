@@ -4,7 +4,6 @@
 """
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 
 import pytest
@@ -229,9 +228,6 @@ def test_relinking_ignores_kept_projects_thumbnails(tmp_path) -> None:
 
 def test_project_moved_refiles_recents_and_view(tmp_path) -> None:
     from pickapicka import userstate
-    importlib.reload(userstate)
-    userstate.CONFIG_DIR = tmp_path / "app-data"
-    userstate.STATE_FILE = userstate.CONFIG_DIR / "state.json"
     old, new = tmp_path / "ws" / "trip", tmp_path / "trip" / ".pickapicka" / "trip"
     userstate.remember_open(old / "picks.json", tmp_path / "trip", "",
                             kind="project", project_dir=old)

@@ -12,10 +12,8 @@ from pickapicka import db, server, userstate
 
 
 @pytest.fixture
-def app(tmp_path, monkeypatch):
-    monkeypatch.setattr(userstate, "CONFIG_DIR", tmp_path / "app-data")
-    monkeypatch.setattr(userstate, "STATE_FILE", tmp_path / "app-data" / "state.json")
-    return server.create_app()
+def app():
+    return server.create_app()   # app data is a fresh tmp dir (conftest)
 
 
 def _route(app, path: str, method: str):
