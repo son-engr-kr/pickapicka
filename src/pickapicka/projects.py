@@ -18,9 +18,12 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from . import db, hdr, raw
+from . import db, hdr, healing, raw
 
 PHOTOS_SUBDIR = ".pickapicka"
+# Where a project keeps its AI fill patches (see `aifill`): files the edits
+# name, so they move with the folder and are carried when projects merge.
+FILLS_DIR = "fills"
 
 LOCATIONS = ("workspace", "photos")
 
@@ -278,6 +281,27 @@ def _settings(datas: list[dict[str, Any]], *, whole: bool) -> tuple[dict[str, An
                 f"scenes are grouped by time gap ({gap} min): by folder, each project "
                 "would become one scene. Preferences → This project changes it")
     return out, notes
+
+
+def carry_fills(sources: list[Path], marks: dict[str, dict[str, Any]], dest: Path) -> int:
+    """Copy into `dest`'s fills folder every AI fill patch the carried edits
+    (and their slots) name, from whichever source project has it. Without
+    them a carried AI heal names a file the merged project does not have.
+    Returns how many were copied."""
+    wanted: set[str] = set()
+    for kept in marks.values():
+        for edit in [kept.get("edit")] + list(kept.get("edit_slots") or []):
+            if isinstance(edit, dict):
+                wanted.update(healing.fill_ids(edit.get("healing")))
+    if not wanted:
+        return 0
+    (dest / FILLS_DIR).mkdir(parents=True, exist_ok=True)
+    for fid in sorted(wanted):
+        src = next((d / FILLS_DIR / f"{fid}.png" for d in sources
+                    if (d / FILLS_DIR / f"{fid}.png").is_file()), None)
+        assert src is not None, f"AI fill {fid[:12]} is in none of the merged projects"
+        shutil.copy2(src, dest / FILLS_DIR / f"{fid}.png")
+    return len(wanted)
 
 
 def merge_seed(plan: dict[str, Any]) -> dict[str, Any]:

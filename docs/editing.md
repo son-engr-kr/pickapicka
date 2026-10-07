@@ -72,6 +72,31 @@ Two stages that fix the captured image rather than interpret it, and they run
     you choose, which is the honest answer.
   - Nothing here downloads a model or borrows weights, so it carries no licence
     on to you. A heavier model for large regions is a separate, opt-in thing.
+- **AI fill** is a heal whose pixels a model draws: paint over what should go,
+  and when the stroke is let go the model fills it with what belongs there,
+  pores and all, carrying an edge such as a jaw line or a crease through the
+  hole instead of smearing it. The model is MI-GAN (ICCV 2023), 28 MB, with
+  its code and weights both under the MIT licence, so it carries no licence on
+  to you either; it is fetched the first time it is used. A stroke takes a
+  fraction of a second.
+  - Measured on 60 holes cut into five real faces, where the original pixels
+    are the truth: the fine texture inside the fill came to 95% of the skin's
+    own (the truth: 96%), against 31% for Heal; the error against the truth
+    was three quarters of Heal's.
+  - What it is not good at: a hole wider than about 250 px at full resolution
+    is filled at less than full resolution and comes out softer than the skin
+    beside it, and where a crease runs into the stroke it can leave a short
+    dark dash at the edge. Paint past the end of a line rather than stopping on
+    it.
+  - A fill is pixels, not a setting, so it is kept as a file in the project's
+    `fills` folder and the heal names it. It moves with the project, a merged
+    project takes the ones its edits name, and it is never copied to another
+    photo: a preset or **Apply to more…** leaves AI fills out, and replacing a
+    photo's edit keeps that photo's own. Made from the photo as the lens
+    corrections leave it, before any other repair, so changing an earlier heal
+    does not make it stale.
+  - **Remove blemishes** in the Portrait panel uses AI fill for every spot it
+    finds when **with AI fill** is ticked (the default).
 - **Red-eye and pet-eye**, which are genuinely different problems and not one
   control with a switch. Red-eye pulls a flash-reddened pupil to a neutral built
   from the channels the flash did *not* contaminate, and **protects the
@@ -92,7 +117,8 @@ Two stages that fix the captured image rather than interpret it, and they run
 - Both are stored as normalized coordinates, so a repair means the same thing at
   every render size, and a preset can carry them — sensor dust lands in the same
   place on every frame a body shoots, so "remove the dust spots" is exactly the
-  kind of thing to apply across a whole shoot.
+  kind of thing to apply across a whole shoot. AI fills are the exception, as
+  above: their pixels belong to one photo.
 
 ## Portrait
 

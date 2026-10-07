@@ -785,8 +785,9 @@ def merge_additive(base: dict[str, Any] | None,
     # The two keep their lists under different names, "ops" and "corrections",
     # and red-eye also needs switching on; this read "ops" for both and raised
     # a KeyError for any preset carrying a red-eye fix.
-    if over["healing"] is not None:
-        ops = list((out["healing"] or {}).get("ops", [])) + list(over["healing"]["ops"])
+    over_healing = healing_mod.without_fills(over["healing"])
+    if over_healing is not None:
+        ops = list((out["healing"] or {}).get("ops", [])) + list(over_healing["ops"])
         out["healing"] = healing_mod.normalize({"ops": ops})
     if over["redeye"] is not None:
         fixes = (list((out["redeye"] or {}).get("corrections", []))
@@ -1984,7 +1985,8 @@ def _apply_look(rgb: np.ndarray, ref: dict[str, Any],
 
 
 def _repair(rgb: np.ndarray, e: dict[str, Any],
-            roi: tuple[float, float, float, float]) -> np.ndarray:
+            roi: tuple[float, float, float, float],
+            fills: dict[str, np.ndarray] | None = None) -> np.ndarray:
     """Red-eye and healing, before anything tonal.
 
     These two repair the captured image; everything after them interprets it.
@@ -2010,7 +2012,7 @@ def _repair(rgb: np.ndarray, e: dict[str, Any],
     if e["redeye"] is not None:
         work = redeye_mod.apply_redeye(work, e["redeye"], roi)
     if e["healing"] is not None:
-        work = healing_mod.apply_healing(work, e["healing"], roi)
+        work = healing_mod.apply_healing(work, e["healing"], roi, fills=fills)
     return _to_u8(work)
 
 
@@ -2034,7 +2036,8 @@ def _pregrade_stages_active(e: dict[str, Any]) -> bool:
 def _pregrade(rgb: np.ndarray, e: dict[str, Any], roi: tuple[float, float, float, float],
               faces: list[dict[str, Any]] | None,
               luts: dict[str, dict[str, Any]] | None,
-              cache_key: str | None, given: np.ndarray) -> np.ndarray:
+              cache_key: str | None, given: np.ndarray,
+              fills: dict[str, np.ndarray] | None = None) -> np.ndarray:
     """Repairs, then skin smoothing, then the look, on the uint8 frame.
 
     `given` is the array the caller handed `render`, before the optics made
@@ -2056,7 +2059,7 @@ def _pregrade(rgb: np.ndarray, e: dict[str, Any], roi: tuple[float, float, float
             if hit is not None and hit[0] is given and hit[1] is faces:
                 _PREGRADE_CACHE.move_to_end(key)
                 return hit[2]
-    img = _repair(rgb, e, roi)
+    img = _repair(rgb, e, roi, fills)
     # Retouching before the look and the grade, as a retoucher works on the
     # capture before any colour: and after the repairs, so a healed spot is
     # not smoothed into its surroundings before it has gone.
@@ -2228,7 +2231,8 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
            faces: list[dict[str, Any]] | None = None,
            cache_key: str | None = None,
            ca: tuple[float, float] | None = None,
-           frame_size: tuple[int, int] | None = None) -> np.ndarray:
+           frame_size: tuple[int, int] | None = None,
+           fills: dict[str, np.ndarray] | None = None) -> np.ndarray:
     """Apply `edit` to an RGB uint8 image and return a new RGB uint8 image.
     A neutral edit returns the input array unchanged (no copy).
 
@@ -2274,6 +2278,10 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     portrait panel's retouching and reshaping: the caller's to compute and
     cache, like `auto`, and required whenever that panel is set (an empty list
     says there are no faces).
+
+    `fills` maps the name of each AI heal's patch to the patch (see
+    `aifill`), for every one the edit's healing names: the caller's to load, as
+    it keeps them beside the project.
 
     `frame_size` is the photo's (w, h), for a caller that renders the whole
     frame at several scales, as the editor does: masks are then built on the
@@ -2331,7 +2339,7 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         # is seeded from the photo rather than from chance.
         seed = film_mod.seed_for(str((meta or {}).get("file") or ""))
         img = _pregrade(rgb, e, roi, faces, luts,
-                        None if cache_key is None else f"{cache_key}|{optics_key(e)}", given)
+                        None if cache_key is None else f"{cache_key}|{optics_key(e)}", given, fills)
         img = _grade(img, e, roi, seed)
         img = np.clip(img, 0.0, 1.0)
         if e["masks"]:
@@ -2392,7 +2400,8 @@ def render_bands(rgb: np.ndarray, edit: dict[str, Any] | None,
                  src: np.ndarray | None = None,
                  luts: dict[str, dict[str, Any]] | None = None,
                  faces: list[dict[str, Any]] | None = None,
-                 workers: int = BAND_WORKERS) -> np.ndarray:
+                 workers: int = BAND_WORKERS,
+                 fills: dict[str, np.ndarray] | None = None) -> np.ndarray:
     """`render` of a whole frame, graded in horizontal bands on `workers` threads.
 
     For a big render made once, the export: numpy runs a stage on one core, and
@@ -2418,7 +2427,7 @@ def render_bands(rgb: np.ndarray, edit: dict[str, Any] | None,
     if is_neutral(e):
         return rgb
     h, w = rgb.shape[:2]
-    kw = dict(meta=meta, auto=auto, src=src, luts=luts, faces=faces)
+    kw = dict(meta=meta, auto=auto, src=src, luts=luts, faces=faces, fills=fills)
     if not optics_is_neutral(e):
         rgb = apply_optics(rgb, e)
     pad = int(math.ceil(effect_padding(e, float(max(h, w)), faces)))

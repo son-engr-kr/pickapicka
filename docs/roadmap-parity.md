@@ -275,6 +275,19 @@ A pose model (RTMPose or MoveNet, 10–30 MB ONNX) plus the Batch 3 person mask.
 
 ## Batch 6 — the baked-layer architecture, then inpainting
 
+**Started.** The baked layer exists in its simplest useful form: an **AI fill**
+heal (`aifill.py`) makes its patch once with MI-GAN (MIT code and MIT
+weights, 28 MB, ONNX), keeps it as `fills/<sha256 of its pixels>.png` in the
+project, and the heal operation names it; `healing` composites it through the
+heal's own alpha before the grade, at any resolution. Fills never travel to
+another photo (presets, bulk apply), and merged projects carry the ones their
+edits name. On real skin it keeps 95% of the fine texture where `cv2.inpaint`
+keeps 31%. That covers the small-to-medium half of the list below on the
+permissive path; big-lama turned out to have no written weights licence at all
+(only maintainers' comments that it is Apache-2.0), so it stays off the default
+path, and diffusion (SD 1.5 inpainting, CreativeML OpenRAIL-M, whose use
+restrictions must be passed on to every user) is still undecided.
+
 This is the fork in the road. A generative edit cannot be a scalar, so it needs:
 a per-photo raster layer stored beside `picks.json`, content-addressed by the
 mask that produced it, that `render` composites *before* the parametric grade.

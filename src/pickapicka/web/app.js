@@ -4322,8 +4322,18 @@ async function removeBlemishes() {
   const { ops, faces } = await res.json();
   // Skip any already covered by a spot, so pressing it twice does not stack.
   const have = healOps();
-  const fresh = ops.filter((o) => !have.some((h) => h.kind === "spot"
+  let fresh = ops.filter((o) => !have.some((h) => h.kind === "spot"
     && Math.hypot(h.points[0][0] - o.points[0][0], h.points[0][1] - o.points[0][1]) < Math.max(h.radius, o.radius)));
+  if (fresh.length && $("#portrait-blemish-ai").checked) {
+    if (!(await ensureFillModel())) { status.textContent = "AI fill model download failed"; return; }
+    status.textContent = `filling ${fresh.length} blemish${fresh.length === 1 ? "" : "es"} with AI fill…`;
+    const made = await fetch("/api/edit/fill", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rel_path: editSession.relPath, ops: fresh, edit: opticsPayload() }),
+    });
+    if (!made.ok) { status.textContent = `AI fill failed: ${made.status} ${await made.text()}`; return; }
+    fresh = (await made.json()).ops;
+  }
   if (fresh.length) {
     setHealOps([...have, ...fresh]);
     repairChanged();
@@ -4518,13 +4528,15 @@ function bindOpticsPanel() {
 // Stored as the server normalizes them, in original-frame fractions: healing
 // is {ops: [...]} and red-eye {enabled, corrections: [...]}, each null when
 // empty. A radius is a fraction of the frame WIDTH, as a brush stroke's is.
-const REPAIR_TOOLS = ["spot", "heal", "clone", "redeye", "peteye"];
+const REPAIR_TOOLS = ["spot", "heal", "fill", "clone", "redeye", "peteye"];
 const REPAIR_LABELS = { spot: "Spot", heal: "Heal", clone: "Clone" };
 const repairState = { size: 20, cloneSrc: null };   // size in 1/1000 of the width
 const EYE_CLICK_RADIUS = 0.02;   // a click with no drag: an eye in a portrait
 
 function isRepairTool(t) { return REPAIR_TOOLS.includes(t); }
-function isRepairBrush(t) { return t === "spot" || t === "heal" || t === "clone"; }
+function isRepairBrush(t) { return t === "spot" || t === "heal" || t === "fill" || t === "clone"; }
+// AI fill strokes waiting for their patch: drawn, not yet part of the edit.
+const pendingFills = [];
 function healOps() { return (editSession.edit.healing && editSession.edit.healing.ops) || []; }
 function eyeFixes() { return (editSession.edit.redeye && editSession.edit.redeye.corrections) || []; }
 function setHealOps(ops) { editSession.edit.healing = ops.length ? { ops } : null; }
@@ -4549,7 +4561,7 @@ function renderRepairPanel() {
   const ops = healOps(), fixes = eyeFixes();
   $("#repair-list").innerHTML = ops.map((op, i) =>
     `<div class="repair-item"><label><input type="checkbox" data-heal-on="${i}"`
-    + `${op.enabled === false ? "" : " checked"} /> ${REPAIR_LABELS[op.kind] || op.kind} ${i + 1}</label>`
+    + `${op.enabled === false ? "" : " checked"} /> ${op.method === "ai" ? "AI fill" : (REPAIR_LABELS[op.kind] || op.kind)} ${i + 1}</label>`
     + `<button type="button" class="quiet" data-heal-del="${i}" aria-label="Remove">×</button></div>`).join("");
   $("#redeye-list").innerHTML = fixes.map((c, i) =>
     `<div class="repair-item"><span>${c.kind === "pet" ? "Pet eye" : "Red eye"} ${i + 1}</span>`
@@ -4571,6 +4583,13 @@ function repairDown(e, f) {
   if (tool === "clone" && (e.altKey || !repairState.cloneSrc)) {
     repairState.cloneSrc = { x: f.x, y: f.y };
     setEditTool("clone");            // refreshes the hint for the next step
+    drawOverlay();
+    return;
+  }
+  if (tool === "fill") {
+    // Painted like a heal; the pixels come from the model once it is let go.
+    editSession.drag = { kind: "repair-fill", op: { ...base, kind: "heal", points: [[f.x, f.y]] } };
+    $("#edit-overlay").setPointerCapture(e.pointerId);
     drawOverlay();
     return;
   }
@@ -4610,12 +4629,50 @@ function repairMove(e, f, d) {
     if (Math.hypot(q.x - last[0], q.y - last[1]) >= step) pts.push([q.x, q.y]);
   }
   scheduleOverlay();
+  if (d.kind === "repair-fill") return;     // nothing to preview until it is filled
   setEditDirty();
   previewDuringDrag();
 }
 
+async function ensureFillModel() {
+  const info = await (await fetch("/api/fill/status", { cache: "no-store" })).json();
+  if (info.model_ready) return true;
+  const mb = Math.round((info.size || 0) / 1e6);
+  $("#repair-status").textContent = `fetching the AI fill model (${mb} MB, ${info.licence})…`;
+  const done = await (await fetch("/api/fill/download", { method: "POST" })).json();
+  $("#repair-status").textContent = done.model_ready ? "" : "AI fill model download failed";
+  return !!done.model_ready;
+}
+
+// One stroke at a time goes to the model; the stroke stays on the overlay
+// meanwhile so it is clear what is being filled.
+async function fillStroke(op) {
+  const rel = editSession.relPath;
+  pendingFills.push(op);
+  drawOverlay();
+  const status = $("#repair-status");
+  try {
+    if (!(await ensureFillModel())) return;
+    status.textContent = "filling…";
+    const res = await fetch("/api/edit/fill", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rel_path: rel, ops: [op], edit: opticsPayload() }),
+    });
+    if (!res.ok) { status.textContent = `AI fill failed: ${res.status} ${await res.text()}`; return; }
+    const made = (await res.json()).ops;
+    if (editSession.relPath !== rel) return;        // moved on to another photo meanwhile
+    status.textContent = "";
+    setHealOps([...healOps(), ...made]);
+    repairChanged();
+  } finally {
+    pendingFills.splice(pendingFills.indexOf(op), 1);
+    drawOverlay();
+  }
+}
+
 async function repairUp(d) {
   if (d.kind === "repair-paint") { repairChanged(); return; }
+  if (d.kind === "repair-fill") { fillStroke(d.op); return; }
   const status = $("#repair-status");
   const r = d.r < 0.004 ? EYE_CLICK_RADIUS : d.r;
   status.textContent = "checking the eye…";
@@ -4707,6 +4764,19 @@ function drawRepairs(ctx, mr) {
     ctx.stroke();
   }
   const d = editSession.drag;
+  const filling = [...pendingFills, ...(d && d.kind === "repair-fill" ? [d.op] : [])];
+  for (const op of filling) {
+    ctx.lineWidth = op.radius * mr.w * 2;
+    ctx.strokeStyle = "rgba(167,139,250,0.35)";
+    path(op.points);
+    ctx.stroke();
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = "rgba(196,181,253,0.95)";
+    path(op.points);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
   if (d && d.kind === "eye") {
     ctx.lineWidth = 1.4;
     ctx.strokeStyle = "#ffffff";
@@ -5116,6 +5186,7 @@ function setEditTool(tool) {
     : tool === "wb" ? "Click something that should be grey — a white wall, a grey card, a white shirt"
     : tool === "spot" ? "Click a dust spot or blemish · [ ] = size"
     : tool === "heal" ? "Paint over what should go; it fills from around it · [ ] = size"
+    : tool === "fill" ? "Paint over what should go; a model draws skin, hair or whatever is around it · [ ] = size"
     : tool === "clone" ? (repairState.cloneSrc ? "Paint where the copy goes · Alt-click to pick a new source"
                                                : "Alt-click (or click) where to copy from")
     : tool === "redeye" ? "Drag from the centre of the pupil out to the edge of the iris"
@@ -6328,7 +6399,7 @@ function overlayMove(e) {
     panBy(f.x - d.last.x, f.y - d.last.y);
     return;   // `last` stays put: the delta is measured against the grab point
   }
-  if (d.kind === "repair-paint" || d.kind === "eye") {
+  if (d.kind === "repair-paint" || d.kind === "repair-fill" || d.kind === "eye") {
     repairMove(e, f, d);
     return;
   }
@@ -6437,7 +6508,7 @@ function overlayUp(e) {
     fetchOriginalPreview();
     return;
   }
-  if (d.kind === "repair-paint" || d.kind === "eye") {
+  if (d.kind === "repair-paint" || d.kind === "repair-fill" || d.kind === "eye") {
     if (e && e.pointerId != null) {
       try { $("#edit-overlay").releasePointerCapture(e.pointerId); } catch { /* gone */ }
     }

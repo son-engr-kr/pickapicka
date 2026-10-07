@@ -34,6 +34,7 @@ uv run python tests/test_exporting.py    # export names, sizes, formats, copying
 uv run python tests/test_portrait.py     # skin smoothing
 uv run python tests/test_portrait_lines.py  # wrinkles, neck lines, dark circles
 uv run python tests/test_reshape.py      # face shape warps
+uv run pytest tests/test_aifill.py       # AI fill; the model checks skip until it is downloaded
 uv run python tests/test_app_entry.py    # the bundled app starting with no console
 uv run python tests/test_launch.py       # the launch intro's address and chime
 uv run pytest tests/test_updater.py     # update checks, checksums, the install scripts
