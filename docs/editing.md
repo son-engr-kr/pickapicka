@@ -130,6 +130,32 @@ Two stages that fix the captured image rather than interpret it, and they run
   wide zone round the eyes are left out, as is the edge of the skin. On two
   real, clear-skinned faces it found the one small dark spot each had and
   nothing else. It has not been measured on real acne.
+### Face shape
+
+- **Eye size, Face width, Jaw, Chin, Nose width and Mouth width**, each -100 to
+  100, warp every face found. Nothing is painted in: each output pixel is read
+  from somewhere else in the photo, through local warps from Gustafsson's
+  "Interactive Image Warping" (1993), placed on the face's own landmarks and
+  sized to them. Eyes are scaled round their centre; the jaw line, the nose's
+  wings and the mouth's corners are moved.
+- Measured at full strength on a real face: the cheek line moves in by 7% of
+  the distance between the eyes for Face width, the jaw by 8.5% for Jaw, the
+  chin by 9.5% for Chin, and an eye is 1.33 times its size at its centre, 1.06
+  corner to corner. On six real faces no setting, alone or all together at
+  either end, folds the photo over: the most any patch was squeezed was to 57%
+  of its area, in the ring round an enlarged eye.
+- The warp is the last thing applied to the face, after the skin, the heals and
+  the masks, so everything placed on the face moves with it. What does not
+  follow is something drawn on the reshaped preview: a heal or a brush placed
+  where the face moved lands up to that movement away from where it was drawn.
+- The background beside a moved jaw stretches with it, as it does in any
+  liquify: the warp reaches 45% of the distance between the eyes past the jaw
+  line. On a plain backdrop it does not show; a straight line that close to a
+  strongly slimmed jaw bends.
+- The resampling is Lanczos, because most of the face moves by a fraction of a
+  pixel while the photo round it is not resampled at all. On a real cheek,
+  bilinear kept 74% of the finest detail and Lanczos 94%, so the reshaped skin
+  is not visibly softer than the skin beside it.
 - Faces are found once per photo when the panel is opened, and marked on the
   photo while it is open. A face under about 4% of the frame is left alone.
 

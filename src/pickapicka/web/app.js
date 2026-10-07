@@ -3274,10 +3274,10 @@ function bindSliderLooks() {
     if (sl.matches("#edit-modal input[type=range]")) paintSlider(sl);
   }, true);
   // Double-click puts an adjustment back to zero, as in Lightroom. Only the
-  // main adjustments: they are all neutral at 0 (EDIT_SCHEMA), which is not
-  // true of every slider in the editor.
+  // main adjustments (EDIT_SCHEMA) and the sliders marked data-zero: they are
+  // neutral at 0, which is not true of every slider in the editor.
   document.addEventListener("dblclick", (e) => {
-    const sl = e.target.closest?.("#edit-modal input[type=range][data-edit]");
+    const sl = e.target.closest?.("#edit-modal input[type=range]:is([data-edit], [data-zero])");
     if (!sl || Number(sl.value) === 0) return;
     sl.value = 0;
     sl.dispatchEvent(new Event("input", { bubbles: true }));
@@ -4256,13 +4256,19 @@ function buildFilmFields() {
   });
 }
 
-// ---------- portrait (skin smoothing) ----------
+// ---------- portrait (skin, eyes and teeth, face shape) ----------
 // The faces come from the server (portrait.analyze on the corrected frame) and
 // are only fetched once the panel is opened, so a photo nobody retouches never
 // runs the face model.
 const portraitState = { faces: null, rel: null, key: "" };
-// Mirrors portrait.DEFAULT_PORTRAIT; all three are 0..100 and neutral at 0.
-const PORTRAIT_KEYS = ["smooth", "teeth", "eyes"];
+// Mirrors portrait.DEFAULT_PORTRAIT, every one neutral at 0: the skin, eyes and
+// teeth are 0..100, the face's shape -100..100 (reshape.SHAPE_KEYS).
+const PORTRAIT_KEYS = ["smooth", "teeth", "eyes",
+                       "eye_size", "face_width", "jaw_width", "chin_length", "nose_width", "mouth_width"];
+// What the panel's summary calls each, when it is set.
+const PORTRAIT_SHORT = { smooth: "smooth", teeth: "teeth", eyes: "eyes", eye_size: "eye size",
+                         face_width: "face", jaw_width: "jaw", chin_length: "chin",
+                         nose_width: "nose", mouth_width: "mouth" };
 
 async function loadPortraitFaces() {
   const key = `${editSession.relPath}#${JSON.stringify(opticsPayload())}`;
@@ -4283,7 +4289,7 @@ async function loadPortraitFaces() {
 
 function portraitSummary() {
   const p = editSession.edit.portrait;
-  const on = PORTRAIT_KEYS.filter((k) => p && p[k]);
+  const on = PORTRAIT_KEYS.filter((k) => p && p[k]).map((k) => PORTRAIT_SHORT[k]);
   return on.length ? `· ${on.join(", ")}` : "";
 }
 
@@ -4351,7 +4357,7 @@ function bindPortraitPanel() {
   for (const k of PORTRAIT_KEYS) {
     $(`#portrait-${k}`).addEventListener("input", (e) => {
       const v = parseFloat(e.target.value);
-      const next = { smooth: 0, teeth: 0, eyes: 0, ...(editSession.edit.portrait || {}), [k]: v };
+      const next = { ...(editSession.edit.portrait || {}), [k]: v };
       editSession.edit.portrait = PORTRAIT_KEYS.some((x) => next[x]) ? next : null;
       $(`#portrait-${k}-val`).textContent = fmtSlider(e.target, v);
       $("#portrait-summary-state").textContent = portraitSummary();
@@ -10436,7 +10442,7 @@ const TOURS = {
     { target: "#edit-optics-group", title: "Lens & perspective",
       body: "Straighten leaning buildings with <b>Upright</b>, and correct distortion, colour fringes and dark corners." },
     { target: "#edit-portrait-group", title: "Portrait",
-      body: "Smooth skin, whiten teeth and eyes, and remove blemishes, sized to each face it finds." },
+      body: "Smooth skin, whiten teeth and eyes, remove blemishes, and reshape the eyes, face, jaw, chin, nose and mouth, sized to each face it finds." },
     { target: "#edit-repair-group", title: "Heal & red eye",
       body: "Remove dust and small things by hand, and fix red eyes." },
     { target: "#edit-save", title: "Save",

@@ -524,7 +524,7 @@ class AppContext:
         self.cluster_state: dict[str, Any] = self._fresh_cluster_state()
         self.opening_state: dict[str, Any] = self._fresh_opening_state()
         self.export_state: dict[str, Any] = self._fresh_export_state()
-        # Faces for skin smoothing, per photo and optics. One lock, because the
+        # Faces for the portrait panel, per photo and optics. One lock, because the
         # face model is one session and a grid full of thumbnails would
         # otherwise analyse the same photo several times at once.
         self.portrait_cache: "OrderedDict[str, list[dict[str, Any]]]" = OrderedDict()
@@ -770,9 +770,9 @@ class AppContext:
 
     def portrait_faces(self, rel_path: str,
                        edit: dict[str, Any] | None) -> list[dict[str, Any]] | None:
-        """The faces an edit's skin smoothing works on, found on the corrected
-        preview frame and cached per photo and optics. None when the edit does
-        not smooth skin, so no other photo pays for a face model."""
+        """The faces an edit's portrait panel works on, found on the corrected
+        preview frame and cached per photo and optics. None when the edit has
+        no portrait panel, so no other photo pays for a face model."""
         if editing.normalize(edit)["portrait"] is None:
             return None
         return self.faces_for(rel_path, edit)
@@ -3058,7 +3058,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
 
     @app.post("/api/edit/faces")
     def portrait_face_boxes(payload: FacesPayload) -> dict[str, Any]:
-        """The faces skin smoothing would work on, as boxes on the corrected
+        """The faces the portrait panel would work on, as boxes on the corrected
         frame, so the panel can say how many and show where."""
         _require_loaded()
         if ctx.photo_index.get(payload.rel_path) is None:

@@ -46,6 +46,7 @@ from . import lut as lut_mod
 from . import portrait as portrait_mod
 from . import rangemask as rangemask_mod
 from . import redeye as redeye_mod
+from . import reshape as reshape_mod
 from . import segment as segment_mod
 from . import sharpening as sharpening_mod
 from . import sliders as sliders_mod
@@ -101,7 +102,8 @@ DEFAULT_EDIT: dict[str, Any] = {
     # A colour look (a .cube or a fitted colour match) under the sliders; see
     # "looks" below. Stored as a reference, {key, name, amount}.
     "lut": None,
-    "portrait": None,  # skin smoothing per face; see the portrait module
+    # Retouching per face, skin and shape; see the portrait and reshape modules.
+    "portrait": None,
     "masks": [],       # local adjustments; see the "masks" section below
     "film": None,      # film emulation chain; see the film module
     "watermark": None, # signature / shooting info; see the watermark module
@@ -2025,7 +2027,8 @@ _PREGRADE_LOCK = threading.Lock()
 
 
 def _pregrade_stages_active(e: dict[str, Any]) -> bool:
-    return any(e[k] is not None for k in ("redeye", "healing", "portrait", "lut"))
+    return any(e[k] is not None for k in ("redeye", "healing", "lut")) \
+        or not portrait_mod.tone_is_neutral(e["portrait"])
 
 
 def _pregrade(rgb: np.ndarray, e: dict[str, Any], roi: tuple[float, float, float, float],
@@ -2042,7 +2045,10 @@ def _pregrade(rgb: np.ndarray, e: dict[str, Any], roi: tuple[float, float, float
         return rgb
     key = None
     if cache_key is not None:
-        stages = json.dumps({k: e[k] for k in ("redeye", "healing", "portrait", "lut")},
+        # Only the part of the portrait panel this stage reads, so dragging a
+        # shape slider (applied after the grade) keeps the smoothed skin.
+        stages = json.dumps({**{k: e[k] for k in ("redeye", "healing", "lut")},
+                             "portrait": portrait_mod.tone_params(e["portrait"])},
                             sort_keys=True, separators=(",", ":"))
         key = (cache_key, rgb.shape, tuple(roi), stages)
         with _PREGRADE_LOCK:
@@ -2054,7 +2060,7 @@ def _pregrade(rgb: np.ndarray, e: dict[str, Any], roi: tuple[float, float, float
     # Retouching before the look and the grade, as a retoucher works on the
     # capture before any colour: and after the repairs, so a healed spot is
     # not smoothed into its surroundings before it has gone.
-    if e["portrait"] is not None:
+    if not portrait_mod.tone_is_neutral(e["portrait"]):
         assert faces is not None, "smoothing skin needs the caller's portrait.analyze faces"
         img = _to_u8(portrait_mod.apply_portrait(img.astype(np.float32) / 255.0,
                                                  e["portrait"], faces, roi))
@@ -2198,6 +2204,9 @@ def effect_padding(edit: dict[str, Any] | None, frame_long: float,
     for m in e["masks"]:
         if mask_is_active(m):
             pad = max(pad, for_adj(m["adj"]))
+    # The warp reads pixels that every stage before it has finished, so its
+    # reach adds to theirs rather than standing beside it.
+    pad += reshape_mod.padding(e["portrait"], faces, frame_long)
     # A few pixels for rounding and for the resampling at a patch's edge. The
     # stages with a real reach — blur, smear, bloom, clarity, texture, dehaze,
     # denoise, sharpening — report theirs in `for_adj`, so this is only the slack
@@ -2261,9 +2270,10 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
     the edit names; an edit whose look is missing raises rather than rendering
     as if it had none.
 
-    `faces` is `portrait.analyze` of the whole corrected frame, for the skin
-    smoothing: the caller's to compute and cache, like `auto`, and required
-    whenever the edit smooths skin (an empty list says there are no faces).
+    `faces` is `portrait.analyze` of the whole corrected frame, for the
+    portrait panel's retouching and reshaping: the caller's to compute and
+    cache, like `auto`, and required whenever that panel is set (an empty list
+    says there are no faces).
 
     `frame_size` is the photo's (w, h), for a caller that renders the whole
     frame at several scales, as the editor does: masks are then built on the
@@ -2326,6 +2336,11 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         img = np.clip(img, 0.0, 1.0)
         if e["masks"]:
             img = _apply_masks(img, e["masks"], roi, auto, src, frame_size, process_version(e))
+        # The face's shape last, so that everything placed on the face (its
+        # retouching, heals and masks) moves with it; see the reshape module.
+        if reshape_mod.is_active(e["portrait"]):
+            assert faces is not None, "reshaping a face needs the caller's portrait.analyze faces"
+            img = reshape_mod.apply_reshape(img, e["portrait"], faces, roi)
         out = _to_u8(img)
     if do_geom:
         out = apply_geometry(out, e)

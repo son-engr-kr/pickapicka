@@ -863,6 +863,12 @@ body.resizing-edit, body.resizing-edit * { cursor: col-resize !important; user-s
 .edit-group > summary::-webkit-details-marker { display: none; }
 .edit-group-body { display: flex; flex-direction: column; gap: 12px;
   padding-bottom: 8px; }
+/* A heading for a run of sliders inside one panel (Portrait's skin, eyes and
+   teeth, face shape): quieter than the panel's own summary. */
+.edit-subhead { font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
+  text-transform: uppercase; color: var(--fg-dim); opacity: 0.8;
+  margin-top: 4px; border-top: 1px solid var(--border); padding-top: 10px; }
+.edit-subhead:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
 .edit-controls .look-row { display: grid; grid-template-columns: 88px 1fr 46px;
   gap: 10px; align-items: center; }
 .edit-controls .look-row.hidden { display: none; }

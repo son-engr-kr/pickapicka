@@ -32,6 +32,7 @@ uv run python tests/test_folderinfo.py   # what the setup screens say about a fo
 uv run python tests/test_metadata.py     # EXIF and colour profile on export
 uv run python tests/test_exporting.py    # export names, sizes, formats, copying
 uv run python tests/test_portrait.py     # skin smoothing
+uv run python tests/test_reshape.py      # face shape warps
 uv run python tests/test_app_entry.py    # the bundled app starting with no console
 uv run python tests/test_launch.py       # the launch intro's address and chime
 uv run pytest tests/test_updater.py     # update checks, checksums, the install scripts

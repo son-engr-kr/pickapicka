@@ -105,6 +105,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from .reshape import SHAPE_KEYS, SHAPE_RANGE
 from .sliders import tenth
 
 # ----- schema -------------------------------------------------------------
@@ -113,8 +114,16 @@ DEFAULT_PORTRAIT: dict[str, Any] = {
     "smooth": 0,       # 0..100, skin smoothing
     "teeth": 0,        # 0..100, teeth whitening
     "eyes": 0,         # 0..100, whitening the whites of the eyes
+    # The face's shape, -100..100 each; see the reshape module.
+    **{k: 0 for k in SHAPE_KEYS},
 }
-_RANGES = {"smooth": (0, 100), "teeth": (0, 100), "eyes": (0, 100)}
+_RANGES = {"smooth": (0, 100), "teeth": (0, 100), "eyes": (0, 100),
+           **{k: SHAPE_RANGE for k in SHAPE_KEYS}}
+# In every normalized panel. The rest appear only when set, so a panel saved
+# before they existed normalizes, and hashes into the thumbnail cache, as it did.
+_ALWAYS = ("smooth", "teeth", "eyes")
+# What `apply_portrait` does; the shape is the reshape module's, and runs later.
+TONE_KEYS = ("smooth", "teeth", "eyes")
 
 FULL_ROI = (0.0, 0.0, 1.0, 1.0)
 
@@ -156,17 +165,29 @@ def normalize(raw: Any) -> dict[str, Any] | None:
     """Clamp, or None when nothing would change (the house contract)."""
     if not isinstance(raw, dict):
         return None
-    out = dict(DEFAULT_PORTRAIT)
+    out = {}
     for key, (lo, hi) in _RANGES.items():
         try:
-            out[key] = tenth(min(hi, max(lo, float(raw.get(key, 0) or 0))))
+            val = tenth(min(hi, max(lo, float(raw.get(key, 0) or 0))))
         except (TypeError, ValueError):
-            out[key] = 0
+            val = 0
+        if val or key in _ALWAYS:
+            out[key] = val
     return None if is_neutral(out) else out
 
 
 def is_neutral(params: dict[str, Any] | None) -> bool:
     return not params or all(not params.get(k) for k in DEFAULT_PORTRAIT)
+
+
+def tone_is_neutral(params: dict[str, Any] | None) -> bool:
+    """Nothing for `apply_portrait` to do (the shape may still be set)."""
+    return not params or all(not params.get(k) for k in TONE_KEYS)
+
+
+def tone_params(params: dict[str, Any] | None) -> dict[str, Any]:
+    """The part of a panel `apply_portrait` reads: what its result depends on."""
+    return {k: (params or {}).get(k, 0) for k in TONE_KEYS}
 
 
 # ----- analysis (the caller's job: heavy, cache it per photo) --------------
@@ -319,7 +340,7 @@ def padding(params: dict[str, Any] | None, faces: list[dict[str, Any]] | None,
             frame_w: float) -> float:
     """Pixels of neighbourhood a window render needs so that its pixels match
     the whole render's: the reach of the widest face's filters."""
-    if is_neutral(params) or not faces:
+    if tone_is_neutral(params) or not faces:
         return 0.0
     widest = max(f["box"][2] for f in faces) * frame_w
     return widest * (_EVEN_RADIUS * 2.0 + _TEX_SIGMA * 3.0) + 2.0
@@ -361,7 +382,7 @@ def apply_portrait(img: np.ndarray, params: dict[str, Any] | None,
     """Smooth each face's skin in float32 RGB [0,1]. `roi` is where `img` sits
     in the frame, the same contract as `editing.render`."""
     assert img.dtype == np.float32, "apply_portrait works in float32"
-    if is_neutral(params) or not faces:
+    if tone_is_neutral(params) or not faces:
         return img
     p = {**DEFAULT_PORTRAIT, **params}
     amount = p["smooth"] / 100.0

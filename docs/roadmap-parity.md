@@ -235,7 +235,8 @@ Skin — the frequency-separation family, all as sliders on a skin mask:
 - AI Rosy Complexion, AI Skin Tone Changer
 
 Eyes, mouth, brows:
-- Eye Color Changer, AI Catchlights, AI Eye Editor, AI Eyebrow Filter
+- Eye Color Changer, AI Catchlights, AI Eyebrow Filter
+- AI Eye Editor: ~~eye size~~ `done` (see Warps); the rest of it is not
 - ~~Teeth whitening (the colour half of `AI Teeth Fixer`)~~ `done`, and whitening
   the whites of the eyes, in the Portrait panel
 - AI Makeup Editor — recolour of lips, blush and lids only
@@ -244,7 +245,15 @@ Hair (mask-based recolour; dark-to-light does not work and will not pretend to):
 - Hair Color Changer, White Hair Blackening, Hair Shine Enhancement
 
 Warps:
-- Face Reshaping Tool, Nose Reshaper, AI Face Slimming, Double Chin Remover
+- ~~Face Reshaping Tool, Nose Reshaper, AI Face Slimming~~ `done` as the
+  Portrait panel's **Face shape**: eye size, face width, jaw (V line), chin,
+  nose width and mouth width (`reshape.py`). Not stored as control-point
+  offsets after all but as the six slider values: the warp is rebuilt from
+  the face's landmarks on every render, out of Gustafsson's local translation
+  and scaling warps, so it follows a re-analysed face, and a preset or a
+  batch apply carrying it reshapes whatever faces it lands on. Applied after the grade and
+  the masks, so everything on the face moves with it. No new model.
+- Double Chin Remover
 - Lightroom's per-person mask parts map onto the same parsing model
 
 ## Batch 5 — pose and body
