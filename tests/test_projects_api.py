@@ -184,3 +184,42 @@ def test_a_project_that_cannot_move_keeps_the_old_workspace(app, tmp_path, monke
     assert [r.get("error") for r in out["results"]] == [None, "permission denied"]
     assert (old / "b" / "picks.json").is_file() and (new / "a" / "picks.json").is_file()
     assert not out["removed"] and str(old) in out["workspaces"]
+
+
+def test_projects_move_to_another_workspace_and_the_current_one_stays(app, tmp_path) -> None:
+    a = _ws(app, tmp_path / "A")
+    b = _ws(app, tmp_path / "B")
+    _ws(app, tmp_path / "Here")            # current
+    pdir = _project(a / "trip", tmp_path)
+    elsewhere = (tmp_path / "Elsewhere").resolve()   # not listed yet
+    out = _route(app, "/api/projects/move", "POST")(server.MoveProjectsPayload(
+        project_dirs=[str(pdir)], location="workspace", workspace_dir=str(elsewhere)))
+    assert out["results"][0]["moved_to"] == str(elsewhere / "trip")
+    assert out["current"] == str((tmp_path / "Here").resolve())
+    assert str(elsewhere) in out["workspaces"]
+    # Already there: skipped, not an error.
+    out = _route(app, "/api/projects/move", "POST")(server.MoveProjectsPayload(
+        project_dirs=[str(elsewhere / "trip")], location="workspace", workspace_dir=str(elsewhere)))
+    assert out["results"][0]["skipped"] == "already there"
+    # A name taken there is refused, nothing overwritten.
+    _project(b / "trip", tmp_path)
+    out = _route(app, "/api/projects/move", "POST")(server.MoveProjectsPayload(
+        project_dirs=[str(b / "trip")], location="workspace", workspace_dir=str(elsewhere)))
+    assert "already exists" in out["results"][0]["error"]
+    assert (b / "trip" / "picks.json").is_file()
+
+
+def test_merging_into_another_workspace_keeps_the_current_one(app, tmp_path) -> None:
+    a = _ws(app, tmp_path / "A")
+    here = _ws(app, tmp_path / "Here")     # current
+    _project(a / "trip", tmp_path)
+    new = (tmp_path / "New").resolve()
+    out = _route(app, "/api/workspaces/merge", "POST")(server.MergeWorkspacesPayload(
+        source=str(a), target=str(new)))
+    assert out["current"] == str(here) and sorted(out["workspaces"]) == sorted([str(here), str(new)])
+    assert (new / "trip" / "picks.json").is_file() and not a.exists()
+    # Merging the current one away makes its target current.
+    _project(here / "beach", tmp_path)
+    out = _route(app, "/api/workspaces/merge", "POST")(server.MergeWorkspacesPayload(
+        source=str(here), target=str(new)))
+    assert out["current"] == str(new) and out["workspaces"] == [str(new)]

@@ -2476,8 +2476,10 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         removed = not stuck and projects_mod.remove_if_empty(source)
         if not stuck:
             userstate.forget_workspace(source)
-        if was_current or str(target) not in userstate.get_workspaces():
+        if was_current:
             userstate.set_current_workspace(target)
+        else:
+            userstate.include_workspace(target)
         return {"results": results, "removed": removed, "kept_others": plan["others"],
                 "workspaces": userstate.get_workspaces(),
                 "current": userstate.get_current_workspace()}
@@ -2524,8 +2526,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             userstate.project_moved(src, dst)
             r["moved_to"] = str(dst)
         if payload.location == "workspace" and any("moved_to" in r for r in results):
-            userstate.set_current_workspace(workspace)
-        return {"results": results}
+            userstate.include_workspace(workspace)
+        return {"results": results, "workspaces": userstate.get_workspaces(),
+                "current": userstate.get_current_workspace()}
 
     def _merge_plan(raw_dirs: list[str]) -> dict[str, Any]:
         dirs = list(dict.fromkeys(Path(d).expanduser().resolve() for d in raw_dirs))

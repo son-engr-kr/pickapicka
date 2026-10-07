@@ -3956,14 +3956,17 @@ async function leaveEditor(how) {
 // ---------- asking with more than OK and Cancel ----------
 // Resolves with the id of the button pressed. Esc answers with the choice that
 // changes nothing (the non-destructive, non-primary one if there is one) and
-// Enter with the primary.
+// Enter with the primary. `stack` lays a list of destinations out one per row,
+// with that Esc answer moved to the bottom; only the look changes, so it still
+// has to come first in `choices`.
 let choiceResolve = null;
 
-function askChoice(title, body, choices) {
+function askChoice(title, body, choices, { stack = false } = {}) {
   $("#choice-title").textContent = title;
   $("#choice-body").textContent = body;
   const wrap = $("#choice-modal .choice-buttons");
   wrap.innerHTML = "";
+  wrap.classList.toggle("stack", stack);
   for (const c of choices) {
     const b = document.createElement("button");
     b.type = "button";
@@ -8178,8 +8181,8 @@ function renderPrefWorkspaces() {
       <span class="pref-ws-name">${icon("folder")}<span title="${escapeAttr(w)}">${escapeHtml(basename(w) || w)}</span></span>
       <span class="pref-ws-path">${escapeHtml(w)}</span>
       ${w === workspaceState.current ? `<span class="pref-ws-now">Current</span>`
-        : `<button type="button" data-use="${escapeAttr(w)}">Use</button>
-           <button type="button" data-merge="${escapeAttr(w)}" title="Move its projects into the current workspace">Merge into current…</button>`}
+        : `<button type="button" data-use="${escapeAttr(w)}">Use</button>`}
+      <button type="button" data-merge="${escapeAttr(w)}" title="Move its projects into another workspace">Merge into…</button>
       ${workspaceState.list.length > 1 ? `<button type="button" data-forget="${escapeAttr(w)}" title="Remove from the list (deletes nothing)" aria-label="Remove from the list">${icon("close")}</button>` : ""}
     </li>`).join("");
   ul.querySelectorAll("[data-use]").forEach((b) => b.addEventListener("click", async () => {
@@ -8187,8 +8190,12 @@ function renderPrefWorkspaces() {
     renderWorkspaceSelect();
     renderPrefWorkspaces();
   }));
-  ul.querySelectorAll("[data-merge]").forEach((b) => b.addEventListener("click", () =>
-    mergeWorkspace(b.dataset.merge, workspaceState.current)));
+  ul.querySelectorAll("[data-merge]").forEach((b) => b.addEventListener("click", async () => {
+    const source = b.dataset.merge;
+    const target = await pickWorkspace(`Merge ${basename(source)} into…`,
+      "Its projects move into the workspace you choose. Photos are not touched.", [source]);
+    if (target) await mergeWorkspace(source, target);
+  }));
   ul.querySelectorAll("[data-forget]").forEach((b) => b.addEventListener("click", async () => {
     const res = await fetch("/api/workspaces/forget", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -9396,24 +9403,49 @@ async function switchWorkspace(dir) {
   loadWorkspaceProjects();
 }
 
+// A folder chosen to be a workspace, checked as one (not a photo folder, not
+// a single project); null when nothing was chosen or the warning declined.
+async function browseWorkspaceFolder() {
+  const res = await fetch("/api/browse-folder", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ initial: workspaceState.current || null, purpose: "workspace" }),
+  });
+  const result = res.ok ? await res.json() : {};
+  if (!result.path) return null;
+  const problem = workspaceProblem(await inspectFolder(result.path));
+  if (problem && !confirm(`${problem}\n\n${result.path}\n\nUse it anyway?`)) return null;
+  return result.path;
+}
+
+// Ask which workspace something goes to: one of the list (but `exclude`), or
+// another folder. The workspace's folder name labels it, with its parent's
+// when two are named alike. Null on Cancel.
+async function pickWorkspace(title, body, exclude = []) {
+  const options = workspaceState.list.filter((w) => !exclude.includes(w));
+  const names = options.map((w) => basename(w));
+  const label = (w, i) => {
+    const name = names.filter((n) => n === names[i]).length > 1
+      ? `${basename(w.replace(/[\\/][^\\/]*$/, ""))}/${names[i]}` : names[i];
+    return w === workspaceState.current ? `${name} (current)` : name;
+  };
+  const go = await askChoice(title, body, [{ id: "cancel", label: "Cancel" }]
+    .concat(options.map((w, i) => ({ id: `ws${i}`, label: label(w, i) })))
+    .concat([{ id: "other", label: "Other folder…" }]), { stack: true });
+  if (go === "cancel") return null;
+  if (go === "other") return browseWorkspaceFolder();
+  return options[Number(go.slice(2))];
+}
+
 async function addWorkspace() {
   const status = $("#landing-status");
   status.textContent = BROWSE_WAITING;
   try {
-    const res = await fetch("/api/browse-folder", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ initial: workspaceState.current || null, purpose: "workspace" }),
-    });
-    const result = res.ok ? await res.json() : {};
-    if (!result.path) { status.textContent = ""; return; }
-    const problem = workspaceProblem(await inspectFolder(result.path));
-    if (problem && !confirm(`${problem}\n\n${result.path}\n\nUse it anyway?`)) {
-      status.textContent = "";
-      return;
-    }
+    const dir = await browseWorkspaceFolder();
+    status.textContent = "";
+    if (!dir) return;
     const add = await fetch("/api/workspaces", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dir: result.path }),
+      body: JSON.stringify({ dir }),
     });
     if (!add.ok) { status.textContent = "Could not add workspace."; return; }
     const d = await add.json();
@@ -9553,7 +9585,7 @@ function syncProjectSelbar() {
   $("#projects-selcount").textContent = n ? `${plural(n, "project")} selected` : "Click projects to select them.";
   $("#projects-merge").disabled = n < 2 || sel.some((p) => !p.photos_exist);
   $("#projects-to-photos").disabled = !sel.some((p) => p.location !== "photos" && p.photos_exist);
-  $("#projects-to-workspace").disabled = !sel.some((p) => p.location === "photos" && !p.project_missing);
+  $("#projects-to-workspace").disabled = !sel.some((p) => !p.project_missing);
 }
 
 function setProjectSelecting(on) {
@@ -9574,28 +9606,42 @@ async function postJSON(url, body) {
 
 // Move projects to "photos" or "workspace" and say what happened to each; a
 // read-only photo folder fails on its own without stopping the rest.
-async function moveProjects(dirs, location) {
-  const { results } = await postJSON("/api/projects/move", {
-    project_dirs: dirs, location, workspace_dir: workspaceState.current,
+async function moveProjects(dirs, location, workspace = workspaceState.current) {
+  const out = await postJSON("/api/projects/move", {
+    project_dirs: dirs, location, workspace_dir: workspace,
   });
-  const moved = results.filter((r) => r.moved_to).length;
-  const failed = results.filter((r) => r.error);
+  const moved = out.results.filter((r) => r.moved_to).length;
+  const failed = out.results.filter((r) => r.error);
   if (failed.length) {
     alert(`Moved ${plural(moved, "project")}. Not moved:\n\n`
       + failed.map((r) => `${r.name}: ${r.error}`).join("\n"));
+  } else if (moved) {
+    showLandingToast(`Moved ${plural(moved, "project")} `
+      + (location === "photos" ? "into their photo folders" : `to ${basename(workspace)}`));
   }
+  workspaceState.list = out.workspaces || workspaceState.list;
+  renderWorkspaceSelect();
   await loadWorkspaceProjects();
   await renderRecents();
   return moved;
 }
 
 async function moveSelectedProjects(location) {
+  // Into a workspace, any project can go, one already in a workspace too;
+  // the server skips one that is already there.
   const dirs = lastProjects
-    .filter((p) => projectSel.dirs.has(p.project_dir) && !p.project_missing && p.location !== location
-      && (location !== "photos" || p.photos_exist))
+    .filter((p) => projectSel.dirs.has(p.project_dir) && !p.project_missing
+      && (location === "workspace" || (p.location !== "photos" && p.photos_exist)))
     .map((p) => p.project_dir);
   if (!dirs.length) return;
-  await moveProjects(dirs, location);
+  let workspace = workspaceState.current;
+  if (location === "workspace") {
+    workspace = await pickWorkspace("Move to workspace",
+      `${plural(dirs.length, "project")} ${dirs.length === 1 ? "moves" : "move"} into the workspace you choose. `
+      + "Photos are not touched.");
+    if (!workspace) return;
+  }
+  await moveProjects(dirs, location, workspace);
   setProjectSelecting(false);
 }
 
@@ -9697,11 +9743,15 @@ async function deleteProject(p) {
 // A quiet confirmation that says where the folder went — the undo is a rename,
 // so the new name is the only thing the user needs.
 function toastProjectDeleted(oldName, newName) {
+  showLandingToast(`Deleted "${oldName}" — folder renamed to ${newName}`);
+}
+
+function showLandingToast(text) {
   const el = $("#landing-toast");
-  el.textContent = `Deleted "${oldName}" — folder renamed to ${newName}`;
+  el.textContent = text;
   el.classList.remove("hidden");
-  clearTimeout(toastProjectDeleted.timer);
-  toastProjectDeleted.timer = setTimeout(() => el.classList.add("hidden"), 8000);
+  clearTimeout(showLandingToast.timer);
+  showLandingToast.timer = setTimeout(() => el.classList.add("hidden"), 8000);
 }
 
 // ---------- relink ----------

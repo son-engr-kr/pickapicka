@@ -274,6 +274,17 @@ def add_workspace(path: Path) -> None:
     _save(data)
 
 
+def include_workspace(path: Path) -> None:
+    """List a workspace without making it current, as add_workspace would:
+    one projects were just moved into, while the person stays where they are."""
+    data = _load()
+    p = str(path)
+    ws = data.setdefault("workspaces", [])
+    if p not in ws:
+        ws.append(p)
+        _save(data)
+
+
 def set_current_workspace(path: Path) -> None:
     data = _load()
     p = str(path)

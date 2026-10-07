@@ -13,9 +13,9 @@
   decisions and edits stay inside, so renaming the folder back restores it.
 - **A workspace is a plain folder** you choose; the app keeps nothing in it but
   project folders, and the workspace list itself is in `state.json`.
-  **Merge into current…** (Preferences → Workspaces) moves every project of
-  another workspace into the current one, deleted ones too so they can still be
-  restored. A name already taken gets the old workspace's name added, as
+  **Merge into…** (Preferences → Workspaces) moves every project of a
+  workspace into another one, listed or a new folder, deleted ones too so they
+  can still be restored. A name already taken gets the old workspace's name added, as
   `wedding (Old-Projects)`. The old workspace then leaves the list, and its
   folder is deleted only if nothing else is in it; a project that could not
   move (the open one, say) keeps it listed.
@@ -29,7 +29,7 @@
   with its photos is in every workspace's list; if its photo folder has moved,
   its card says so and clicking it asks where the folder went.
 - **Selecting projects** (the **Select** button above the list) moves the chosen
-  ones either way, or **merges** two or more into a new project over the folder
+  ones into their photo folders or into any workspace, or **merges** two or more into a new project over the folder
   their photos have in common. Decisions, stars, labels and edits are carried
   across by each photo's path (the most recent call wins where two projects
   disagree), including onto a merged HDR result that is detected again and onto
