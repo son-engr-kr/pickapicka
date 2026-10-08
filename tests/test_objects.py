@@ -229,12 +229,20 @@ def test_subject_terms_are_off_without_detection() -> None:
 # ----- focus peaking ------------------------------------------------------
 
 def _peak_coverage(gray, tmp_path, level: str = "normal") -> float:
-    """Fraction of the frame the peaking overlay marks."""
+    """Fraction of the frame the peaking overlay marks.
+
+    Each call gets a file of its own. The overlay is cached by name and kept
+    while it is no older than its source, and two images written to one name
+    in quick succession can carry the same mtime on Windows, which handed the
+    second check the first image's overlay."""
+    import uuid
+
     import cv2
     from pickapicka.server import _ensure_peak
-    src = tmp_path / f"{level}-src.jpg"
+    stem = f"{level}-{uuid.uuid4().hex}"
+    src = tmp_path / f"{stem}.jpg"
     cv2.imwrite(str(src), gray)
-    out = _ensure_peak(src, tmp_path, f"{level}-src", "", level)
+    out = _ensure_peak(src, tmp_path, stem, "", level)
     alpha = cv2.imread(str(out), cv2.IMREAD_UNCHANGED)[..., 3]
     return float((alpha > 0).mean())
 
