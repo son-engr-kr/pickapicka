@@ -72,6 +72,51 @@ Two stages that fix the captured image rather than interpret it, and they run
     you choose, which is the honest answer.
   - Nothing here downloads a model or borrows weights, so it carries no licence
     on to you. A heavier model for large regions is a separate, opt-in thing.
+- **AI fill** is a heal whose pixels a model draws: paint over what should go,
+  and when the stroke is let go the model fills it with what belongs there,
+  pores and all, carrying an edge such as a jaw line or a crease through the
+  hole instead of smearing it. The model is MI-GAN (ICCV 2023), 28 MB, with
+  its code and weights both under the MIT licence, so it carries no licence on
+  to you either; it is fetched the first time it is used. A stroke takes a
+  fraction of a second.
+  - Measured on 60 holes cut into five real faces, where the original pixels
+    are the truth: the fine texture inside the fill came to 95% of the skin's
+    own (the truth: 96%), against 31% for Heal; the error against the truth
+    was three quarters of Heal's.
+  - What it is not good at: a hole wider than about 250 px at full resolution
+    is filled at less than full resolution and comes out softer than the skin
+    beside it, and where a crease runs into the stroke it can leave a short
+    dark dash at the edge. Paint past the end of a line rather than stopping on
+    it.
+  - A fill is pixels, not a setting, so it is kept as a file in the project's
+    `fills` folder and the heal names it. It moves with the project, a merged
+    project takes the ones its edits name, and it is never copied to another
+    photo: a preset or **Apply to more…** leaves AI fills out, and replacing a
+    photo's edit keeps that photo's own. Made from the photo as the lens
+    corrections leave it, before any other repair, so changing an earlier heal
+    does not make it stale.
+  - **Remove blemishes** in the Portrait panel uses AI fill for every spot it
+    finds when **with AI fill** is ticked (the default).
+- **Generative** is the heavier tool for larger regions, where AI fill runs
+  out: an eye bag, a fan of crow's feet, a glasses frame or a strand of hair
+  across skin. It is Stable Diffusion 1.5 inpainting with the LCM-LoRA fused
+  in, four steps on the CPU, about 15 seconds a stroke on a recent laptop (22
+  the first time), longer on an older one. On a 6% hole under an eye AI fill
+  left dark dashes where the creases ran in and this redrew the lid's fold;
+  across a glasses frame AI fill broke the frame and this carried it through.
+  - Each stroke's noise comes from the stroke itself, so the same stroke gives
+    the same fill. **Again**, next to a generative fill in the list, draws it
+    differently.
+  - What it draws is matched to the photo's colour round it: the model's
+    decoder leaves a slow colour drift, measured on the ring of known pixels
+    round the hole and taken out inside it.
+  - It is an opt-in download of 1.9 GB, and its licences (CreativeML
+    OpenRAIL-M, and OpenRAIL++-M for the LCM-LoRA) allow commercial use but
+    forbid a list of uses (Attachment A), which the download shows and asks
+    you to accept. It is never in the installer.
+  - It uses 10 to 12 GB of memory while it works. The download states how much
+    this computer has and warns when that is tight.
+
 - **Red-eye and pet-eye**, which are genuinely different problems and not one
   control with a switch. Red-eye pulls a flash-reddened pupil to a neutral built
   from the channels the flash did *not* contaminate, and **protects the
@@ -92,7 +137,8 @@ Two stages that fix the captured image rather than interpret it, and they run
 - Both are stored as normalized coordinates, so a repair means the same thing at
   every render size, and a preset can carry them — sensor dust lands in the same
   place on every frame a body shoots, so "remove the dust spots" is exactly the
-  kind of thing to apply across a whole shoot.
+  kind of thing to apply across a whole shoot. AI fills are the exception, as
+  above: their pixels belong to one photo.
 
 ## Portrait
 
@@ -130,6 +176,56 @@ Two stages that fix the captured image rather than interpret it, and they run
   wide zone round the eyes are left out, as is the edge of the skin. On two
   real, clear-skinned faces it found the one small dark spot each had and
   nothing else. It has not been measured on real acne.
+- **Wrinkles** softens the lines on the face: crow's feet, the lines under the
+  eyes and across the forehead, and the fine part of the smile lines. A line is
+  a long, narrow valley, found with Frangi's line measure at two scales sized
+  to the face, and what comes out is the band between the pores and a scale
+  wider than the crease, in every channel, so the softened line goes back to
+  the skin's colour instead of turning into a lighter orange one. The pores
+  are finer than that band and stay. On a test face a line kept 30% of its
+  depth at full strength and a round spot of the same depth kept 72%: spots
+  are for **Remove blemishes**. The upper lids (up to the brows), the eyes,
+  the mouth and the nose are left alone, since their folds are their shape,
+  and so are glasses and earrings, which the segmenter finds: on a real face
+  with wire-rimmed glasses the rims were untouched.
+- **Dark circles** lifts the shadow under each eye towards the colour of the
+  cheek just below it, measured once per photo. Only the low band moves, so
+  the texture of the skin rides along, and only ever lighter: an under-eye
+  that is already bright is not darkened.
+- **Neck lines** does what Wrinkles does, on the neck: the segmenter's skin
+  under the jaw line, with a wider band, since neck creases are broader than
+  the lines round the eyes. The shadow under the jaw is shape, not a line, and
+  stays.
+- The skin stages run in that order (lines and shadows on the skin as it was
+  shot, then the smoothing, then the whitening), so each one sees what it was
+  tuned on.
+
+### Face shape
+
+- **Eye size, Face width, Jaw, Chin, Nose width and Mouth width**, each -100 to
+  100, warp every face found. Nothing is painted in: each output pixel is read
+  from somewhere else in the photo, through local warps from Gustafsson's
+  "Interactive Image Warping" (1993), placed on the face's own landmarks and
+  sized to them. Eyes are scaled round their centre; the jaw line, the nose's
+  wings and the mouth's corners are moved.
+- Measured at full strength on a real face: the cheek line moves in by 7% of
+  the distance between the eyes for Face width, the jaw by 8.5% for Jaw, the
+  chin by 9.5% for Chin, and an eye is 1.33 times its size at its centre, 1.06
+  corner to corner. On six real faces no setting, alone or all together at
+  either end, folds the photo over: the most any patch was squeezed was to 57%
+  of its area, in the ring round an enlarged eye.
+- The warp is the last thing applied to the face, after the skin, the heals and
+  the masks, so everything placed on the face moves with it. What does not
+  follow is something drawn on the reshaped preview: a heal or a brush placed
+  where the face moved lands up to that movement away from where it was drawn.
+- The background beside a moved jaw stretches with it, as it does in any
+  liquify: the warp reaches 45% of the distance between the eyes past the jaw
+  line. On a plain backdrop it does not show; a straight line that close to a
+  strongly slimmed jaw bends.
+- The resampling is Lanczos, because most of the face moves by a fraction of a
+  pixel while the photo round it is not resampled at all. On a real cheek,
+  bilinear kept 74% of the finest detail and Lanczos 94%, so the reshaped skin
+  is not visibly softer than the skin beside it.
 - Faces are found once per photo when the panel is opened, and marked on the
   photo while it is open. A face under about 4% of the frame is left alone.
 
@@ -401,6 +497,26 @@ noise actually lives, and negative texture can be brushed onto skin alone.
 - **Shooting info**: camera, lens, focal length, aperture, shutter and ISO are
   read once at scoring time and shown in the viewer — and available to the
   watermark. RAW files get theirs from the embedded preview.
+
+## AI models
+
+Preferences, **AI models**, lists every model the app downloads (AI fill,
+Generative fill, the automatic masks, subject detection) with its size, its
+licence and whether it is here.
+
+- **Download** and **Delete** are there for each. A download runs in the
+  background with its progress; one that stops (a dropped connection, a server
+  error) says why, and **Try again** picks up where it stopped. Every file is
+  checked against its pinned SHA-256 and thrown away if it does not match.
+- AI fill and Generative fill can be switched **off**. A feature that is off,
+  or whose model is not here, stays where it is in the editor; using it opens
+  the download, or asks to switch it back on. Deleting a model leaves what it
+  already made in your photos as it is.
+- **Between fills** says whether Generative fill stays loaded after a fill,
+  so the next starts at once, or is freed, giving its memory back for about
+  five seconds more a fill. **Automatic**, the default, keeps it loaded only
+  on a computer with at least two and a half times the memory it uses (32 GB
+  and up).
 
 ## Working at full resolution
 

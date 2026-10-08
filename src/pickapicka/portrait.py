@@ -93,6 +93,52 @@ false one on clear skin went. What is not measured is recall on real acne,
 since neither face had any; the tests show it finds planted spots of a
 visible contrast.
 
+Lines: wrinkles and the neck
+----------------------------
+The smoothing's guided filter keeps edges, and a crease is an edge, so it
+leaves wrinkles where they are. They get their own stage: a band of each
+channel between a fine scale (finer than it is pores, and stays) and a coarse
+one wider than the crease,
+
+    band = G(I, s_fine) - G(I, s_coarse)
+    out  = I - amount * V * valley * alpha * band
+
+where V is Frangi's vesselness (Frangi, Niessen, Vincken and Viergever, MICCAI
+1998) taken for dark lines: 0 unless the larger Hessian eigenvalue is
+positive, then exp(-Rb^2 / 2 beta^2) (1 - exp(-S^2 / 2 c^2)), Rb the ratio of
+the eigenvalues and S their norm, with Frangi's beta of 0.5 and c relative to
+the skin's mean luma, as the smoothing's eps is. `valley` gates it to where the
+band is darker than its surroundings. The first cut lifted luma alone and left
+an orange line where each crease had been: a crease is redder as well as
+darker, and only taking out every channel's band puts back the skin's colour.
+
+What a line is not: a round spot, whose centre has two equal eigenvalues. On
+a test face a line kept 30% of its depth at full strength and a round spot of
+the same depth 72%. The spot is not untouched, because the rim of a blob is a
+short curved line to the measure (the scales were raised from 0.25% and 0.65%
+of the face width, where a spot kept 54%, to 0.5% and 0.8%, with no visible
+change on real crow's feet). Left out: the eyes, brows, mouth and nose, and
+the upper lid up to the brow, whose crease is the eye's shape. The face's skin
+is eroded away from its edge first, since the skin rolling off into dark hair
+reads as a valley, and the segmenter's accessories class is cut out grown,
+since on a real face wire-rimmed glasses were softened with the wrinkles until
+it was. The neck is its body-skin class under the jaw line, with a wider band:
+its creases are broader than the lines round the eyes.
+
+The coarse band is 2.2% of the face width (3% on the neck), 30 to 40 px on a
+large face, where a Gaussian blur took a second; it is three box blurs of the
+same variance instead (see `_wide_blur`).
+
+Dark circles
+------------
+A crescent under each eye, from below the lid line to a curve deepest under
+the eye's middle, all in fractions of the eye's width. Its low band (CIELAB,
+blurred at 6% of the eye's width) is moved towards the colour `analyze`
+measured on a band of cheek below it, in L only upwards, so the texture rides
+along and an under-eye that is already bright is not darkened. At 10% of the
+eye's width the low band missed part of a narrow shadow; 6% closed more of it
+with no texture lost on real faces.
+
 Everything is local to a box around each face, so the cost follows the faces
 and not the megapixels, and a window render gets identical pixels given
 `padding` around it.
@@ -105,6 +151,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from .reshape import CONTOUR_L, CONTOUR_R, EYE_RING_L, EYE_RING_R, SHAPE_KEYS, SHAPE_RANGE
 from .sliders import tenth
 
 # ----- schema -------------------------------------------------------------
@@ -113,8 +160,20 @@ DEFAULT_PORTRAIT: dict[str, Any] = {
     "smooth": 0,       # 0..100, skin smoothing
     "teeth": 0,        # 0..100, teeth whitening
     "eyes": 0,         # 0..100, whitening the whites of the eyes
+    "wrinkles": 0,     # 0..100, softening the lines on the face
+    "neck": 0,         # 0..100, softening the lines on the neck
+    "dark_circles": 0, # 0..100, lifting the shadow under the eyes
+    # The face's shape, -100..100 each; see the reshape module.
+    **{k: 0 for k in SHAPE_KEYS},
 }
-_RANGES = {"smooth": (0, 100), "teeth": (0, 100), "eyes": (0, 100)}
+_RANGES = {"smooth": (0, 100), "teeth": (0, 100), "eyes": (0, 100),
+           "wrinkles": (0, 100), "neck": (0, 100), "dark_circles": (0, 100),
+           **{k: SHAPE_RANGE for k in SHAPE_KEYS}}
+# In every normalized panel. The rest appear only when set, so a panel saved
+# before they existed normalizes, and hashes into the thumbnail cache, as it did.
+_ALWAYS = ("smooth", "teeth", "eyes")
+# What `apply_portrait` does; the shape is the reshape module's, and runs later.
+TONE_KEYS = ("smooth", "teeth", "eyes", "wrinkles", "neck", "dark_circles")
 
 FULL_ROI = (0.0, 0.0, 1.0, 1.0)
 
@@ -143,6 +202,38 @@ _WHITEN = {
 }
 _WHITEN_FEATHER = 0.004    # the region's soft edge, fraction of the face width
 
+# Lines, on the face and on the neck. Per kind: the band taken out (between a
+# fine scale that keeps the pores and a coarse one wider than the crease), the
+# scales the line measure looks at, all fractions of the face width, and the
+# stored alpha and mean luma it works under. Tuned by eye on real faces.
+_LINES = {
+    "wrinkles": {"band": (0.002, 0.022), "sigmas": (0.005, 0.008),
+                 "alpha": "lines", "luma": "skin_luma"},
+    "neck": {"band": (0.002, 0.030), "sigmas": (0.006, 0.012),
+             "alpha": "neck", "luma": "neck_luma"},
+}
+_LINE_BETA = 0.5           # Frangi's beta: how round a structure may be and still count
+_LINE_C = 0.01             # Hessian norm, relative to the skin's mean luma, of a faint line
+_LINE_VALLEY = 0.01        # band depth, relative to the skin's mean luma, of a full valley
+_LINE_ERODE = 0.015        # the face's skin, shrunk away from its edge, of the face width
+_ACCESSORY_GROW = 0.015    # glasses and jewellery, grown before they are cut out
+# Lines are left alone on the upper lids (each eye's hull joined to its brow:
+# the lid crease is the eye's shape) and on the nose (its sides are shading).
+NOSE = tuple(range(72, 87))
+_NOSE_GROW = 0.15
+
+# Dark circles: a crescent under each eye, between the lid and a curve deepest
+# under its middle, whose low band is matched to the cheek below it. Fractions
+# of the eye's width.
+LOWER_LID_L = (35, 36, 33, 37, 39)    # outer corner, the lower lid, inner corner
+LOWER_LID_R = (93, 91, 87, 90, 89)
+_CIRCLE_GAP = 0.08         # below the lid line, clear of the lashes
+_CIRCLE_DEPTH = 0.42       # under the middle of the eye
+_CIRCLE_CORNER = 0.12      # under the corners
+_CIRCLE_FEATHER = 0.10
+_CIRCLE_REF = (0.55, 0.85) # the cheek band its colour is matched to
+_CIRCLE_LOWPASS = 0.06     # the scale of the shadow; finer than this is texture and stays
+
 # Analysis. A face smaller than this is not worth retouching and its landmarks
 # are not reliable enough to cut features out by.
 DETECT_LONG_EDGE = 1600
@@ -156,17 +247,29 @@ def normalize(raw: Any) -> dict[str, Any] | None:
     """Clamp, or None when nothing would change (the house contract)."""
     if not isinstance(raw, dict):
         return None
-    out = dict(DEFAULT_PORTRAIT)
+    out = {}
     for key, (lo, hi) in _RANGES.items():
         try:
-            out[key] = tenth(min(hi, max(lo, float(raw.get(key, 0) or 0))))
+            val = tenth(min(hi, max(lo, float(raw.get(key, 0) or 0))))
         except (TypeError, ValueError):
-            out[key] = 0
+            val = 0
+        if val or key in _ALWAYS:
+            out[key] = val
     return None if is_neutral(out) else out
 
 
 def is_neutral(params: dict[str, Any] | None) -> bool:
     return not params or all(not params.get(k) for k in DEFAULT_PORTRAIT)
+
+
+def tone_is_neutral(params: dict[str, Any] | None) -> bool:
+    """Nothing for `apply_portrait` to do (the shape may still be set)."""
+    return not params or all(not params.get(k) for k in TONE_KEYS)
+
+
+def tone_params(params: dict[str, Any] | None) -> dict[str, Any]:
+    """The part of a panel `apply_portrait` reads: what its result depends on."""
+    return {k: (params or {}).get(k, 0) for k in TONE_KEYS}
 
 
 # ----- analysis (the caller's job: heavy, cache it per photo) --------------
@@ -214,13 +317,17 @@ def analyze(rgb: np.ndarray) -> list[dict[str, Any]]:
         cx0, cy0 = max(0, int(x1 - m)), max(0, int(y1 - m))
         cx1, cy1 = min(w, int(math.ceil(x2 + m))), min(h, int(math.ceil(y2 + m)))
         crop = np.ascontiguousarray(rgb[cy0:cy1, cx0:cx1])
-        skin = segment.probabilities(crop)[..., segment.CLASSES.index("face-skin")]
+        probs = segment.probabilities(crop)
+        skin = probs[..., segment.CLASSES.index("face-skin")]
         luma = _luma(crop.astype(np.float32) / 255.0)
         skin_luma = float((luma * skin).sum() / max(float(skin.sum()), 1e-6))
+        lm = f.landmark_2d_106 / k
+        lines, neck = _line_alphas(probs, lm - [cx0, cy0], fw)
+        neck_luma = float((luma * neck).sum() / max(float(neck.sum()), 1e-6))
         s = min(1.0, _SKIN_EDGE / max(skin.shape))
         if s < 1.0:
-            skin = cv2.resize(skin, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
-        lm = f.landmark_2d_106 / k
+            skin, lines, neck = (cv2.resize(a, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+                                 for a in (skin, lines, neck))
         ramps = {what: _region_ramp(rgb, _whiten_polys(what, lm), _WHITEN[what]["pct"])
                  for what in _WHITEN}
         faces.append({
@@ -230,8 +337,78 @@ def analyze(rgb: np.ndarray) -> list[dict[str, Any]]:
             "skin": skin.astype(np.float32),
             "skin_luma": skin_luma,
             "ramps": ramps,
+            # Quantized: an alpha needs no more than 8 bits, and a group photo's
+            # faces stay in the cache.
+            "lines": _to_alpha8(lines),
+            "neck": _to_alpha8(neck),
+            "neck_luma": neck_luma,
+            "circles": [_cheek_ref(rgb, ref) for _, ref, _ in _circle_polys(lm)],
         })
     return faces
+
+
+def _to_alpha8(a: np.ndarray) -> np.ndarray:
+    return np.rint(np.clip(a, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
+def _line_alphas(probs: np.ndarray, lm: np.ndarray, face_px: float) -> tuple[np.ndarray, np.ndarray]:
+    """Where lines may be softened, over the crop the segmentation was run on
+    (`lm` in its pixels): the face's skin, eroded away from its edge, and the
+    neck's, under the jaw. Glasses and jewellery are cut out of both."""
+    from . import segment
+    skin = probs[..., segment.CLASSES.index("face-skin")]
+    body = probs[..., segment.CLASSES.index("body-skin")]
+    acc = probs[..., segment.CLASSES.index("accessories")]
+
+    def disc(frac: float) -> np.ndarray:
+        r = max(1, int(round(frac * face_px)))
+        return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+
+    keep = 1.0 - np.clip(2.0 * cv2.dilate(acc, disc(_ACCESSORY_GROW)), 0.0, 1.0)
+    lines = cv2.erode(skin, disc(_LINE_ERODE), borderType=cv2.BORDER_CONSTANT, borderValue=0.0)
+    # Under the jaw: from temple to temple along the jaw line, down to the
+    # bottom of the crop, less the face itself.
+    h, w = skin.shape
+    jaw = np.concatenate([lm[list(CONTOUR_L)], lm[list(reversed(CONTOUR_R[:-1]))]])
+    below = np.zeros((h, w), np.float32)
+    cv2.fillPoly(below, [np.concatenate([jaw, [[jaw[-1][0], h], [jaw[0][0], h]]]).round().astype(np.int32)], 1.0)
+    cv2.fillPoly(below, [jaw.round().astype(np.int32)], 0.0)
+    neck = cv2.GaussianBlur(body * below, (0, 0), max(0.5, _FEATURE_FEATHER * face_px))
+    return lines * keep, neck * keep
+
+
+def _circle_polys(lm: np.ndarray) -> list[tuple[np.ndarray, np.ndarray, float]]:
+    """For each eye, the crescent under it, the band of cheek below that its
+    colour is matched to, and the eye's width, in whatever units `lm` is in."""
+    e_l, e_r = lm[list(EYE_RING_L)].mean(axis=0), lm[list(EYE_RING_R)].mean(axis=0)
+    ex = (e_r - e_l) / max(float(np.hypot(*(e_r - e_l))), 1e-9)
+    down = np.array([-ex[1], ex[0]])
+    out = []
+    for lid in (LOWER_LID_L, LOWER_LID_R):
+        pts = lm[list(lid)].astype(np.float64)
+        w_e = float(np.hypot(*(pts[0] - pts[-1])))
+        n = len(pts)
+        # Deepest under the middle of the eye, shallow at the corners.
+        depth = np.array([_CIRCLE_CORNER + (_CIRCLE_DEPTH - _CIRCLE_CORNER) * math.sin(math.pi * i / (n - 1))
+                          for i in range(n)])
+        top = pts + down * _CIRCLE_GAP * w_e
+        bottom = pts + down[None] * (depth[:, None] * w_e)
+        mid = pts[1:-1]
+        ref = np.concatenate([mid + down * _CIRCLE_REF[0] * w_e, (mid + down * _CIRCLE_REF[1] * w_e)[::-1]])
+        out.append((np.concatenate([top, bottom[::-1]]), ref, w_e))
+    return out
+
+
+def _cheek_ref(rgb: np.ndarray, poly: np.ndarray) -> list[float] | None:
+    """The median CIELAB colour inside `poly` on the whole frame, or None when
+    it is too small to measure or off the frame."""
+    mask = np.zeros(rgb.shape[:2], np.uint8)
+    cv2.fillPoly(mask, [poly.round().astype(np.int32)], 1)
+    if int(mask.sum()) < 12:
+        return None
+    ys, xs = np.nonzero(mask)
+    lab = cv2.cvtColor(rgb[ys, xs].astype(np.float32)[None] / 255.0, cv2.COLOR_RGB2LAB)[0]
+    return [float(v) for v in np.median(lab, axis=0)]
 
 
 # ----- applying -----------------------------------------------------------
@@ -315,14 +492,95 @@ def _frame(shape: tuple[int, ...], roi: tuple[float, float, float, float]):
     return fw, fh, roi[0] * fw, roi[1] * fh
 
 
+def _eye_width(lm: np.ndarray) -> float:
+    """The wider eye, corner to corner, in `lm`'s units."""
+    return max(float(np.hypot(*(lm[lid[0]] - lm[lid[-1]]))) for lid in (LOWER_LID_L, LOWER_LID_R))
+
+
 def padding(params: dict[str, Any] | None, faces: list[dict[str, Any]] | None,
             frame_w: float) -> float:
     """Pixels of neighbourhood a window render needs so that its pixels match
-    the whole render's: the reach of the widest face's filters."""
-    if is_neutral(params) or not faces:
+    the whole render's: the reach of the widest face's filters. Each stage
+    reads what the one before it finished, so the reaches of those in use add."""
+    if tone_is_neutral(params) or not faces:
         return 0.0
-    widest = max(f["box"][2] for f in faces) * frame_w
-    return widest * (_EVEN_RADIUS * 2.0 + _TEX_SIGMA * 3.0) + 2.0
+    p = {**DEFAULT_PORTRAIT, **params}
+    worst = 0.0
+    for face in faces:
+        face_px = face["box"][2] * frame_w
+        reach = 0.0
+        lines = [_LINES[k] for k in _LINES if p[k]]
+        if lines:
+            reach += max(_line_reach(c, face_px) for c in lines)
+        if p["dark_circles"]:
+            eye = _eye_width(np.asarray(face["landmarks"]) * frame_w)
+            reach += 3.0 * _CIRCLE_FEATHER * eye + _wide_reach(_CIRCLE_LOWPASS * eye)
+        if p["smooth"]:
+            reach += (_EVEN_RADIUS * 2.0 + _TEX_SIGMA * 3.0) * face_px
+        worst = max(worst, reach)
+    return worst + 2.0
+
+
+def _line_reach(cfg: dict[str, Any], face_px: float) -> float:
+    """How far the line softening reads, in pixels: the coarse band's blur, or
+    the line measure's and its derivative's."""
+    return max(_wide_reach(cfg["band"][1] * face_px), 3.0 * max(cfg["sigmas"]) * face_px + 2.0)
+
+
+# Past this sigma a Gaussian blur is three box blurs of the same variance, the
+# central-limit approximation (Wells, IEEE PAMI 1986): a box costs the same at
+# any width, and at the coarse band's 30 to 40 px on a large face the Gaussian
+# took a second where the boxes take 50 ms, for a kernel within half a pixel of
+# the sigma asked for. Only the coarse, smooth blurs use it.
+_WIDE_SIGMA = 8.0
+
+
+def _box_width(sigma: float) -> int:
+    """The odd box width of which three passes have variance sigma^2: each
+    has (w^2 - 1) / 12."""
+    w = int(round(math.sqrt(4.0 * sigma * sigma + 1.0)))
+    return w if w % 2 else w + 1
+
+
+def _wide_blur(img: np.ndarray, sigma: float) -> np.ndarray:
+    if sigma <= _WIDE_SIGMA:
+        return cv2.GaussianBlur(img, (0, 0), max(0.5, sigma))
+    w = _box_width(sigma)
+    return cv2.blur(cv2.blur(cv2.blur(img, (w, w)), (w, w)), (w, w))
+
+
+def _wide_reach(sigma: float) -> float:
+    """How far `_wide_blur` reads, in pixels."""
+    return 3.0 * sigma + 1.0 if sigma <= _WIDE_SIGMA else 3.0 * (_box_width(sigma) // 2)
+
+
+def _stored_alpha(face: dict[str, Any], key: str, region: tuple[int, int, int, int],
+                  frame_w: float, frame_h: float, ox: float, oy: float) -> np.ndarray:
+    """One of the alphas `analyze` keeps over the face's crop, resampled onto
+    `region` (x0, y0, x1, y1 in this array's pixels)."""
+    x0, y0, x1, y1 = region
+    src = face[key]
+    if src.dtype == np.uint8:
+        src = src.astype(np.float32) / 255.0
+    cx, cy, cw, ch = face["crop"]
+    # Where the stored alpha lands in this array, then resampled onto the region.
+    ax, ay = cx * frame_w - ox - x0, cy * frame_h - oy - y0
+    sw, sh = cw * frame_w / src.shape[1], ch * frame_h / src.shape[0]
+    m = np.float32([[sw, 0, ax], [0, sh, ay]])
+    return cv2.warpAffine(src, m, (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+
+
+def _hulls(lm: np.ndarray, groups, shape: tuple[int, int], feather: float) -> np.ndarray:
+    """Soft union of convex hulls of landmark groups, each grown round its own
+    centre by its factor, over an array of `shape` (`lm` in its pixels)."""
+    out = np.zeros(shape, np.float32)
+    for idx, grow in groups:
+        pts = lm[list(idx)]
+        c = pts.mean(axis=0)
+        hull = cv2.convexHull(((pts - c) * (1.0 + grow) + c).round().astype(np.int32))
+        cv2.fillConvexPoly(out, hull, 1.0, cv2.LINE_AA)
+    return cv2.GaussianBlur(out, (0, 0), max(0.5, feather))
 
 
 def _skin_alpha(face: dict[str, Any], region: tuple[int, int, int, int],
@@ -331,22 +589,9 @@ def _skin_alpha(face: dict[str, Any], region: tuple[int, int, int, int],
     """The face's skin, minus its features, over `region` (x0, y0, x1, y1 in
     this array's pixels)."""
     x0, y0, x1, y1 = region
-    rw, rh = x1 - x0, y1 - y0
-    cx, cy, cw, ch = face["crop"]
-    # Where the stored alpha lands in this array, then resampled onto the region.
-    ax, ay = cx * frame_w - ox - x0, cy * frame_h - oy - y0
-    sw, sh = cw * frame_w / face["skin"].shape[1], ch * frame_h / face["skin"].shape[0]
-    m = np.float32([[sw, 0, ax], [0, sh, ay]])
-    skin = cv2.warpAffine(face["skin"], m, (rw, rh), flags=cv2.INTER_LINEAR,
-                          borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+    skin = _stored_alpha(face, "skin", region, frame_w, frame_h, ox, oy)
     lm = np.asarray(face["landmarks"], np.float32) * [frame_w, frame_h] - [ox + x0, oy + y0]
-    feat = np.zeros((rh, rw), np.float32)
-    for idx, grow in _FEATURES:
-        pts = lm[list(idx)]
-        c = pts.mean(axis=0)
-        hull = cv2.convexHull(((pts - c) * (1.0 + grow) + c).round().astype(np.int32))
-        cv2.fillConvexPoly(feat, hull, 1.0, cv2.LINE_AA)
-    feat = cv2.GaussianBlur(feat, (0, 0), max(0.5, _FEATURE_FEATHER * face_px))
+    feat = _hulls(lm, _FEATURES, (y1 - y0, x1 - x0), _FEATURE_FEATHER * face_px)
     return np.clip(skin * (1.0 - np.clip(feat * 1.6, 0.0, 1.0)), 0.0, 1.0)
 
 
@@ -361,7 +606,7 @@ def apply_portrait(img: np.ndarray, params: dict[str, Any] | None,
     """Smooth each face's skin in float32 RGB [0,1]. `roi` is where `img` sits
     in the frame, the same contract as `editing.render`."""
     assert img.dtype == np.float32, "apply_portrait works in float32"
-    if is_neutral(params) or not faces:
+    if tone_is_neutral(params) or not faces:
         return img
     p = {**DEFAULT_PORTRAIT, **params}
     amount = p["smooth"] / 100.0
@@ -382,6 +627,14 @@ def apply_portrait(img: np.ndarray, params: dict[str, Any] | None,
         if out is img:
             out = img.copy()
         region = (x0, y0, x1, y1)
+        # Lines and shadows first, on the skin as it was shot, where the line
+        # measure and the cheek's colour were judged; then the smoothing evens
+        # out what is left; the whitening is pointwise and goes last.
+        for what in _LINES:
+            if p[what]:
+                _soften_lines(out, face, region, frame_w, frame_h, ox, oy, face_px, what, p[what] / 100.0)
+        if p["dark_circles"]:
+            _lift_circles(out, face, region, frame_w, frame_h, ox, oy, p["dark_circles"] / 100.0)
         if amount > 0:
             _smooth_face(out, face, region, frame_w, frame_h, ox, oy, face_px, amount)
         lm = (np.asarray(face["landmarks"], np.float32) * [frame_w, frame_h]
@@ -399,6 +652,108 @@ def apply_portrait(img: np.ndarray, params: dict[str, Any] | None,
             reg = out[y0:y1, x0:x1]
             out[y0:y1, x0:x1] = _whiten(reg, alpha, p[what] / 100.0, ramp, _WHITEN[what])
     return out
+
+
+def _box_round(alpha: np.ndarray, reach: float) -> tuple[int, int, int, int] | None:
+    """The box round where `alpha` is set, grown by `reach` and clipped to it,
+    or None when it is empty."""
+    nz = cv2.findNonZero((alpha > 1.0 / 512.0).astype(np.uint8))
+    if nz is None:
+        return None
+    x, y, w, h = cv2.boundingRect(nz)
+    r = int(math.ceil(reach))
+    return (max(0, x - r), max(0, y - r), min(alpha.shape[1], x + w + r), min(alpha.shape[0], y + h + r))
+
+
+def _line_measure(luma: np.ndarray, sigma: float, mean: float) -> np.ndarray:
+    """Frangi's vesselness (Frangi et al., MICCAI 1998) for dark lines: 0
+    unless the larger Hessian eigenvalue is positive (a valley), then high for
+    a long structure (the smaller eigenvalue near 0) of enough contrast."""
+    g = cv2.GaussianBlur(luma, (0, 0), sigma)
+    # Sobel's 3x3 second derivatives come out four times the derivative (its
+    # smoothing taps sum to 4); sigma^2 makes them comparable across scales.
+    k = sigma * sigma / 4.0
+    xx = cv2.Sobel(g, cv2.CV_32F, 2, 0, ksize=3) * k
+    yy = cv2.Sobel(g, cv2.CV_32F, 0, 2, ksize=3) * k
+    xy = cv2.Sobel(g, cv2.CV_32F, 1, 1, ksize=3) * k
+    tr, det = xx + yy, xx * yy - xy * xy
+    disc = np.sqrt(np.maximum(tr * tr / 4.0 - det, 0.0))
+    big = np.where(tr >= 0.0, tr / 2.0 + disc, tr / 2.0 - disc)    # the larger in magnitude
+    small = tr - big
+    rb2 = (small / np.where(np.abs(big) > 1e-9, big, 1e-9)) ** 2
+    c = _LINE_C * mean
+    v = np.exp(-rb2 / (2.0 * _LINE_BETA ** 2)) * (1.0 - np.exp(-(big * big + small * small) / (2.0 * c * c)))
+    return np.where(big > 0.0, v, 0.0).astype(np.float32)
+
+
+def _soften_lines(out: np.ndarray, face: dict[str, Any], region: tuple[int, int, int, int],
+                  frame_w: float, frame_h: float, ox: float, oy: float,
+                  face_px: float, what: str, amount: float) -> None:
+    """Take the lines out of one face's skin (`what` "wrinkles") or neck
+    ("neck"), in place, over `region` of `out`."""
+    cfg = _LINES[what]
+    x0, y0, x1, y1 = region
+    alpha = _stored_alpha(face, cfg["alpha"], region, frame_w, frame_h, ox, oy)
+    box = _box_round(alpha, _line_reach(cfg, face_px))
+    if box is None:
+        return
+    bx0, by0, bx1, by1 = box
+    a = alpha[by0:by1, bx0:bx1]
+    if what == "wrinkles":
+        lm = (np.asarray(face["landmarks"], np.float32) * [frame_w, frame_h]
+              - [ox + x0 + bx0, oy + y0 + by0])
+        cut = np.zeros(a.shape, np.float32)
+        hulls = [((pts - pts.mean(axis=0)) * (1.0 + grow) + pts.mean(axis=0))
+                 for pts, grow in ((lm[list(idx)], grow) for idx, grow in _FEATURES + ((NOSE, _NOSE_GROW),))]
+        hulls += [np.concatenate([lm[list(eye)], lm[list(brow)]])
+                  for eye, brow in ((EYE_L, BROW_L), (EYE_R, BROW_R))]
+        for pts in hulls:
+            cv2.fillConvexPoly(cut, cv2.convexHull(pts.round().astype(np.int32)), 1.0, cv2.LINE_AA)
+        cut = _wide_blur(cut, _FEATURE_FEATHER * face_px)
+        a = a * (1.0 - np.clip(cut * 1.6, 0.0, 1.0))
+    reg = out[y0 + by0:y0 + by1, x0 + bx0:x0 + bx1]
+    mean = max(0.02, float(face[cfg["luma"]]))
+    band = (cv2.GaussianBlur(reg, (0, 0), max(0.5, cfg["band"][0] * face_px))
+            - _wide_blur(reg, cfg["band"][1] * face_px))
+    luma = _luma(reg)
+    v = np.zeros(luma.shape, np.float32)
+    for sigma in cfg["sigmas"]:
+        v = np.maximum(v, _line_measure(luma, max(0.5, sigma * face_px), mean))
+    # Every channel's band comes out, not a gain on the pixel: a crease is
+    # redder as well as darker than the skin round it, and lifting its
+    # brightness alone left an orange line where it had been.
+    valley = np.clip(-_luma(band) / (_LINE_VALLEY * mean), 0.0, 1.0)
+    out[y0 + by0:y0 + by1, x0 + bx0:x0 + bx1] = reg - band * (v * valley * a * amount)[..., None]
+
+
+def _lift_circles(out: np.ndarray, face: dict[str, Any], region: tuple[int, int, int, int],
+                  frame_w: float, frame_h: float, ox: float, oy: float, amount: float) -> None:
+    """Match the shadow under each eye to the cheek below it, in place, over
+    `region` of `out`: the low band of CIELAB under the crescent is moved
+    towards the colour `analyze` measured on the cheek, lighter only, so the
+    texture rides along and a bright under-eye is never darkened."""
+    x0, y0, x1, y1 = region
+    lm = np.asarray(face["landmarks"], np.float64) * [frame_w, frame_h] - [ox + x0, oy + y0]
+    for (poly, _, eye_w), ref in zip(_circle_polys(lm), face["circles"]):
+        if ref is None or eye_w < 6:
+            continue
+        feather, low_sigma = _CIRCLE_FEATHER * eye_w, _CIRCLE_LOWPASS * eye_w
+        reach = 3.0 * feather + _wide_reach(low_sigma)
+        bx0 = max(0, int(math.floor(poly[:, 0].min() - reach)))
+        by0 = max(0, int(math.floor(poly[:, 1].min() - reach)))
+        bx1 = min(x1 - x0, int(math.ceil(poly[:, 0].max() + reach)))
+        by1 = min(y1 - y0, int(math.ceil(poly[:, 1].max() + reach)))
+        if bx1 - bx0 < 4 or by1 - by0 < 4:
+            continue
+        mask = np.zeros((by1 - by0, bx1 - bx0), np.float32)
+        cv2.fillPoly(mask, [(poly - [bx0, by0]).round().astype(np.int32)], 1.0, cv2.LINE_AA)
+        mask = cv2.GaussianBlur(mask, (0, 0), feather)
+        reg = out[y0 + by0:y0 + by1, x0 + bx0:x0 + bx1]
+        lab = cv2.cvtColor(np.clip(reg, 0.0, 1.0), cv2.COLOR_RGB2LAB)
+        d = np.float32(ref)[None, None] - _wide_blur(lab, low_sigma)
+        d[..., 0] = np.maximum(d[..., 0], 0.0)
+        lab += d * (mask * amount)[..., None]
+        out[y0 + by0:y0 + by1, x0 + bx0:x0 + bx1] = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
 
 
 def _smooth_face(out: np.ndarray, face: dict[str, Any], region: tuple[int, int, int, int],

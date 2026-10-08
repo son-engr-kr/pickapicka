@@ -230,12 +230,22 @@ Skin — the frequency-separation family, all as sliders on a skin mask:
   adds them to the photo as spot heals (`portrait.find_blemishes`). Precision
   checked on clear skin, recall only on planted spots.
 - AI Frequency Separation, AI Dodge and Burn (skin contouring)
-- Facial Wrinkle Remover, AI Frown Lines Remover, Remove Marionette Lines,
-  Remove Dark Circles, Freckles Filter
+- ~~Facial Wrinkle Remover, AI Frown Lines Remover~~ `done` as **Wrinkles**:
+  the band between the pores and a scale wider than the crease, taken out of
+  every channel where Frangi's line measure finds a long dark valley, on the
+  face's skin with the lids, eyes, mouth and nose left out and glasses cut out
+  by the segmenter's accessories class. Marionette and smile lines are only
+  softened where they are fine; the broad fold is shape and stays. The same
+  stage on the body skin under the jaw is **Neck lines**, which is not in
+  either product's list. ~~Remove Dark Circles~~ `done` as **Dark circles**:
+  the low band of a crescent under each eye moved, lighter only, to the
+  cheek's colour measured below it. No new model for any of the three.
+- Remove Marionette Lines (beyond softening), Freckles Filter
 - AI Rosy Complexion, AI Skin Tone Changer
 
 Eyes, mouth, brows:
-- Eye Color Changer, AI Catchlights, AI Eye Editor, AI Eyebrow Filter
+- Eye Color Changer, AI Catchlights, AI Eyebrow Filter
+- AI Eye Editor: ~~eye size~~ `done` (see Warps); the rest of it is not
 - ~~Teeth whitening (the colour half of `AI Teeth Fixer`)~~ `done`, and whitening
   the whites of the eyes, in the Portrait panel
 - AI Makeup Editor — recolour of lips, blush and lids only
@@ -244,7 +254,15 @@ Hair (mask-based recolour; dark-to-light does not work and will not pretend to):
 - Hair Color Changer, White Hair Blackening, Hair Shine Enhancement
 
 Warps:
-- Face Reshaping Tool, Nose Reshaper, AI Face Slimming, Double Chin Remover
+- ~~Face Reshaping Tool, Nose Reshaper, AI Face Slimming~~ `done` as the
+  Portrait panel's **Face shape**: eye size, face width, jaw (V line), chin,
+  nose width and mouth width (`reshape.py`). Not stored as control-point
+  offsets after all but as the six slider values: the warp is rebuilt from
+  the face's landmarks on every render, out of Gustafsson's local translation
+  and scaling warps, so it follows a re-analysed face, and a preset or a
+  batch apply carrying it reshapes whatever faces it lands on. Applied after the grade and
+  the masks, so everything on the face moves with it. No new model.
+- Double Chin Remover
 - Lightroom's per-person mask parts map onto the same parsing model
 
 ## Batch 5 — pose and body
@@ -256,6 +274,25 @@ A pose model (RTMPose or MoveNet, 10–30 MB ONNX) plus the Batch 3 person mask.
 - AI Hand Rejuvenation — the frequency-separation work of Batch 4 on hands
 
 ## Batch 6 — the baked-layer architecture, then inpainting
+
+**Started.** The baked layer exists in its simplest useful form: an **AI fill**
+heal (`aifill.py`) makes its patch once with MI-GAN (MIT code and MIT
+weights, 28 MB, ONNX), keeps it as `fills/<sha256 of its pixels>.png` in the
+project, and the heal operation names it; `healing` composites it through the
+heal's own alpha before the grade, at any resolution. Fills never travel to
+another photo (presets, bulk apply), and merged projects carry the ones their
+edits name. On real skin it keeps 95% of the fine texture where `cv2.inpaint`
+keeps 31%. That covers the small-to-medium half of the list below on the
+permissive path; big-lama turned out to have no written weights licence at all
+(only maintainers' comments that it is Apache-2.0), so it stays off the default
+path. Diffusion is now the opt-in path for larger regions: **Generative**
+(`genfill.py`), SD 1.5 inpainting with the LCM-LoRA fused in, four steps,
+about 15 s a stroke on a laptop CPU through onnxruntime, built by
+`packaging/models/build_genfill.py` and downloaded (1.9 GB) only after its
+licences' use restrictions (CreativeML OpenRAIL-M, OpenRAIL++-M) are shown and
+accepted, as section 4 of those licences requires of a redistributor. All
+optional models are listed in Preferences, **AI models** (`modelstore.py`),
+with download, delete and on/off.
 
 This is the fork in the road. A generative edit cannot be a scalar, so it needs:
 a per-photo raster layer stored beside `picks.json`, content-addressed by the

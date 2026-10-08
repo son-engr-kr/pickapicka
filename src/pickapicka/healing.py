@@ -11,6 +11,11 @@ consent dialog is somebody else's file.
   clone  copy from an explicit source offset, through a feathered edge
   spot   a one-click circular heal, for dust and blemishes
 
+A heal or a spot may instead carry method "ai": its pixels were made once by a
+generative model (`aifill`, opt-in by use, MIT-licensed weights) and are handed
+in by the caller as a patch, which this module only places and blends through
+the same alpha a diffusion heal uses. Nothing here runs or fetches the model.
+
 Where this approach fails, plainly
 ----------------------------------
 `cv2.inpaint` is a *diffusion* method: it walks inward from the hole's rim and
@@ -76,7 +81,11 @@ import numpy as np
 #   dx, dy    clone only: where to read from, as a normalized frame offset
 #   feather   0..100, how wide the edge ramp is relative to the radius
 #   opacity   0..100, how much of the repair is blended in
-#   method    "ns" | "telea", the diffusion used by heal and spot
+#   method    "ns" | "telea", the diffusion used by heal and spot, or "ai":
+#             a patch made by `aifill`, which the op then names in
+#   fill      {"id": <64 hex>, "box": [x0, y0, x1, y1], "model": "aifill"}: the
+#             patch's name, where it sits in frame fractions, and what made it
+#             (ai only)
 #   enabled   a switched-off operation is kept (the UI toggles it) but does nothing
 
 FULL_ROI = (0.0, 0.0, 1.0, 1.0)
@@ -92,6 +101,9 @@ KINDS: tuple[str, ...] = ("heal", "clone", "spot")
 # So NS by default, TELEA kept selectable because on some real edges it is
 # crisper and this is cheap enough to offer.
 METHODS: dict[str, int] = {"ns": cv2.INPAINT_NS, "telea": cv2.INPAINT_TELEA}
+AI_METHOD = "ai"           # a patch made by a model; see `aifill` and `genfill`
+FILL_MODELS = ("aifill", "genfill")
+_AI_KINDS = ("heal", "spot")
 
 OP_MAX = 200               # healing operations per photo
 OP_POINTS_MAX = 4000       # points in one operation's path (as STROKE_POINTS_MAX)
@@ -168,12 +180,56 @@ def normalize_op(raw: Any) -> dict[str, Any] | None:
     }
     if op["opacity"] == 0:
         return None
+    if raw.get("method") == AI_METHOD and kind in _AI_KINDS:
+        # Until its patch has been made it cannot change a pixel; a stroke the
+        # caller has not filled yet is not an edit.
+        fill = _normalize_fill(raw.get("fill"))
+        if fill is None:
+            return None
+        op["method"] = AI_METHOD
+        op["fill"] = fill
     if kind == "clone":
         op["dx"] = _fnum(raw.get("dx"), _OFFSET_RANGE[0], _OFFSET_RANGE[1], 0.0)
         op["dy"] = _fnum(raw.get("dy"), _OFFSET_RANGE[0], _OFFSET_RANGE[1], 0.0)
         if abs(op["dx"]) < _EPS and abs(op["dy"]) < _EPS:
             return None    # copying a region onto itself is not an edit
     return op
+
+
+def _normalize_fill(raw: Any) -> dict[str, Any] | None:
+    """An AI heal's patch reference, or None when it is not a usable one."""
+    if not isinstance(raw, dict):
+        return None
+    fid, box = raw.get("id"), raw.get("box")
+    if not (isinstance(fid, str) and len(fid) == 64 and all(c in "0123456789abcdef" for c in fid)):
+        return None
+    if not (isinstance(box, (list, tuple)) and len(box) == 4):
+        return None
+    b = [_fnum(v, 0.0, 1.0, -1.0) for v in box]
+    if min(b) < 0.0 or b[2] <= b[0] or b[3] <= b[1]:
+        return None
+    out: dict[str, Any] = {"id": fid, "box": b}
+    if raw.get("model") in FILL_MODELS:
+        out["model"] = raw["model"]      # which model made it, for the list; not read by the render
+    return out
+
+
+def fill_ids(params: Any) -> list[str]:
+    """The patches the active AI heals in a healing block need."""
+    p = normalize(params)
+    if p is None:
+        return []
+    return [op["fill"]["id"] for op in p["ops"] if op_is_active(op) and op["method"] == AI_METHOD]
+
+
+def without_fills(params: Any) -> dict[str, Any] | None:
+    """The block with its AI heals taken out, for an edit going to another
+    photo: a fill is that photo's own pixels, pasted anywhere else it is a
+    piece of the wrong picture."""
+    p = normalize(params)
+    if p is None:
+        return None
+    return normalize({"ops": [op for op in p["ops"] if op["method"] != AI_METHOD]})
 
 
 def normalize(raw: Any) -> dict[str, Any] | None:
@@ -250,6 +306,19 @@ def region_bbox(op: dict[str, Any], w: int, h: int) -> tuple[int, int, int, int]
     r_px, collar = _op_geometry(op, float(w))
     return _reach_bbox(_pixel_path(op, float(w), float(h), 0.0, 0.0),
                        r_px + collar + 0.5, w, h)
+
+
+def region_mask(op: dict[str, Any], w: int, h: int) -> tuple[tuple[int, int, int, int], np.ndarray]:
+    """The box an operation writes in a w x h frame (as `region_bbox`) and,
+    over it, which pixels it writes: everything its alpha reaches."""
+    x0, y0, x1, y1 = region_bbox(op, w, h)
+    if x1 <= x0 or y1 <= y0:
+        return (x0, y0, x1, y1), np.zeros((max(0, y1 - y0), max(0, x1 - x0)), bool)
+    r_px, collar = _op_geometry(op, float(w))
+    core = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    _rasterize(core, _pixel_path(op, float(w), float(h), float(x0), float(y0)), r_px)
+    _, alpha = _fill_and_alpha(core, collar)
+    return (x0, y0, x1, y1), alpha > 0.0
 
 
 def read_bbox(op: dict[str, Any], w: int, h: int) -> tuple[int, int, int, int]:
@@ -378,8 +447,35 @@ def _shifted_read(img: np.ndarray, box: tuple[int, int, int, int],
     return out, valid
 
 
+def _place_patch(patch: np.ndarray, box: list[float], frame_w: float, frame_h: float,
+                 ox: float, oy: float, region: tuple[int, int, int, int]) -> np.ndarray:
+    """An AI heal's patch (uint8, made at some full resolution over `box`, in
+    frame fractions) resampled onto `region` (x0, y0, x1, y1) of a window at
+    (ox, oy) in a frame_w x frame_h frame, as float32 in [0,1].
+
+    At the patch's own scale, and a window cut at whole pixels of it, this is
+    an exact copy. Smaller, it is first shrunk by area, so a preview of a large
+    fill does not alias; what is left of the scale is a bilinear resample that
+    depends only on the frame's scale, not on where a window starts."""
+    x0, y0, x1, y1 = region
+    ph, pw = patch.shape[:2]
+    sx = (box[2] - box[0]) * frame_w / pw
+    sy = (box[3] - box[1]) * frame_h / ph
+    src = patch.astype(np.float32) / 255.0
+    if sx < 0.5 or sy < 0.5:
+        nw, nh = max(1, int(round(pw * sx))), max(1, int(round(ph * sy)))
+        src = cv2.resize(src, (nw, nh), interpolation=cv2.INTER_AREA)
+        sx, sy = sx * pw / nw, sy * ph / nh
+    # Pixel centres: patch pixel u sits at frame position box[0] * frame_w + (u + 0.5) * sx - 0.5.
+    tx = box[0] * frame_w + 0.5 * sx - 0.5 - ox - x0
+    ty = box[1] * frame_h + 0.5 * sy - 0.5 - oy - y0
+    m = np.float32([[sx, 0.0, tx], [0.0, sy, ty]])
+    return cv2.warpAffine(src, m, (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_REPLICATE)
+
+
 def _apply_op(img: np.ndarray, op: dict[str, Any], frame_w: float, frame_h: float,
-              ox: float, oy: float) -> None:
+              ox: float, oy: float, fills: dict[str, np.ndarray] | None = None) -> None:
     """Apply one operation to `img` in place. `img` is the window; (ox, oy) is
     where its top-left corner sits in the frame_w x frame_h frame."""
     h, w = img.shape[:2]
@@ -406,7 +502,11 @@ def _apply_op(img: np.ndarray, op: dict[str, Any], frame_w: float, frame_h: floa
         alpha = alpha * (op["opacity"] / 100.0)
 
     patch = img[y0:y1, x0:x1]
-    if op["kind"] == "clone":
+    if op["method"] == AI_METHOD:
+        fid = op["fill"]["id"]
+        assert fills is not None and fid in fills, f"AI heal {fid[:12]} needs its patch from the caller"
+        src = _place_patch(fills[fid], op["fill"]["box"], frame_w, frame_h, ox, oy, box)
+    elif op["kind"] == "clone":
         src, valid = _shifted_read(img, box, int(round(op["dy"] * frame_h)),
                                    int(round(op["dx"] * frame_w)))
         alpha = alpha * valid
@@ -422,7 +522,8 @@ def _apply_op(img: np.ndarray, op: dict[str, Any], frame_w: float, frame_h: floa
 
 def apply_healing(rgb: np.ndarray, params: dict[str, Any],
                   roi: tuple[float, float, float, float] = FULL_ROI,
-                  inplace: bool = False) -> np.ndarray:
+                  inplace: bool = False,
+                  fills: dict[str, np.ndarray] | None = None) -> np.ndarray:
     """Apply a healing block to a float32 RGB image in [0,1] and return a new one.
     Neutral parameters return the input array unchanged (no copy).
 
@@ -443,6 +544,9 @@ def apply_healing(rgb: np.ndarray, params: dict[str, Any],
     outside the window has nothing to read there and leaves those pixels alone.
     Both go away if the caller widens the window to `read_bbox`; neither is
     silently papered over here.
+
+    `fills` maps an AI heal's patch name to the patch (`aifill.make_fill`), and
+    must hold every one the active operations name.
     """
     assert rgb.ndim == 3 and rgb.shape[2] == 3, f"expected an RGB image, got {rgb.shape}"
     assert rgb.dtype == np.float32, f"expected float32 in [0,1], got {rgb.dtype}"
@@ -460,5 +564,5 @@ def apply_healing(rgb: np.ndarray, params: dict[str, Any],
     ox, oy = roi[0] * frame_w, roi[1] * frame_h
     out = rgb if inplace else rgb.copy()
     for op in ops:
-        _apply_op(out, op, frame_w, frame_h, ox, oy)
+        _apply_op(out, op, frame_w, frame_h, ox, oy, fills)
     return out

@@ -146,6 +146,40 @@ def set_update_auto(on: bool) -> None:
     _save(data)
 
 
+# ----- optional models (modelstore.py) --------------------------------------
+# Per model pack: whether its feature is switched on, and when its licence's
+# use restrictions were accepted (the download that carries them needs it).
+
+def get_model_on(pack_id: str, default: bool) -> bool:
+    return bool(_load().get("models", {}).get(pack_id, {}).get("on", default))
+
+
+def set_model_on(pack_id: str, on: bool) -> None:
+    data = _load()
+    data.setdefault("models", {}).setdefault(pack_id, {})["on"] = bool(on)
+    _save(data)
+
+
+def get_model_memory(pack_id: str) -> str:
+    return str(_load().get("models", {}).get(pack_id, {}).get("memory", "auto"))
+
+
+def set_model_memory(pack_id: str, mode: str) -> None:
+    data = _load()
+    data.setdefault("models", {}).setdefault(pack_id, {})["memory"] = mode
+    _save(data)
+
+
+def get_model_terms(pack_id: str) -> str | None:
+    return _load().get("models", {}).get(pack_id, {}).get("accepted")
+
+
+def set_model_terms(pack_id: str, when: str) -> None:
+    data = _load()
+    data.setdefault("models", {}).setdefault(pack_id, {})["accepted"] = when
+    _save(data)
+
+
 # ----- look library (app-global) -------------------------------------------
 # Imported .cube files and fitted colour matches, one JSON file each, named by
 # `lut.table_key`. Global like presets, so a look imported once is there in

@@ -575,6 +575,7 @@
           <button type="button" role="tab" data-pane="general">General</button>
           <button type="button" role="tab" data-pane="workspaces">Workspaces</button>
           <button type="button" role="tab" data-pane="project">This project</button>
+          <button type="button" role="tab" data-pane="models">AI models</button>
           <button type="button" role="tab" data-pane="keyboard">Keyboard</button>
         </nav>
         <div class="prefs-panes">
@@ -624,6 +625,12 @@
                 <button type="button" id="pref-hdr">Adjust…</button></div>
             </div>
           </section>
+          <section data-pane="models" hidden>
+            <p class="prefs-lead">Models the app downloads when a feature first needs one, kept on
+              this computer only. A feature that is switched off, or whose model is not here, stays
+              in the editor and offers the download when you use it.</p>
+            <ul id="pref-models" class="pref-models"></ul>
+          </section>
           <section data-pane="keyboard" hidden>
             <p class="prefs-lead">Every screen has its keys along its bottom, and <kbd>?</kbd> lists them all.
               Decisions are <kbd>P</kbd> <kbd>R</kbd> <kbd>V</kbd>, stars <kbd>1</kbd>–<kbd>5</kbd> and colour labels
@@ -631,6 +638,34 @@
             <button type="button" id="pref-keys" data-icon="info">Show all shortcuts</button>
           </section>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- An optional model before it is used: what it is, its licence, its download (modelstore.py). -->
+  <div id="model-modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="model-title">
+    <div class="choice-box model-box">
+      <h2 id="model-title"></h2>
+      <p id="model-detail"></p>
+      <p class="model-facts" id="model-facts"></p>
+      <p class="model-warn hidden" id="model-warn"></p>
+      <div id="model-terms" class="hidden">
+        <p class="model-terms-lead">This model may be used commercially, but its licences forbid the
+          uses below (Attachment A). Downloading it means you agree to that, and anyone you pass
+          the files on to has to agree too.</p>
+        <pre class="model-restrictions" id="model-restrictions"></pre>
+        <details class="model-licences"><summary>The licences in full</summary>
+          <pre id="model-licence-text"></pre></details>
+        <label class="model-accept"><input type="checkbox" id="model-accept" /> I accept these use restrictions</label>
+      </div>
+      <div class="model-progress hidden" id="model-progress">
+        <div class="model-bar"><span id="model-bar-fill"></span></div>
+        <small id="model-progress-text"></small>
+      </div>
+      <p class="model-error hidden" id="model-error"></p>
+      <div class="choice-buttons">
+        <button type="button" id="model-cancel">Cancel</button>
+        <button type="button" id="model-go" class="primary">Download</button>
       </div>
     </div>
   </div>
@@ -1310,23 +1345,69 @@
             <div class="edit-group-body">
               <p class="hsl-note">
                 Applied to every face found, and sized to each, so a headshot and
-                a group photo get the same look. Smoothing keeps the pores and
-                leaves the eyes, brows and mouth alone.
+                a group photo get the same look.
               </p>
-              <label class="look-row" title="Even out blotches and fine lines; the texture stays">
+              <span class="edit-subhead">Skin</span>
+              <label class="look-row" title="Even out blotches and fine lines; the pores stay, and the eyes, brows and mouth are left alone">
                 <span class="look-name">Smooth skin</span>
-                <input type="range" id="portrait-smooth" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
+                <input type="range" id="portrait-smooth" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
                 <span class="look-val" id="portrait-smooth-val"></span></label>
+              <label class="look-row" title="Softens the lines on the face (crow&apos;s feet, forehead, smile lines) and keeps the pores; the lids, the eyes and the nose keep their shape">
+                <span class="look-name">Wrinkles</span>
+                <input type="range" id="portrait-wrinkles" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                <span class="look-val" id="portrait-wrinkles-val"></span></label>
+              <label class="look-row" title="Lifts the shadow under each eye towards the colour of the cheek below it; the texture stays">
+                <span class="look-name">Dark circles</span>
+                <input type="range" id="portrait-dark_circles" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                <span class="look-val" id="portrait-dark_circles-val"></span></label>
+              <label class="look-row" title="Softens the lines and creases on the neck">
+                <span class="look-name">Neck lines</span>
+                <input type="range" id="portrait-neck" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                <span class="look-val" id="portrait-neck-val"></span></label>
+              <div class="portrait-blemish-row">
+                <button type="button" id="portrait-blemishes"
+                        title="Find spots and blemishes and heal them; each one lands in Heal &amp; red eye">Remove blemishes</button>
+                <label title="Heal each one with AI fill, which keeps the skin&apos;s pores, rather than filling it in from its edges">
+                  <input type="checkbox" id="portrait-blemish-ai" checked /> with AI fill</label>
+              </div>
+              <span class="edit-subhead">Eyes &amp; teeth</span>
               <label class="look-row" title="Takes the yellow out of the teeth and brightens them; lips and gums are left alone">
                 <span class="look-name">Whiten teeth</span>
-                <input type="range" id="portrait-teeth" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
+                <input type="range" id="portrait-teeth" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
                 <span class="look-val" id="portrait-teeth-val"></span></label>
               <label class="look-row" title="Clears redness from the whites of the eyes and brightens them">
                 <span class="look-name">Whiten eyes</span>
-                <input type="range" id="portrait-eyes" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
+                <input type="range" id="portrait-eyes" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
                 <span class="look-val" id="portrait-eyes-val"></span></label>
-              <button type="button" id="portrait-blemishes"
-                      title="Find spots and blemishes and heal them; each one lands in Heal &amp; red eye">Remove blemishes</button>
+              <span class="edit-subhead">Face shape</span>
+              <p class="hsl-note">
+                A warp of the face&apos;s own landmarks: nothing is painted in, and
+                the background beside a moved jaw stretches with it.
+              </p>
+              <label class="look-row" title="+ enlarges the eyes, − makes them smaller">
+                <span class="look-name">Eye size</span>
+                <input type="range" id="portrait-eye_size" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                <span class="look-val" id="portrait-eye_size-val"></span></label>
+              <label class="look-row" title="− slims the cheeks, + widens them">
+                <span class="look-name">Face width</span>
+                <input type="range" id="portrait-face_width" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                <span class="look-val" id="portrait-face_width-val"></span></label>
+              <label class="look-row" title="− narrows the jaw into a V line, + widens it">
+                <span class="look-name">Jaw</span>
+                <input type="range" id="portrait-jaw_width" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                <span class="look-val" id="portrait-jaw_width-val"></span></label>
+              <label class="look-row" title="+ lengthens the chin, − shortens it">
+                <span class="look-name">Chin</span>
+                <input type="range" id="portrait-chin_length" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                <span class="look-val" id="portrait-chin_length-val"></span></label>
+              <label class="look-row" title="− narrows the nose, + widens it">
+                <span class="look-name">Nose width</span>
+                <input type="range" id="portrait-nose_width" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                <span class="look-val" id="portrait-nose_width-val"></span></label>
+              <label class="look-row" title="+ widens the mouth, − narrows it">
+                <span class="look-name">Mouth width</span>
+                <input type="range" id="portrait-mouth_width" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                <span class="look-val" id="portrait-mouth_width-val"></span></label>
               <p class="hsl-note" id="portrait-faces"></p>
             </div>
           </details>
@@ -1336,6 +1417,8 @@
               <div class="repair-tools">
                 <button type="button" data-repair-tool="spot" title="Click a dust spot or a blemish">Spot</button>
                 <button type="button" data-repair-tool="heal" title="Paint over something to fill it in from around it">Heal</button>
+                <button type="button" data-repair-tool="fill" title="Paint over something and a model draws what belongs there: skin with its pores, a jaw line carried through">AI fill</button>
+                <button type="button" data-repair-tool="gen" title="Generative fill: a diffusion model for larger regions where AI fill runs out (an eye bag, crow&apos;s feet, glasses across skin). About 20 seconds a stroke; an opt-in download">Generative</button>
                 <button type="button" data-repair-tool="clone" title="Alt-click where to copy from, then paint">Clone</button>
               </div>
               <label class="look-row"><span class="look-name">Size</span>
@@ -1343,9 +1426,12 @@
                 <span class="look-val" id="repair-size-val"></span></label>
               <p class="hsl-note">
                 Heal fills in from the edges: right for dust, spots, a stray hair
-                or a wire against the sky, but it smears texture like fabric,
-                grass or hair. Use Clone there, which copies real texture from a
-                place you choose. Runs before every other adjustment.
+                or a wire against the sky, but it smears texture like skin,
+                fabric, grass or hair. AI fill draws that texture instead (a
+                28 MB MIT-licensed model), and Generative redraws larger
+                regions with a diffusion model (1.9 GB, opt-in); Clone copies
+                real texture from a place you choose. Runs before every other
+                adjustment.
               </p>
               <div class="repair-list" id="repair-list"></div>
               <div class="repair-sub">Red eye</div>

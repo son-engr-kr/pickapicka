@@ -29,7 +29,8 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
 from . import (
-    cameras, db, editing, exifinfo, exporting, film as film_mod, folderinfo, fsutil, hdr, imfile,
+    aifill as aifill_mod, cameras, db, editing, genfill as genfill_mod, healing as healing_mod,
+    modelstore, exifinfo, exporting, film as film_mod, folderinfo, fsutil, hdr, imfile,
     launch, lut as lut_mod, metadata as metadata_mod, portrait as portrait_mod, presets as presets_mod,
     projects as projects_mod,
     redeye as redeye_mod, transform as transform_mod, raw, relink, scenes, segment as segment_mod,
@@ -67,6 +68,7 @@ EDIT_VIEW_EDGE = 2560      # long edge the full-size viewer renders edited/RAW p
 EDIT_BASE_CACHE_MAX = 4    # photos whose preview arrays are kept (RAW A/B benefits from >1)
 EDIT_VARIANTS_PER_PHOTO = 6  # the decode, a draft, a fit-sized copy, lens-corrected copies
 PORTRAIT_CACHE_MAX = 64    # photos whose faces are kept analysed
+FILL_CACHE_MAX = 64        # AI fill patches kept decoded
 PREFETCH_MAX = 2           # neighbours decoded ahead: under EDIT_BASE_CACHE_MAX with the current one
 FULL_BASE_CACHE_MAX = 2    # full-res decode LRU: big arrays, so keep very few
 EDIT_ZOOM_MAX_OUT = 3200   # cap on the pixels a 1:1 request may return
@@ -285,6 +287,28 @@ class RedeyeRegionPayload(BaseModel):
 class FacesPayload(BaseModel):
     rel_path: str
     edit: dict[str, Any] | None = None   # only its optics are read
+
+
+class FillPayload(BaseModel):
+    rel_path: str
+    ops: list[dict[str, Any]]            # heals and spots, as the editor drew them
+    edit: dict[str, Any] | None = None   # only its optics are read
+    model: Literal["aifill", "genfill"] = "aifill"
+    # A variation: generative fill's noise from this seed instead of the
+    # stroke's own. AI fill has no noise and ignores it.
+    seed: int | None = None
+
+
+class ModelDownloadPayload(BaseModel):
+    accept_terms: bool = False
+
+
+class ModelOnPayload(BaseModel):
+    on: bool
+
+
+class ModelMemoryPayload(BaseModel):
+    mode: Literal["auto", "keep", "release"]
 
 
 class UprightPayload(BaseModel):
@@ -522,6 +546,8 @@ class AppContext:
         self.faces_root: Path | None = None
         self.peaks_root: Path | None = None  # focus-peaking overlays
         self.hdr_root: Path | None = None
+        # AI fill patches (see `aifill`), named by the hash of their pixels.
+        self.fills_root: Path | None = None
         self.raw_root: Path | None = None        # split-layout RAW tree (optional)
         self.raw_cache_root: Path | None = None  # cached RAW preview JPEGs
         self.photo_index: dict[str, dict[str, Any]] = {}
@@ -542,11 +568,13 @@ class AppContext:
         self.cluster_state: dict[str, Any] = self._fresh_cluster_state()
         self.opening_state: dict[str, Any] = self._fresh_opening_state()
         self.export_state: dict[str, Any] = self._fresh_export_state()
-        # Faces for skin smoothing, per photo and optics. One lock, because the
+        # Faces for the portrait panel, per photo and optics. One lock, because the
         # face model is one session and a grid full of thumbnails would
         # otherwise analyse the same photo several times at once.
         self.portrait_cache: "OrderedDict[str, list[dict[str, Any]]]" = OrderedDict()
         self.portrait_lock = threading.Lock()
+        self.fill_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
+        self.fill_lock = threading.Lock()
         # Per photo: the automatic chromatic-aberration estimate made on its
         # preview decode, and the optics of its last settled editor render,
         # whose analysis (faces, segmentation, range source) a drag reuses.
@@ -604,10 +632,12 @@ class AppContext:
         self.faces_root = None
         self.peaks_root = None
         self.hdr_root = None
+        self.fills_root = None
         self.raw_root = None
         self.raw_cache_root = None
         self.photo_index = {}
         self.hdr_fuse_cache = None
+        self.fill_cache.clear()
         self.edit_base_cache.clear()
         self.full_base_cache.clear()
         self.portrait_cache.clear()
@@ -632,6 +662,7 @@ class AppContext:
         self.faces_root = db_path.with_suffix(db_path.suffix + ".faces")
         self.peaks_root = db_path.with_suffix(db_path.suffix + ".peaks")
         self.hdr_root = db_path.with_suffix(db_path.suffix + ".hdr")
+        self.fills_root = db_path.with_suffix(db_path.suffix + ".fills")
         raw_subdir = data.get("raw_subdir", "")
         self.raw_root = photo_root / raw_subdir if raw_subdir else jpeg_root
         self.raw_cache_root = db_path.with_suffix(db_path.suffix + ".rawcache")
@@ -663,6 +694,7 @@ class AppContext:
         self.faces_root = cache_root / "faces"
         self.peaks_root = cache_root / "peaks"
         self.hdr_root = project_dir / "hdr"
+        self.fills_root = project_dir / projects_mod.FILLS_DIR
         raw_subdir = data.get("raw_subdir", "")
         self.raw_root = photo_root / raw_subdir if raw_subdir else jpeg_root
         self.raw_cache_root = cache_root / "raw"
@@ -786,11 +818,36 @@ class AppContext:
         key = f"{rel_path}#{editing.optics_key(edit)}"
         return {g: segment_mod.class_mask(base, g, key=key) for g in groups}
 
+    def fills_for(self, edit: dict[str, Any] | None) -> dict[str, np.ndarray] | None:
+        """The patches an edit's AI heals composite, read from the project's
+        fills folder and kept decoded. None when it has none. A patch the edit
+        names and the folder lacks is an error: there is nothing to fall back
+        on that would not quietly show a different photo."""
+        ids = healing_mod.fill_ids(editing.normalize(edit)["healing"])
+        if not ids:
+            return None
+        assert self.fills_root is not None, "no project is open"
+        out: dict[str, np.ndarray] = {}
+        with self.fill_lock:
+            for fid in ids:
+                patch = self.fill_cache.get(fid)
+                if patch is None:
+                    path = self.fills_root / f"{fid}.png"
+                    assert path.is_file(), f"AI fill {fid[:12]} is missing from {self.fills_root}"
+                    patch = cv2.cvtColor(imfile.imread(path), cv2.COLOR_BGR2RGB)
+                    patch.flags.writeable = False
+                    self.fill_cache[fid] = patch
+                    while len(self.fill_cache) > FILL_CACHE_MAX:
+                        self.fill_cache.popitem(last=False)
+                self.fill_cache.move_to_end(fid)
+                out[fid] = patch
+        return out
+
     def portrait_faces(self, rel_path: str,
                        edit: dict[str, Any] | None) -> list[dict[str, Any]] | None:
-        """The faces an edit's skin smoothing works on, found on the corrected
-        preview frame and cached per photo and optics. None when the edit does
-        not smooth skin, so no other photo pays for a face model."""
+        """The faces an edit's portrait panel works on, found on the corrected
+        preview frame and cached per photo and optics. None when the edit has
+        no portrait panel, so no other photo pays for a face model."""
         if editing.normalize(edit)["portrait"] is None:
             return None
         return self.faces_for(rel_path, edit)
@@ -1217,7 +1274,8 @@ def _bake_rendered(ctx: "AppContext", photo: dict[str, Any], rel: str,
                                auto=ctx.auto_fields(rel, edit),
                                src=ctx.range_src(rel, edit),
                                luts=_lut_tables(ctx, edit),
-                               faces=ctx.portrait_faces(rel, edit))
+                               faces=ctx.portrait_faces(rel, edit),
+                               fills=ctx.fills_for(edit))
     out = exporting.resize(out, settings.long_edge)
     src_path, is_raw = _metadata_source(ctx, photo, rel)
     src_exif, icc = metadata_mod.read_source(src_path, is_raw)
@@ -1350,6 +1408,7 @@ def _render_roi(ctx: "AppContext", payload: EditPreviewPayload) -> np.ndarray:
         src=ctx.range_src(payload.rel_path, edit),
         luts=_lut_tables(ctx, edit),
         faces=faces,
+        fills=ctx.fills_for(edit),
     )
     out = editing.geometry_window(graded, box, fw, fh, edit, window)
 
@@ -1411,6 +1470,18 @@ def _keep_lut(ctx: "AppContext", edit: dict[str, Any] | None) -> None:
     tables = _lut_tables(ctx, edit)
     if tables:
         ctx.data.setdefault("luts", {}).update(tables)
+
+
+def _keep_own_fills(edit: dict[str, Any], own: dict[str, Any] | None) -> dict[str, Any]:
+    """`edit` (normalized) going onto a photo whose edit is `own`, with the AI
+    heals that came with it taken out and the photo's own kept. A fill is one
+    photo's pixels: on another photo it would paste a piece of the wrong
+    picture, and replacing a photo's grade should not throw away work that
+    was generated for it."""
+    ops = list((healing_mod.without_fills(edit["healing"]) or {}).get("ops", []))
+    mine = healing_mod.normalize(editing.normalize(own)["healing"]) or {"ops": []}
+    ops += [op for op in mine["ops"] if op["method"] == healing_mod.AI_METHOD]
+    return {**edit, "healing": healing_mod.normalize({"ops": ops})}
 
 
 def _apply_edit_to_photo(photo: dict[str, Any], edit: dict[str, Any] | None) -> None:
@@ -1525,7 +1596,8 @@ def _ensure_thumb(src: Path, thumbs_root: Path, rel_path: str,
                   auto_fields: Callable[[], dict[str, np.ndarray] | None] | None = None,
                   range_src: Callable[[], "np.ndarray | None"] | None = None,
                   luts: Callable[[], dict[str, Any] | None] | None = None,
-                  faces: Callable[[], list[dict[str, Any]] | None] | None = None
+                  faces: Callable[[], list[dict[str, Any]] | None] | None = None,
+                  fills: Callable[[], dict[str, np.ndarray] | None] | None = None
                   ) -> Path:
     # A non-neutral edit gets its own cache file (…​.<hash>.<ver>.jpg) so changing
     # an edit invalidates automatically; unedited photos keep the plain name and
@@ -1584,7 +1656,8 @@ def _ensure_thumb(src: Path, thumbs_root: Path, rel_path: str,
                                    auto=auto_fields() if auto_fields else None,
                                    src=range_src() if range_src else None,
                                    luts=luts() if luts else None,
-                                   faces=faces() if faces else None))
+                                   faces=faces() if faces else None,
+                                   fills=fills() if fills else None))
             with _atomic_write(dst) as tmp:
                 img.save(tmp, "JPEG", quality=THUMB_QUALITY, optimize=True)
     return dst
@@ -1607,7 +1680,8 @@ def _build_thumb_for(ctx: "AppContext", rel_path: str, photo: dict[str, Any]) ->
                   range_src=lambda r=rel_path, p=photo:
                       ctx.range_src(r, p.get("edit")),
                   luts=lambda p=photo: _lut_tables(ctx, p.get("edit")),
-                  faces=lambda r=rel_path, p=photo: ctx.portrait_faces(r, p.get("edit")))
+                  faces=lambda r=rel_path, p=photo: ctx.portrait_faces(r, p.get("edit")),
+                  fills=lambda p=photo: ctx.fills_for(p.get("edit")))
 
 
 def _report(fut: "Future[None]") -> None:
@@ -1860,6 +1934,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     # Checks only once serve() starts it, so building an app (the tests) stays offline.
     updater = updater_mod.Updater()
     app.state.updater = updater
+    downloads = modelstore.Downloads()
+    app.state.downloads = downloads
 
     @app.middleware("http")
     async def _no_cache_for_web_assets(request: Request, call_next):
@@ -2618,6 +2694,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         _claim_open_lock()
         try:
             (project_dir / ".cache").mkdir(parents=True)
+            projects_mod.carry_fills([Path(d).expanduser().resolve() for d in payload.project_dirs],
+                                     plan["marks"], project_dir)
             db.save(project_dir / "picks.json", projects_mod.merge_seed(plan))
         except OSError as exc:
             ctx.opening_state["running"] = False
@@ -3053,6 +3131,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                                  luts=_lut_tables(ctx, fit_edit),
                                  optics=draft,
                                  faces=ctx.portrait_faces(rel, analysis),
+                                 fills=ctx.fills_for(fit_edit),
                                  cache_key=f"{rel}|{which}",
                                  ca=ctx.ca_for(rel, fit_edit),
                                  frame_size=frame)
@@ -3135,7 +3214,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             auto=ctx.auto_fields(payload.reference, ref_edit),
             src=ctx.range_src(payload.reference, ref_edit),
             luts=_lut_tables(ctx, ref_edit),
-            faces=ctx.portrait_faces(payload.reference, ref_edit))
+            faces=ctx.portrait_faces(payload.reference, ref_edit),
+            fills=ctx.fills_for(ref_edit))
         source = ctx.get_decoded_base(payload.rel_path)
         params = lut_mod.fit_from_reference(
             source.astype(np.float32) / 255.0, reference.astype(np.float32) / 255.0,
@@ -3176,7 +3256,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
 
     @app.post("/api/edit/faces")
     def portrait_face_boxes(payload: FacesPayload) -> dict[str, Any]:
-        """The faces skin smoothing would work on, as boxes on the corrected
+        """The faces the portrait panel would work on, as boxes on the corrected
         frame, so the panel can say how many and show where."""
         _require_loaded()
         if ctx.photo_index.get(payload.rel_path) is None:
@@ -3195,6 +3275,115 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         faces = ctx.faces_for(payload.rel_path, payload.edit)
         full = ctx.get_corrected_full(payload.rel_path, payload.edit)
         return {"ops": portrait_mod.find_blemishes(full, faces), "faces": len(faces)}
+
+    # ----- optional models -------------------------------------------
+
+    def _pack(pack_id: str) -> modelstore.Pack:
+        if pack_id not in modelstore.PACKS:
+            raise HTTPException(status_code=404, detail=f"no such model: {pack_id}")
+        return modelstore.PACKS[pack_id]
+
+    @app.get("/api/models")
+    def list_models() -> dict[str, Any]:
+        return {"models": [downloads.status(k) for k in modelstore.PACKS]}
+
+    @app.get("/api/models/{pack_id}")
+    def model_status(pack_id: str) -> dict[str, Any]:
+        _pack(pack_id)
+        return downloads.status(pack_id)
+
+    @app.post("/api/models/{pack_id}/download")
+    def download_model(pack_id: str, payload: ModelDownloadPayload) -> dict[str, Any]:
+        """Start (or resume) a pack's download in the background; poll its
+        status for progress. A pack whose licence carries use restrictions is
+        only downloaded once they have been accepted, and the acceptance is
+        recorded. Asking for a download is asking for the feature, so it is
+        switched on too."""
+        pack = _pack(pack_id)
+        if pack.terms and not userstate.get_model_terms(pack_id):
+            if not payload.accept_terms:
+                raise HTTPException(status_code=400, detail="the licence's use restrictions must be accepted first")
+            modelstore.accept_terms(pack_id)
+        if pack.switchable:
+            userstate.set_model_on(pack_id, True)
+        downloads.start(pack_id)
+        return downloads.status(pack_id)
+
+    @app.post("/api/models/{pack_id}/cancel")
+    def cancel_model(pack_id: str) -> dict[str, Any]:
+        _pack(pack_id)
+        downloads.cancel(pack_id)
+        return downloads.status(pack_id)
+
+    @app.post("/api/models/{pack_id}/delete")
+    def delete_model(pack_id: str) -> dict[str, Any]:
+        """Delete a pack's files (a partial download too). The feature stays
+        where it is in the editor and asks for the download again."""
+        _pack(pack_id)
+        if downloads.status(pack_id)["state"] == "downloading":
+            raise HTTPException(status_code=409, detail="cancel the download first")
+        aifill_mod.release()
+        genfill_mod.release()
+        modelstore.delete(pack_id)
+        return downloads.status(pack_id)
+
+    @app.post("/api/models/{pack_id}/memory")
+    def model_memory(pack_id: str, payload: ModelMemoryPayload) -> dict[str, Any]:
+        """Whether a model stays loaded between uses: automatic by this
+        machine's memory, always, or freed after each use."""
+        _pack(pack_id)
+        userstate.set_model_memory(pack_id, payload.mode)
+        if not modelstore.keep_loaded(pack_id):
+            genfill_mod.release()
+        return downloads.status(pack_id)
+
+    @app.post("/api/models/{pack_id}/on")
+    def switch_model(pack_id: str, payload: ModelOnPayload) -> dict[str, Any]:
+        pack = _pack(pack_id)
+        if not pack.switchable:
+            raise HTTPException(status_code=400, detail=f"{pack.title} cannot be switched off")
+        userstate.set_model_on(pack_id, payload.on)
+        if not payload.on:
+            genfill_mod.release() if pack_id == "genfill" else aifill_mod.release()
+        return downloads.status(pack_id)
+
+    @app.post("/api/edit/fill")
+    def ai_fill(payload: FillPayload) -> dict[str, Any]:
+        """Make the patches for AI heals and keep them beside the project.
+
+        Each stroke comes in as a heal or a spot; its patch is made on the
+        full-resolution frame with the edit's lens corrections, and the
+        operations go back with their names and places, for the editor to add
+        to the photo's heals like any other. Nothing is saved to the edit here."""
+        _require_loaded()
+        if ctx.photo_index.get(payload.rel_path) is None:
+            raise HTTPException(status_code=404, detail="photo not found")
+        if not modelstore.usable(payload.model):
+            raise HTTPException(status_code=409, detail=f"{modelstore.PACKS[payload.model].title} "
+                                                        "is not downloaded or is switched off")
+        if payload.model == "aifill":
+            make = aifill_mod.make_fill
+        else:
+            def make(frame, op):
+                return genfill_mod.make_fill(frame, op, seed=payload.seed)
+        ops = [healing_mod.normalize_op({**raw, "method": "ns", "fill": None}) for raw in payload.ops]
+        if not ops or any(op is None or op["kind"] not in ("heal", "spot") for op in ops):
+            raise HTTPException(status_code=400, detail="an AI fill is a heal or a spot")
+        full = ctx.get_corrected_full(payload.rel_path, payload.edit)
+        assert ctx.fills_root is not None
+        made = []
+        for op in ops:
+            patch, box = make(full, op)
+            fid = aifill_mod.fill_id(patch, box)
+            dst = ctx.fills_root / f"{fid}.png"
+            if not dst.is_file():
+                with _atomic_write(dst) as tmp:
+                    imfile.imwrite(tmp, cv2.cvtColor(patch, cv2.COLOR_RGB2BGR))
+            made.append({**op, "method": healing_mod.AI_METHOD,
+                         "fill": {"id": fid, "box": box, "model": payload.model}})
+        if payload.model == "genfill" and not modelstore.keep_loaded("genfill"):
+            genfill_mod.release()       # give its gigabytes back until the next one
+        return {"ops": made}
 
     @app.post("/api/edit/upright")
     def upright(payload: UprightPayload) -> dict[str, Any]:
@@ -3251,6 +3440,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             edit = payload.edit
             if payload.mode == "add":
                 edit = editing.merge_additive(photo.get("edit"), edit)
+            else:
+                edit = _keep_own_fills(editing.normalize(edit), photo.get("edit"))
             _keep_lut(ctx, edit)
             _apply_edit_to_photo(photo, edit)
         with ctx.save_lock:
@@ -3365,7 +3556,10 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         name = payload.name.strip()
         if not name:
             raise HTTPException(status_code=400, detail="preset name is required")
-        preset = userstate.save_preset(name, editing.normalize(payload.edit))
+        edit = editing.normalize(payload.edit)
+        # A preset goes onto other photos; an AI fill is this one's pixels.
+        edit["healing"] = healing_mod.without_fills(edit["healing"])
+        preset = userstate.save_preset(name, edit)
         return {"preset": preset, "presets": _all_presets()}
 
     @app.delete("/api/presets/{preset_id}")
@@ -3825,7 +4019,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                                  auto=ctx.auto_fields(rel_path, edit),
                                  src=ctx.range_src(rel_path, edit),
                                  luts=_lut_tables(ctx, edit),
-                                 faces=ctx.portrait_faces(rel_path, edit))
+                                 faces=ctx.portrait_faces(rel_path, edit),
+                                 fills=ctx.fills_for(edit))
             buf = io.BytesIO()
             Image.fromarray(out).save(buf, "JPEG", quality=90)
             return Response(content=buf.getvalue(), media_type="image/jpeg",
@@ -3848,7 +4043,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                               auto_fields=lambda: ctx.auto_fields(rel_path, edit),
                               range_src=lambda: ctx.range_src(rel_path, edit),
                               luts=lambda: _lut_tables(ctx, edit),
-                              faces=lambda: ctx.portrait_faces(rel_path, edit))
+                              faces=lambda: ctx.portrait_faces(rel_path, edit),
+                              fills=lambda: ctx.fills_for(edit))
         return _cached_image(thumb, "image/jpeg")
 
     @app.get("/peak/{rel_path:path}")
@@ -3873,7 +4069,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                               auto_fields=lambda: ctx.auto_fields(rel_path, edit),
                               range_src=lambda: ctx.range_src(rel_path, edit),
                               luts=lambda: _lut_tables(ctx, edit),
-                              faces=lambda: ctx.portrait_faces(rel_path, edit))
+                              faces=lambda: ctx.portrait_faces(rel_path, edit),
+                              fills=lambda: ctx.fills_for(edit))
         if level not in PEAK_LEVELS:
             raise HTTPException(status_code=400, detail=f"unknown level: {level}")
         out = _ensure_peak(thumb, ctx.peaks_root, rel_path,
