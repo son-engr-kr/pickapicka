@@ -71,8 +71,10 @@ PACKS: dict[str, Pack] = {p.id: p for p in (
         detail="Draws what belongs in a heal: skin with its pores, an edge carried through. "
                "MI-GAN (ICCV 2023).",
         licence="MIT (code and weights)", folder=paths.MODEL_DIR,
-        files=(ModelFile("migan_pipeline_v2.onnx",
-                         "https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx",
+        # Mirrored unchanged from the authors' Hugging Face repository
+        # (andraniksargsyan/migan), so a fresh install does not hang on
+        # someone else's link.
+        files=(ModelFile("migan_pipeline_v2.onnx", RELEASE + "migan_pipeline_v2.onnx",
                          "6f1f3530a1a2324b19752018ce756088b07973cda8d7d890034ace5c8a48c40b", 28079181),)),
     Pack(
         id="genfill", title="Generative fill",
@@ -212,7 +214,8 @@ class Downloads:
             with self._lock:
                 job.state = "idle"
         except Exception as exc:     # shown to the person, next to a retry
-            traceback.print_exc()
+            if not job.cancel.is_set():
+                traceback.print_exc()   # a failure, not a cancel: keep its trace
             with self._lock:
                 job.state = "error"
                 job.error = "cancelled" if job.cancel.is_set() else _describe(exc)
