@@ -1828,6 +1828,15 @@ input[type="range"] { accent-color: var(--accent); }
 .repair-tools { display: flex; flex-wrap: wrap; gap: var(--s1); margin-bottom: var(--s2); }
 .repair-tools button.armed { background: var(--accent); border-color: var(--accent);
   color: var(--accent-ink); }
+.portrait-target { display: flex; flex-wrap: wrap; gap: 4px; }
+.portrait-target:empty { display: none; }
+.portrait-target button { min-width: 30px; padding: 3px 9px; font-size: var(--fs-xs); }
+.portrait-target button.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.portrait-target button.own:not(.active) { border-color: rgba(167, 139, 250, 0.9); }
+.portrait-target-row { display: flex; align-items: center; gap: var(--s2); margin-top: -6px; }
+.portrait-target-row .hsl-note { flex: 1; margin: 0; }
+.portrait-target-row .hsl-note:empty + button.hidden { display: none; }
+#portrait-target-reset.hidden { display: none; }
 .portrait-blemish-row { display: flex; align-items: center; gap: var(--s2); }
 .portrait-blemish-row button { flex: 1; }
 .portrait-blemish-row label { display: flex; align-items: center; gap: 4px;

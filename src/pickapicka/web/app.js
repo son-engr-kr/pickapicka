@@ -185,8 +185,7 @@ function mergeNeutralEdit(edit) {
   e.redeye = (edit && edit.redeye && (edit.redeye.corrections || []).length)
     ? { enabled: true, corrections: edit.redeye.corrections.map((c) => ({ ...c })) } : null;
   e.lens = (edit && edit.lens) ? { ...edit.lens } : null;
-  e.portrait = (edit && edit.portrait && PORTRAIT_KEYS.some((k) => edit.portrait[k]))
-    ? { ...edit.portrait } : null;
+  e.portrait = (edit && portraitSet(edit.portrait)) ? clonePortrait(edit.portrait) : null;
   e.transform = (edit && edit.transform) ? { ...edit.transform } : null;
   if (edit) for (const f of EDIT_FIELDS) if (edit[f.k] != null) e[f.k] = edit[f.k];
   // No edit yet: it will be made at the current process. An old edit keeps the
@@ -212,9 +211,7 @@ function editsEqual(a, b) {
   if (JSON.stringify(a.healing || null) !== JSON.stringify(b.healing || null)) return false;
   if (JSON.stringify(a.redeye || null) !== JSON.stringify(b.redeye || null)) return false;
   if (canonOptic(a.lens, LENS_DEFAULT) !== canonOptic(b.lens, LENS_DEFAULT)) return false;
-  for (const k of PORTRAIT_KEYS) {
-    if (((a.portrait && a.portrait[k]) || 0) !== ((b.portrait && b.portrait[k]) || 0)) return false;
-  }
+  if (canonPortrait(a.portrait) !== canonPortrait(b.portrait)) return false;
   if (canonOptic(a.transform, TRANSFORM_DEFAULT) !== canonOptic(b.transform, TRANSFORM_DEFAULT)) return false;
   return canonMasks(a.masks) === canonMasks(b.masks);
 }
@@ -2998,6 +2995,7 @@ function openEditModal(absIdx) {
   repairState.cloneSrc = null;
   portraitState.faces = null;
   portraitState.key = "";
+  portraitState.selected = null;
   $("#portrait-faces").textContent = "";
   if ($("#edit-portrait-group").open) setTimeout(loadPortraitFaces, 0);
   renderLookPanel();
@@ -4263,7 +4261,9 @@ function buildFilmFields() {
 // The faces come from the server (portrait.analyze on the corrected frame) and
 // are only fetched once the panel is opened, so a photo nobody retouches never
 // runs the face model.
-const portraitState = { faces: null, rel: null, key: "" };
+// `selected` is the index of the face whose own settings the sliders show,
+// or null for the panel's (every face without its own).
+const portraitState = { faces: null, rel: null, key: "", selected: null };
 // Mirrors portrait.DEFAULT_PORTRAIT, every one neutral at 0: the skin, eyes and
 // teeth are 0..100, the face's shape -100..100 (reshape.SHAPE_KEYS).
 const PORTRAIT_KEYS = ["smooth", "wrinkles", "dark_circles", "neck", "teeth", "eyes",
@@ -4291,16 +4291,104 @@ async function loadPortraitFaces() {
   drawOverlay();
 }
 
+// A face's own settings (portrait.py, faceparams.py): entries under
+// portrait.faces, each the centre of the face's box ("at") and its values,
+// all of them, in place of the panel's. Found by place, as the server finds
+// them: within half the face's width, the nearest.
+function portraitSet(p) {
+  return !!p && (PORTRAIT_KEYS.some((k) => p[k]) || (p.faces || []).length > 0);
+}
+function clonePortrait(p) {
+  const out = { ...p };
+  if (p.faces) out.faces = p.faces.map((f) => ({ ...f, at: f.at.slice() }));
+  return out;
+}
+function canonPortrait(p) {
+  if (!portraitSet(p)) return "";
+  const vals = (o) => PORTRAIT_KEYS.map((k) => o[k] || 0);
+  return JSON.stringify([vals(p), (p.faces || []).map((f) => [f.at, vals(f)])]);
+}
+function faceCentre(f) { return [f.box[0] + f.box[2] / 2, f.box[1] + f.box[3] / 2]; }
+function faceEntry(p, face) {
+  const W = editSession.natural.w || 1, H = editSession.natural.h || 1;
+  const [cx, cy] = faceCentre(face);
+  let best = null, bestD = Infinity;
+  for (const f of (p && p.faces) || []) {
+    const d = Math.hypot((f.at[0] - cx) * W, (f.at[1] - cy) * H);
+    if (d <= 0.5 * face.box[2] * W && d < bestD) { best = f; bestD = d; }
+  }
+  return best;
+}
+// What the sliders show and change: the selected face's own entry, or the
+// panel (also for a selected face that has none yet; changing a slider then
+// gives it one, starting from the panel's values).
+function portraitTarget() {
+  const p = editSession.edit.portrait || {};
+  const face = portraitState.selected != null && portraitState.faces
+    ? portraitState.faces[portraitState.selected] : null;
+  return { p, face, entry: face ? faceEntry(p, face) : null };
+}
+
 function portraitSummary() {
   const p = editSession.edit.portrait;
   const on = PORTRAIT_KEYS.filter((k) => p && p[k]).map((k) => PORTRAIT_SHORT[k]);
-  return on.length ? `· ${on.join(", ")}` : "";
+  const own = (p && p.faces && p.faces.length) || 0;
+  const parts = [...(on.length ? [on.join(", ")] : []),
+                 ...(own ? [`${own} face${own === 1 ? "" : "s"} on their own`] : [])];
+  return parts.length ? `· ${parts.join(" · ")}` : "";
+}
+
+function renderPortraitTarget() {
+  const faces = portraitState.faces || [];
+  if (portraitState.selected != null && portraitState.selected >= faces.length) portraitState.selected = null;
+  const { face, entry } = portraitTarget();
+  const sel = portraitState.selected;
+  $("#portrait-target").innerHTML = faces.length < 1 ? "" :
+    `<button type="button" data-face="all" class="${sel == null ? "active" : ""}">All faces</button>`
+    + faces.map((f, i) => {
+      const own = faceEntry(editSession.edit.portrait, f) ? " own" : "";
+      return `<button type="button" data-face="${i}" class="${sel === i ? "active" : ""}${own}"`
+        + ` title="${own ? "Has its own settings" : "Follows All faces"}">${i + 1}</button>`;
+    }).join("");
+  const note = $("#portrait-target-note");
+  if (face == null) {
+    note.textContent = faces.length > 1
+      ? "For every face without its own settings. Click a face on the photo, or a number, to set it apart." : "";
+    $("#portrait-target-reset").classList.add("hidden");
+  } else if (entry) {
+    note.textContent = `Face ${sel + 1} has its own settings; All faces leaves it alone.`;
+    $("#portrait-target-reset").classList.remove("hidden");
+  } else {
+    note.textContent = `Face ${sel + 1} follows All faces. Moving a slider gives it its own settings.`;
+    $("#portrait-target-reset").classList.add("hidden");
+  }
+}
+
+function selectPortraitFace(i) {
+  portraitState.selected = i;
+  renderPortraitPanel();
+  drawOverlay();
+}
+
+// A click on a face's box while the panel is open selects that face. Faces
+// overlap rarely; the smallest box under the click wins.
+function portraitFaceAt(f) {
+  if (!$("#edit-portrait-group").open || !portraitState.faces) return -1;
+  let hit = -1, area = Infinity;
+  portraitState.faces.forEach((face, i) => {
+    const [x, y, w, h] = face.box;
+    if (f.x >= x && f.x <= x + w && f.y >= y && f.y <= y + h && w * h < area) { hit = i; area = w * h; }
+  });
+  return hit;
 }
 
 function renderPortraitPanel() {
   if (!$("#portrait-smooth") || !editSession.edit) return;
+  renderPortraitTarget();
+  const { p, entry } = portraitTarget();
+  const src = entry || p;
   for (const k of PORTRAIT_KEYS) {
-    const v = (editSession.edit.portrait && editSession.edit.portrait[k]) || 0;
+    const v = src[k] || 0;
     $(`#portrait-${k}`).value = v;
     $(`#portrait-${k}-val`).textContent = fmtSlider($(`#portrait-${k}`), v);
   }
@@ -4351,14 +4439,27 @@ async function removeBlemishes() {
 
 function drawPortraitFaces(ctx, mr) {
   if (!$("#edit-portrait-group").open || !portraitState.faces) return;
+  const many = portraitState.faces.length > 1;
   ctx.save();
-  ctx.strokeStyle = "rgba(255,255,255,0.7)";
-  ctx.setLineDash([6, 5]);
-  ctx.lineWidth = 1.2;
-  for (const f of portraitState.faces) {
+  ctx.font = "600 12px system-ui, sans-serif";
+  portraitState.faces.forEach((f, i) => {
     const [x, y, w, h] = f.box;
-    ctx.strokeRect(fx2px(mr, x), fy2px(mr, y), w * mr.w, h * mr.h);
-  }
+    const px = fx2px(mr, x), py = fy2px(mr, y);
+    const selected = portraitState.selected === i;
+    const own = !!faceEntry(editSession.edit.portrait, f);
+    ctx.setLineDash(selected ? [] : [6, 5]);
+    ctx.lineWidth = selected ? 2 : 1.2;
+    ctx.strokeStyle = selected ? "#7aa7ff" : own ? "rgba(167,139,250,0.9)" : "rgba(255,255,255,0.7)";
+    ctx.strokeRect(px, py, w * mr.w, h * mr.h);
+    if (many || own || selected) {
+      const label = `${i + 1}${own ? " · own" : ""}`;
+      const tw = ctx.measureText(label).width + 10;
+      ctx.fillStyle = selected ? "#7aa7ff" : "rgba(0,0,0,0.6)";
+      ctx.fillRect(px, py - 18, tw, 18);
+      ctx.fillStyle = selected ? "#0b1020" : "#fff";
+      ctx.fillText(label, px + 5, py - 5);
+    }
+  });
   ctx.restore();
 }
 
@@ -4368,11 +4469,43 @@ function bindPortraitPanel() {
     drawOverlay();
   });
   $("#portrait-blemishes").addEventListener("click", removeBlemishes);
+  $("#portrait-target").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-face]");
+    if (b) selectPortraitFace(b.dataset.face === "all" ? null : Number(b.dataset.face));
+  });
+  $("#portrait-target-reset").addEventListener("click", () => {
+    const { p, entry } = portraitTarget();
+    if (!entry) return;
+    const next = clonePortrait(p);
+    next.faces = next.faces.filter((f) => !(f.at[0] === entry.at[0] && f.at[1] === entry.at[1]));
+    if (!next.faces.length) delete next.faces;
+    editSession.edit.portrait = portraitSet(next) ? next : null;
+    renderPortraitPanel();
+    drawOverlay();
+    setEditDirty();
+    fetchEditPreview(true);
+  });
   for (const k of PORTRAIT_KEYS) {
     $(`#portrait-${k}`).addEventListener("input", (e) => {
       const v = parseFloat(e.target.value);
-      const next = { ...(editSession.edit.portrait || {}), [k]: v };
-      editSession.edit.portrait = PORTRAIT_KEYS.some((x) => next[x]) ? next : null;
+      const next = editSession.edit.portrait ? clonePortrait(editSession.edit.portrait) : {};
+      const face = portraitState.selected != null && portraitState.faces
+        ? portraitState.faces[portraitState.selected] : null;
+      if (face) {
+        let entry = faceEntry(next, face);
+        if (!entry) {
+          // Its own settings start from what it had: the panel's.
+          entry = { at: faceCentre(face) };
+          for (const x of PORTRAIT_KEYS) if (next[x]) entry[x] = next[x];
+          next.faces = [...(next.faces || []), entry];
+          renderPortraitTarget();
+        }
+        entry[k] = v;
+      } else {
+        next[k] = v;
+      }
+      editSession.edit.portrait = portraitSet(next) ? next : null;
+      if (face) { renderPortraitTarget(); drawOverlay(); }
       $(`#portrait-${k}-val`).textContent = fmtSlider(e.target, v);
       $("#portrait-summary-state").textContent = portraitSummary();
       setEditDirty();
@@ -6508,6 +6641,14 @@ function overlayDown(e) {
   if (isRepairTool(editSession.tool) && !panButton) {
     repairDown(e, f0);
     return;
+  }
+  if (!editSession.tool && !panButton) {
+    const face = portraitFaceAt(f0);
+    if (face >= 0) {
+      selectPortraitFace(face);
+      e.preventDefault();
+      return;
+    }
   }
   if (editSession.tool === "crop" && !panButton) {
     // A crop box is measured against what is on screen, not against the original

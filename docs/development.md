@@ -34,6 +34,7 @@ uv run python tests/test_exporting.py    # export names, sizes, formats, copying
 uv run python tests/test_portrait.py     # skin smoothing
 uv run python tests/test_portrait_lines.py  # wrinkles, neck lines, dark circles
 uv run python tests/test_reshape.py      # face shape warps
+uv run pytest tests/test_faceparams.py   # a face's own portrait settings
 uv run pytest tests/test_aifill.py       # AI fill; the model checks skip until it is downloaded
 uv run pytest tests/test_genfill.py      # generative fill; the model check skips until it is downloaded
 uv run pytest tests/test_modelstore.py   # downloading, resuming, deleting optional models

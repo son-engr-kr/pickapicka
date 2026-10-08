@@ -758,7 +758,11 @@ def merge_additive(base: dict[str, Any] | None,
     if over["lens"] is not None:
         out["lens"] = dict(over["lens"])
     if over["portrait"] is not None:
-        out["portrait"] = dict(over["portrait"])
+        # The panel comes over; a face's own settings stay with the photo
+        # they were made on (they are tied to where its faces are).
+        own = (out["portrait"] or {}).get("faces")
+        out["portrait"] = portrait_mod.normalize(
+            {**(portrait_mod.without_faces(over["portrait"]) or {}), **({"faces": own} if own else {})})
     if over["transform"] is not None:
         out["transform"] = dict(over["transform"])
     # Band by band, for the same reason the sliders merge one at a time: a

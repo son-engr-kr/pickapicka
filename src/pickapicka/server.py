@@ -1472,16 +1472,21 @@ def _keep_lut(ctx: "AppContext", edit: dict[str, Any] | None) -> None:
         ctx.data.setdefault("luts", {}).update(tables)
 
 
-def _keep_own_fills(edit: dict[str, Any], own: dict[str, Any] | None) -> dict[str, Any]:
-    """`edit` (normalized) going onto a photo whose edit is `own`, with the AI
-    heals that came with it taken out and the photo's own kept. A fill is one
-    photo's pixels: on another photo it would paste a piece of the wrong
-    picture, and replacing a photo's grade should not throw away work that
-    was generated for it."""
+def _keep_own(edit: dict[str, Any], own: dict[str, Any] | None) -> dict[str, Any]:
+    """`edit` (normalized) going onto a photo whose edit is `own`, with what
+    belongs to the photo it came from taken out and the target's own kept:
+    its AI heals (a fill is one photo's pixels; on another it would paste a
+    piece of the wrong picture) and its faces' own portrait settings (tied to
+    where that photo's faces are). Replacing a photo's grade should not throw
+    away work made for that photo."""
+    mine = editing.normalize(own)
     ops = list((healing_mod.without_fills(edit["healing"]) or {}).get("ops", []))
-    mine = healing_mod.normalize(editing.normalize(own)["healing"]) or {"ops": []}
-    ops += [op for op in mine["ops"] if op["method"] == healing_mod.AI_METHOD]
-    return {**edit, "healing": healing_mod.normalize({"ops": ops})}
+    ops += [op for op in (healing_mod.normalize(mine["healing"]) or {"ops": []})["ops"]
+            if op["method"] == healing_mod.AI_METHOD]
+    panel = portrait_mod.without_faces(edit["portrait"]) or {}
+    faces = (mine["portrait"] or {}).get("faces")
+    return {**edit, "healing": healing_mod.normalize({"ops": ops}),
+            "portrait": portrait_mod.normalize({**panel, **({"faces": faces} if faces else {})})}
 
 
 def _apply_edit_to_photo(photo: dict[str, Any], edit: dict[str, Any] | None) -> None:
@@ -3441,7 +3446,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             if payload.mode == "add":
                 edit = editing.merge_additive(photo.get("edit"), edit)
             else:
-                edit = _keep_own_fills(editing.normalize(edit), photo.get("edit"))
+                edit = _keep_own(editing.normalize(edit), photo.get("edit"))
             _keep_lut(ctx, edit)
             _apply_edit_to_photo(photo, edit)
         with ctx.save_lock:
@@ -3559,6 +3564,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         edit = editing.normalize(payload.edit)
         # A preset goes onto other photos; an AI fill is this one's pixels.
         edit["healing"] = healing_mod.without_fills(edit["healing"])
+        edit["portrait"] = portrait_mod.without_faces(edit["portrait"])
         preset = userstate.save_preset(name, edit)
         return {"preset": preset, "presets": _all_presets()}
 

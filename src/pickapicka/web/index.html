@@ -1345,8 +1345,14 @@
             <div class="edit-group-body">
               <p class="hsl-note">
                 Applied to every face found, and sized to each, so a headshot and
-                a group photo get the same look.
+                a group photo get the same look. A face can have settings of its own.
               </p>
+              <div class="portrait-target" id="portrait-target" role="group" aria-label="Which faces the sliders set"></div>
+              <div class="portrait-target-row">
+                <p class="hsl-note" id="portrait-target-note"></p>
+                <button type="button" id="portrait-target-reset" class="quiet hidden"
+                        title="Take this face's own settings away, so it follows All faces again">Same as all faces</button>
+              </div>
               <span class="edit-subhead">Skin</span>
               <label class="look-row" title="Even out blotches and fine lines; the pores stay, and the eyes, brows and mouth are left alone">
                 <span class="look-name">Smooth skin</span>

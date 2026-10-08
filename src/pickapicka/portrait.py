@@ -151,6 +151,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from . import faceparams
 from .reshape import CONTOUR_L, CONTOUR_R, EYE_RING_L, EYE_RING_R, SHAPE_KEYS, SHAPE_RANGE
 from .sliders import tenth
 
@@ -243,33 +244,71 @@ _CONTEXT = 0.6             # crop margin for segmentation, fraction of the face 
 _SKIN_EDGE = 384           # the stored skin alpha's long edge
 
 
-def normalize(raw: Any) -> dict[str, Any] | None:
-    """Clamp, or None when nothing would change (the house contract)."""
-    if not isinstance(raw, dict):
-        return None
+def _values(raw: dict[str, Any], always: tuple[str, ...]) -> dict[str, Any]:
     out = {}
     for key, (lo, hi) in _RANGES.items():
         try:
             val = tenth(min(hi, max(lo, float(raw.get(key, 0) or 0))))
         except (TypeError, ValueError):
             val = 0
-        if val or key in _ALWAYS:
+        if val or key in always:
             out[key] = val
+    return out
+
+
+def _at(raw: Any) -> list[float] | None:
+    if not (isinstance(raw, (list, tuple)) and len(raw) == 2):
+        return None
+    try:
+        x, y = float(raw[0]), float(raw[1])
+    except (TypeError, ValueError):
+        return None
+    return [round(x, 6), round(y, 6)] if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0 else None
+
+
+def normalize(raw: Any) -> dict[str, Any] | None:
+    """Clamp, or None when nothing would change (the house contract).
+
+    A face's own settings (see `faceparams`) are kept as entries under
+    "faces", each with its place and its non-zero values; one with no values
+    at all still means something (that face gets nothing the panel gives)."""
+    if not isinstance(raw, dict):
+        return None
+    out = _values(raw, _ALWAYS)
+    faces = []
+    for item in (raw.get("faces") or [])[:faceparams.FACES_MAX]:
+        at = _at(item.get("at")) if isinstance(item, dict) else None
+        if at is not None:
+            faces.append({"at": at, **_values(item, ())})
+    if faces:
+        out["faces"] = faces
     return None if is_neutral(out) else out
 
 
 def is_neutral(params: dict[str, Any] | None) -> bool:
-    return not params or all(not params.get(k) for k in DEFAULT_PORTRAIT)
+    return not faceparams.anything(params, DEFAULT_PORTRAIT)
 
 
 def tone_is_neutral(params: dict[str, Any] | None) -> bool:
-    """Nothing for `apply_portrait` to do (the shape may still be set)."""
-    return not params or all(not params.get(k) for k in TONE_KEYS)
+    """Nothing for `apply_portrait` to do on any face (the shape may still be set)."""
+    return not faceparams.anything(params, TONE_KEYS)
 
 
 def tone_params(params: dict[str, Any] | None) -> dict[str, Any]:
     """The part of a panel `apply_portrait` reads: what its result depends on."""
-    return {k: (params or {}).get(k, 0) for k in TONE_KEYS}
+    p = params or {}
+    out: dict[str, Any] = {k: p.get(k, 0) for k in TONE_KEYS}
+    if p.get("faces"):
+        out["faces"] = [{"at": e["at"], **{k: e.get(k, 0) for k in TONE_KEYS}} for e in p["faces"]]
+    return out
+
+
+def without_faces(params: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The panel without its faces' own settings, for an edit going to
+    another photo: they are tied to where this photo's faces are."""
+    if not params:
+        return None
+    return normalize({k: v for k, v in params.items() if k != "faces"})
 
 
 # ----- analysis (the caller's job: heavy, cache it per photo) --------------
@@ -504,9 +543,10 @@ def padding(params: dict[str, Any] | None, faces: list[dict[str, Any]] | None,
     reads what the one before it finished, so the reaches of those in use add."""
     if tone_is_neutral(params) or not faces:
         return 0.0
-    p = {**DEFAULT_PORTRAIT, **params}
     worst = 0.0
     for face in faces:
+        # Only the long edge is known here; it stands in for the height too.
+        p = {**DEFAULT_PORTRAIT, **faceparams.for_face(params, face, frame_w, frame_w)}
         face_px = face["box"][2] * frame_w
         reach = 0.0
         lines = [_LINES[k] for k in _LINES if p[k]]
@@ -608,12 +648,14 @@ def apply_portrait(img: np.ndarray, params: dict[str, Any] | None,
     assert img.dtype == np.float32, "apply_portrait works in float32"
     if tone_is_neutral(params) or not faces:
         return img
-    p = {**DEFAULT_PORTRAIT, **params}
-    amount = p["smooth"] / 100.0
     frame_w, frame_h, ox, oy = _frame(img.shape, roi)
     h, w = img.shape[:2]
     out = img
     for face in faces:
+        p = {**DEFAULT_PORTRAIT, **faceparams.for_face(params, face, frame_w, frame_h)}
+        if tone_is_neutral(p):
+            continue            # this face's own settings leave its skin alone
+        amount = p["smooth"] / 100.0
         face_px = face["box"][2] * frame_w
         if face_px < 8:
             continue            # a face a few pixels wide on a thumbnail: nothing to smooth

@@ -100,6 +100,8 @@ from typing import Any
 import cv2
 import numpy as np
 
+from . import faceparams
+
 SHAPE_KEYS = ("eye_size", "face_width", "jaw_width", "chin_length", "nose_width", "mouth_width")
 SHAPE_RANGE = (-100, 100)
 
@@ -144,7 +146,8 @@ _SUBPIXEL = 32             # cv2.INTER_TAB_SIZE: the steps remap resolves a pixe
 
 
 def is_active(params: dict[str, Any] | None) -> bool:
-    return bool(params) and any(params.get(k) for k in SHAPE_KEYS)
+    """Whether any face, by the panel or by its own settings, is reshaped."""
+    return faceparams.anything(params, SHAPE_KEYS)
 
 
 # ----- planning: landmarks and sliders to primitive warps -------------------
@@ -342,7 +345,7 @@ def apply_reshape(img: np.ndarray, params: dict[str, Any] | None,
     for face in faces:
         if face["box"][2] * frame_w < 16:
             continue            # a few pixels on a thumbnail: nothing to see
-        moves, scalings = plan(face, params, frame_w, frame_h)
+        moves, scalings = plan(face, faceparams.for_face(params, face, frame_w, frame_h), frame_w, frame_h)
         boxes = _support(moves, scalings)
         if boxes:
             per_face.append((moves, scalings, (min(b[0] for b in boxes), min(b[1] for b in boxes),
@@ -394,7 +397,8 @@ def padding(params: dict[str, Any] | None, faces: list[dict[str, Any]] | None,
         return 0.0
     worst = 0.0
     for face in faces:
-        moves, scalings = plan(face, params, frame_long, frame_long)
+        moves, scalings = plan(face, faceparams.for_face(params, face, frame_long, frame_long),
+                               frame_long, frame_long)
         boxes = _support(moves, scalings)
         if not boxes:
             continue

@@ -229,6 +229,21 @@ Two stages that fix the captured image rather than interpret it, and they run
 - Faces are found once per photo when the panel is opened, and marked on the
   photo while it is open. A face under about 4% of the frame is left alone.
 
+### One face at a time
+
+- The sliders set **All faces** until a face is picked: click it on the photo,
+  or its number at the top of the panel. A picked face follows All faces until
+  a slider is moved for it; from then on it has **its own settings**, all of
+  them, starting from the ones it had, and All faces leaves it alone. So one
+  person in a group can be left out of a slimming by setting their own Face
+  width back to 0. **Same as all faces** takes a face's own settings away.
+- A face's own settings are tied to where the face is, not to its number,
+  since another analysis can list the faces in a different order: they belong
+  to the face whose centre is within half its width of where it was.
+- They stay with the photo. A preset or **Apply to more…**
+  carries the All faces settings to another photo and leaves the faces' own
+  behind, and the photo they land on keeps the ones it already had.
+
 ## Automatic masks
 
 - **Six one-click masks** — Subject, Background, Skin, Face, Hair, Clothes — from

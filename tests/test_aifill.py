@@ -177,13 +177,13 @@ def test_a_preset_or_an_add_never_carries_a_fill(monkeypatch) -> None:
 
 
 def test_replacing_an_edit_keeps_the_photos_own_fills(monkeypatch) -> None:
-    from pickapicka.server import _keep_own_fills
+    from pickapicka.server import _keep_own
     frame = _frame()
     mine, _ = _made(frame, monkeypatch, value=(1, 2, 3))
     theirs, _ = _made(frame, monkeypatch, value=(9, 9, 9))
     assert mine["fill"]["id"] != theirs["fill"]["id"]
     incoming = editing.normalize({"exposure": 1.0, "healing": {"ops": [theirs, _stroke()]}})
-    out = _keep_own_fills(incoming, {"healing": {"ops": [mine]}})
+    out = _keep_own(incoming, {"healing": {"ops": [mine]}})
     ids = healing.fill_ids(out["healing"])
     assert ids == [mine["fill"]["id"]] and out["exposure"] == 1.0
     assert len(out["healing"]["ops"]) == 2
