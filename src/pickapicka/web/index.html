@@ -1347,6 +1347,9 @@
                 Applied to every face found, and sized to each, so a headshot and
                 a group photo get the same look. A face can have settings of its own.
               </p>
+              <label class="mask-show portrait-show" title="Outline the faces found on the photo (Shift+\)">
+                <input type="checkbox" id="portrait-show" checked /> show faces
+              </label>
               <div class="portrait-target" id="portrait-target" role="group" aria-label="Which faces the sliders set"></div>
               <div class="portrait-target-row">
                 <p class="hsl-note" id="portrait-target-note"></p>
@@ -1427,6 +1430,9 @@
                 <button type="button" data-repair-tool="gen" title="Generative fill: a diffusion model for larger regions where AI fill runs out (an eye bag, crow&apos;s feet, glasses across skin). About 20 seconds a stroke; an opt-in download">Generative</button>
                 <button type="button" data-repair-tool="clone" title="Alt-click where to copy from, then paint">Clone</button>
               </div>
+              <label class="mask-show repair-show" title="Outline every spot, heal, clone and eye fix on the photo (Shift+\)">
+                <input type="checkbox" id="repair-show" checked /> show marks
+              </label>
               <label class="look-row"><span class="look-name">Size</span>
                 <input type="range" id="repair-size" min="1" max="150" step="1" />
                 <span class="look-val" id="repair-size-val"></span></label>

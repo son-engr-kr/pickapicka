@@ -2750,7 +2750,7 @@ const editSession = {
   objUrl: null, origUrl: null, timer: null, comparing: false, built: false,
   // Local adjustments: which mask the sliders drive (-1 = global), which create
   // tool is armed, the brush settings, and the in-flight pointer drag.
-  activeMask: -1, tool: null, showMask: false, drag: null, hover: null,
+  activeMask: -1, tool: null, showMask: false, showRepairs: true, showFaces: true, drag: null, hover: null,
   brush: { size: 60, erase: false },
   // Zoom: 0 = fit the whole frame (rendered from the cached preview), anything
   // else = that many CSS pixels per original image pixel, rendered from the
@@ -4373,7 +4373,8 @@ function selectPortraitFace(i) {
 // A click on a face's box while the panel is open selects that face. Faces
 // overlap rarely; the smallest box under the click wins.
 function portraitFaceAt(f) {
-  if (!$("#edit-portrait-group").open || !portraitState.faces) return -1;
+  // A box that is not drawn is not a target either: clicks go to the photo.
+  if (!$("#edit-portrait-group").open || !portraitState.faces || !editSession.showFaces) return -1;
   let hit = -1, area = Infinity;
   portraitState.faces.forEach((face, i) => {
     const [x, y, w, h] = face.box;
@@ -4438,7 +4439,7 @@ async function removeBlemishes() {
 }
 
 function drawPortraitFaces(ctx, mr) {
-  if (!$("#edit-portrait-group").open || !portraitState.faces) return;
+  if (!$("#edit-portrait-group").open || !portraitState.faces || !editSession.showFaces) return;
   const many = portraitState.faces.length > 1;
   ctx.save();
   ctx.font = "600 12px system-ui, sans-serif";
@@ -5077,7 +5078,12 @@ function drawRepairs(ctx, mr) {
   ctx.save();
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  for (const op of healOps()) {
+  // With the marks switched off only the stroke being drawn stays up, so the
+  // repair can be judged on the photo without its own outlines in the way.
+  const d = editSession.drag;
+  const live = d && d.kind === "repair-paint" ? d.op : null;
+  const shown = editSession.showRepairs ? healOps() : healOps().filter((op) => op === live);
+  for (const op of shown) {
     const on = op.enabled !== false;
     const rad = op.radius * mr.w;
     // A translucent band as wide as the brush, then a thin line down its middle.
@@ -5107,14 +5113,13 @@ function drawRepairs(ctx, mr) {
       ctx.setLineDash([]);
     }
   }
-  for (const c of eyeFixes()) {
+  for (const c of editSession.showRepairs ? eyeFixes() : []) {
     ctx.lineWidth = 1.4;
     ctx.strokeStyle = c.kind === "pet" ? "rgba(255,209,102,0.9)" : "rgba(255,120,120,0.9)";
     ctx.beginPath();
     ctx.arc(px(c.cx), py(c.cy), c.r * mr.w, 0, Math.PI * 2);
     ctx.stroke();
   }
-  const d = editSession.drag;
   const filling = [...pendingFills, ...(d && d.kind === "repair-fill" ? [d.op] : [])];
   for (const op of filling) {
     ctx.lineWidth = op.radius * mr.w * 2;
@@ -7026,6 +7031,14 @@ function bindMaskUi() {
     previewDuringDrag();
   });
   $("#crop-tilt").addEventListener("change", () => fetchEditPreview(true));
+  $("#portrait-show").addEventListener("change", (e) => {
+    editSession.showFaces = e.target.checked;
+    drawOverlay();
+  });
+  $("#repair-show").addEventListener("change", (e) => {
+    editSession.showRepairs = e.target.checked;
+    drawOverlay();
+  });
   $("#mask-show").addEventListener("change", (e) => {
     editSession.showMask = e.target.checked;
     drawOverlay();
@@ -8008,6 +8021,13 @@ function bindKeys() {
       if (k === "b" || k === "B") { addMask("brush"); e.preventDefault(); return; }
       if (k === "\\") {
         $("#mask-show").checked = editSession.showMask = !editSession.showMask;
+        drawOverlay(); e.preventDefault(); return;
+      }
+      if (k === "|") {
+        // One key for every mark on the photo: any up hides them all.
+        const show = !(editSession.showRepairs || editSession.showFaces);
+        $("#repair-show").checked = editSession.showRepairs = show;
+        $("#portrait-show").checked = editSession.showFaces = show;
         drawOverlay(); e.preventDefault(); return;
       }
       if ((k === "Delete" || k === "Backspace") && editSession.activeMask >= 0) {
@@ -10926,6 +10946,7 @@ const KEYMAP = {
       { k: ["B"], label: "Add a brush mask", bar: "Brush" },
       { k: ["[", "]"], label: "Brush size" },
       { k: ["\\"], label: "Show the mask" },
+      { k: ["⇧", "\\"], label: "Show the heal and face marks" },
       { k: ["Delete"], label: "Delete the selected mask" },
     ]},
   ],

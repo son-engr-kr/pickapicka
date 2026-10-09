@@ -1826,6 +1826,7 @@ input[type="range"] { accent-color: var(--accent); }
 
 /* ----- heal & red eye panel ----- */
 .repair-tools { display: flex; flex-wrap: wrap; gap: var(--s1); margin-bottom: var(--s2); }
+.repair-show, .portrait-show { margin-bottom: var(--s2); }
 .repair-tools button.armed { background: var(--accent); border-color: var(--accent);
   color: var(--accent-ink); }
 .portrait-target { display: flex; flex-wrap: wrap; gap: 4px; }
