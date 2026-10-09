@@ -297,6 +297,9 @@ class FillPayload(BaseModel):
     # A variation: generative fill's noise from this seed instead of the
     # stroke's own. AI fill has no noise and ignores it.
     seed: int | None = None
+    # A name the editor picks, to ask /api/edit/fill/progress how far along
+    # this request is while it waits for the answer.
+    job: str | None = Field(default=None, max_length=64)
 
 
 class ModelDownloadPayload(BaseModel):
@@ -808,8 +811,9 @@ class AppContext:
         Returns None when no automatic mask is active, so a photo without one
         never pays for the model, not even to check whether it is downloaded.
         """
-        groups = {m["group"] for m in editing.normalize(edit)["masks"]
-                  if m["type"] == "auto" and editing.mask_is_active(m)}
+        # A mask's own shape and every part stacked on it may each read a group.
+        groups = {g for m in editing.normalize(edit)["masks"]
+                  if editing.mask_is_active(m) for g in editing.mask_groups(m)}
         if not groups:
             return None
         # The corrected frame, since that is the frame the masks sit on; the
@@ -877,8 +881,7 @@ class AppContext:
         None when no mask asks for it, so a photo without a range refinement
         never pays for a decode it does not need.
         """
-        wanted = any(m["range_luma"] is not None or m["range_color"] is not None
-                     for m in editing.normalize(edit)["masks"]
+        wanted = any(editing.mask_reads_ranges(m) for m in editing.normalize(edit)["masks"]
                      if editing.mask_is_active(m))
         return self.get_corrected_base(rel_path, edit) if wanted else None
 
@@ -1490,10 +1493,12 @@ def _keep_own(edit: dict[str, Any], own: dict[str, Any] | None) -> dict[str, Any
 
 
 def _apply_edit_to_photo(photo: dict[str, Any], edit: dict[str, Any] | None) -> None:
-    """Store a normalized edit on a photo dict, or drop it when neutral so
-    unedited photos stay small in the db and keep their plain thumbnail."""
+    """Store a normalized edit on a photo dict, or drop it when there is nothing
+    in it, so unedited photos stay small in the db. A mask with no effect yet is
+    kept (see `editing.is_empty`); its thumbnail stays the plain one all the
+    same, since `edit_hash` goes by the pixels."""
     norm = editing.normalize(edit)
-    if editing.is_neutral(norm):
+    if editing.is_empty(norm):
         photo.pop("edit", None)
         photo.pop("edited_at", None)
     else:
@@ -3352,6 +3357,23 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             genfill_mod.release() if pack_id == "genfill" else aifill_mod.release()
         return downloads.status(pack_id)
 
+    # What each running fill with a job name is doing, for the progress bar.
+    # A generative fill takes 15 to 22 seconds, and a stroke on the photo that
+    # just sits there reads as nothing happening.
+    fill_jobs: dict[str, dict[str, Any]] = {}
+    fill_jobs_lock = threading.Lock()
+
+    @app.get("/api/edit/fill/progress")
+    def fill_progress(job: str) -> dict[str, Any]:
+        """How far along a named fill is: its stage, the fraction done and the
+        fraction done once that stage ends. `running` is false once it has
+        answered, or for a name never seen."""
+        with fill_jobs_lock:
+            got = fill_jobs.get(job)
+            if got is None:
+                return {"running": False}
+            return {"running": True, **got}
+
     @app.post("/api/edit/fill")
     def ai_fill(payload: FillPayload) -> dict[str, Any]:
         """Make the patches for AI heals and keep them beside the project.
@@ -3366,29 +3388,48 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         if not modelstore.usable(payload.model):
             raise HTTPException(status_code=409, detail=f"{modelstore.PACKS[payload.model].title} "
                                                         "is not downloaded or is switched off")
-        if payload.model == "aifill":
-            make = aifill_mod.make_fill
-        else:
-            def make(frame, op):
-                return genfill_mod.make_fill(frame, op, seed=payload.seed)
         ops = [healing_mod.normalize_op({**raw, "method": "ns", "fill": None}) for raw in payload.ops]
         if not ops or any(op is None or op["kind"] not in ("heal", "spot") for op in ops):
             raise HTTPException(status_code=400, detail="an AI fill is a heal or a spot")
-        full = ctx.get_corrected_full(payload.rel_path, payload.edit)
-        assert ctx.fills_root is not None
-        made = []
-        for op in ops:
-            patch, box = make(full, op)
-            fid = aifill_mod.fill_id(patch, box)
-            dst = ctx.fills_root / f"{fid}.png"
-            if not dst.is_file():
-                with _atomic_write(dst) as tmp:
-                    imfile.imwrite(tmp, cv2.cvtColor(patch, cv2.COLOR_RGB2BGR))
-            made.append({**op, "method": healing_mod.AI_METHOD,
-                         "fill": {"id": fid, "box": box, "model": payload.model}})
-        if payload.model == "genfill" and not modelstore.keep_loaded("genfill"):
-            genfill_mod.release()       # give its gigabytes back until the next one
-        return {"ops": made}
+        job = payload.job
+        if job is not None:
+            with fill_jobs_lock:
+                assert job not in fill_jobs, f"fill job {job!r} is already running"
+                fill_jobs[job] = {"stage": "preparing the photo", "fraction": 0.0, "until": 0.0}
+
+        def report(k: int):
+            """Progress for the k-th of the request's strokes, as a share of all of them."""
+            def on(stage: str, done: float, until: float) -> None:
+                if job is None:
+                    return
+                with fill_jobs_lock:
+                    fill_jobs[job].update(stage=stage, fraction=(k + done) / len(ops),
+                                          until=(k + until) / len(ops))
+            return on
+
+        try:
+            full = ctx.get_corrected_full(payload.rel_path, payload.edit)
+            assert ctx.fills_root is not None
+            made = []
+            for k, op in enumerate(ops):
+                if payload.model == "aifill":
+                    patch, box = aifill_mod.make_fill(full, op)
+                else:
+                    patch, box = genfill_mod.make_fill(full, op, seed=payload.seed, progress=report(k))
+                fid = aifill_mod.fill_id(patch, box)
+                dst = ctx.fills_root / f"{fid}.png"
+                if not dst.is_file():
+                    with _atomic_write(dst) as tmp:
+                        imfile.imwrite(tmp, cv2.cvtColor(patch, cv2.COLOR_RGB2BGR))
+                made.append({**op, "method": healing_mod.AI_METHOD,
+                             "fill": {"id": fid, "box": box, "model": payload.model}})
+            if payload.model == "genfill" and not modelstore.keep_loaded("genfill"):
+                genfill_mod.release()       # give its gigabytes back until the next one
+            return {"ops": made}
+        finally:
+            if job is not None:
+                with fill_jobs_lock:
+                    fill_jobs.pop(job, None)
 
     @app.post("/api/edit/upright")
     def upright(payload: UprightPayload) -> dict[str, Any]:

@@ -1224,6 +1224,240 @@ def test_a_refinement_after_another_mask_selects_from_the_frame() -> None:
     assert both[:, :24].mean() > 45, "the dark band was not selected"
 
 
+# ----- stacked parts --------------------------------------------------------
+
+def _disc(cx: float, cy: float, r: float, **kw) -> dict:
+    """A hard-edged circle on a 2:3 frame (ry follows the aspect), so which
+    pixels a stack selects can be read off directly."""
+    return {"type": "radial", "cx": cx, "cy": cy, "rx": r, "ry": r * 1.5,
+            "feather": 0, **kw}
+
+
+def _part(op: str, shape: dict, **kw) -> dict:
+    return {"op": op, **shape, **kw}
+
+
+def _stack(base: dict, *parts: dict, **kw) -> dict:
+    return {**base, "adj": {"exposure": 1.0}, "parts": list(parts), **kw}
+
+
+def _lit(out: np.ndarray, y: int, x: int) -> bool:
+    return bool(out[y, x].mean() > 130)
+
+
+def test_parts_normalize_and_unusable_ones_are_dropped() -> None:
+    m = editing.normalize_mask(_stack(
+        _disc(0.3, 0.5, 0.1),
+        _part("add", _disc(0.7, 0.5, 0.1)),
+        _part("xor", _disc(0.5, 0.5, 0.1)),                       # no such op
+        {"op": "add", "type": "nope"},                            # not a part type
+        {"op": "add", "type": "range", "range_luma": {"lo": 0, "hi": 100}},  # every tone
+        _part("subtract", {"type": "brush", "strokes": []}),      # nothing painted yet
+        _part("intersect", {"type": "auto", "group": "hat"}),     # no such group
+        "junk"))
+    assert m is not None, "an unusable part must not take its mask with it"
+    assert [(p["op"], p["type"]) for p in m["parts"]] == [("add", "radial")]
+    assert m["parts"][0]["feather"] == 0 and m["parts"][0]["invert"] is False
+    many = editing.normalize_mask(_stack(_disc(0.5, 0.5, 0.1),
+                                         *[_part("add", _disc(0.5, 0.5, 0.05))] * 20))
+    assert len(many["parts"]) == editing.PART_MAX
+    assert editing.normalize_mask({"type": "radial"})["parts"] == []
+    once = editing.normalize({"masks": [m]})
+    assert editing.normalize(once) == once
+
+
+def test_a_part_defaults_like_the_mask_of_its_kind() -> None:
+    for kind in editing.PART_TYPES:
+        part = editing._default_part(kind, "add")
+        mask = editing._default_mask(kind)
+        assert part["feather"] == mask["feather"], kind
+        shape_keys = set(part) - {"op", "type", "invert", "feather"}
+        assert all(part[k] == mask[k] for k in shape_keys), kind
+
+
+def test_an_added_part_grades_its_own_area_too() -> None:
+    img = np.full((200, 300, 3), 100, dtype=np.uint8)
+    out = editing.render(img, {"masks": [_stack(_disc(0.25, 0.5, 0.1),
+                                                _part("add", _disc(0.75, 0.5, 0.1)))]})
+    assert _lit(out, 100, 75) and _lit(out, 100, 225)
+    assert np.array_equal(out[100, 150], img[100, 150]), "between the two must be untouched"
+
+
+def test_a_subtracted_part_takes_its_area_out() -> None:
+    img = np.full((200, 300, 3), 100, dtype=np.uint8)
+    out = editing.render(img, {"masks": [_stack(_disc(0.5, 0.5, 0.3),
+                                                _part("subtract", _disc(0.5, 0.5, 0.1)))]})
+    assert np.array_equal(out[100, 150], img[100, 150]), "the hole was graded"
+    assert _lit(out, 100, 90), "the ring around the hole was not"
+
+
+def test_an_intersected_part_keeps_only_the_overlap() -> None:
+    img = np.full((200, 300, 3), 100, dtype=np.uint8)
+    top = {"type": "linear", "x1": 0.5, "y1": 0.45, "x2": 0.5, "y2": 0.55, "feather": 0}
+    out = editing.render(img, {"masks": [_stack(_disc(0.5, 0.5, 0.3),
+                                                _part("intersect", top))]})
+    assert _lit(out, 60, 150), "inside both: the disc's top half"
+    assert np.array_equal(out[140, 150], img[140, 150]), "inside the disc only"
+    assert np.array_equal(out[20, 20], img[20, 20]), "inside the gradient only"
+
+
+def test_a_part_inverts_on_its_own() -> None:
+    """Subtracting the inside of a shape and intersecting with its outside are
+    the same selection, which only holds if a part's invert is its own."""
+    img = np.full((200, 300, 3), 100, dtype=np.uint8)
+    hole = _disc(0.5, 0.5, 0.1)
+    sub = editing.render(img, {"masks": [_stack(_disc(0.5, 0.5, 0.3),
+                                                _part("subtract", hole))]})
+    inter = editing.render(img, {"masks": [_stack(_disc(0.5, 0.5, 0.3),
+                                                  _part("intersect", hole, invert=True))]})
+    assert np.array_equal(sub, inter)
+
+
+def test_the_parts_come_after_the_masks_own_invert() -> None:
+    img = np.full((200, 300, 3), 100, dtype=np.uint8)
+    out = editing.render(img, {"masks": [_stack(_disc(0.5, 0.5, 0.1), invert=True,
+                                                *[_part("add", _disc(0.5, 0.5, 0.05))])]})
+    # Outside the inverted disc is graded, and the added part puts its centre back.
+    assert _lit(out, 20, 20) and _lit(out, 100, 150)
+    assert np.array_equal(out[100, 175], img[100, 175]), "the ring between them moved"
+
+
+def test_the_amount_and_the_range_narrow_the_whole_stack() -> None:
+    img = _bands_frame()                       # dark | mid | bright, by columns
+    left = {"type": "radial", "cx": 0.15, "cy": 0.5, "rx": 0.2, "ry": 0.9, "feather": 0}
+    right = {"type": "radial", "cx": 0.85, "cy": 0.5, "rx": 0.2, "ry": 0.9, "feather": 0}
+    stack = _stack(left, _part("add", right))
+    both = editing.render(img, {"masks": [stack]}, src=img)
+    assert both[:, 4:20].mean() > 45 and both[:, 76:92].mean() > 230
+    # A range over the bright tones: the part on the bright band stays, the
+    # mask's own shape over the dark band goes.
+    ranged = editing.render(img, {"masks": [{**stack, "range_luma": {"lo": 70, "hi": 100}}]},
+                            src=img)
+    assert abs(float(ranged[:, 4:20].mean()) - 30.0) < 2.0
+    assert ranged[:, 76:92].mean() > 230
+    half = editing.render(img, {"masks": [{**stack, "amount": 50}]}, src=img)
+    assert 30 < half[:, 4:20].mean() < both[:, 4:20].mean()
+
+
+def test_an_automatic_part() -> None:
+    img = np.full((64, 64, 3), 100, dtype=np.uint8)
+    m = _stack({"type": "radial", "cx": 0.5, "cy": 0.5, "rx": 0.45, "ry": 0.45, "feather": 0},
+               _part("subtract", {"type": "auto", "group": "subject", "feather": 0}))
+    assert editing.mask_groups(editing.normalize_mask(m)) == {"subject"}
+    out = editing.render(img, {"masks": [m]}, auto={"subject": _half_field()})
+    assert abs(float(out[24:40, 20:28].mean()) - 100.0) < 1.0, "the subject was not taken out"
+    assert out[24:40, 36:44].mean() > 130
+    with pytest.raises(AssertionError, match="automatic mask needs its field"):
+        editing.render(img, {"masks": [m]})
+
+
+def test_an_inverted_automatic_mask_is_inverted_before_its_range() -> None:
+    """Every kind inverts its own shape and narrows that to the range. An
+    automatic mask once inverted the product instead (here: everything but the
+    dark part of the subject), while the editor's tint showed this."""
+    img = _bands_frame()
+    field = np.zeros(img.shape[:2], dtype=np.float32)
+    field[:, :48] = 1.0                        # the subject: the left half
+    m = {"type": "auto", "group": "subject", "invert": True, "feather": 0,
+         "range_luma": {"lo": 0, "hi": 35}, "adj": {"exposure": 1.0}}
+    out = editing.render(img, {"masks": [m]}, auto={"subject": field}, src=img)
+    # Outside the subject is the right half; its dark tones are none at all.
+    assert np.array_equal(out, img)
+
+
+def test_a_range_part_adds_its_tones_and_takes_them_out() -> None:
+    img = _bands_frame()                       # dark | mid | bright, by columns
+    right = {"type": "radial", "cx": 0.85, "cy": 0.5, "rx": 0.2, "ry": 0.9, "feather": 0}
+    dark = {"type": "range", "range_luma": {"lo": 0, "hi": 35}}
+    added = editing.render(img, {"masks": [_stack(right, _part("add", dark))]}, src=img)
+    assert added[:, 4:20].mean() > 45 and added[:, 76:92].mean() > 230
+    assert abs(float(added[:, 40:56].mean()) - 128.0) < 2.0, "the mid band moved"
+    m = editing.normalize_mask(_stack(right, _part("add", dark)))
+    assert editing.mask_reads_ranges(m) and not editing.mask_reads_ranges(
+        editing.normalize_mask(_stack(right)))
+    whole = {"type": "radial", "cx": 0.5, "cy": 0.5, "rx": 0.9, "ry": 0.9, "feather": 0}
+    taken = editing.render(img, {"masks": [_stack(whole, _part("subtract", dark))]}, src=img)
+    assert abs(float(taken[:, 4:20].mean()) - 30.0) < 2.0, "the dark band was not taken out"
+    assert taken[:, 40:56].mean() > 140
+    with pytest.raises(AssertionError, match="whole ungraded frame"):
+        editing.render(img, {"masks": [_stack(right, _part("add", dark))]})
+
+
+def test_an_intersected_range_part_last_is_the_refinement() -> None:
+    """How the editor narrows a layer to some tones: the same pixels the
+    mask-level refinement of older edits selects."""
+    img = _bands_frame()
+    left = {"type": "radial", "cx": 0.15, "cy": 0.5, "rx": 0.2, "ry": 0.9, "feather": 30}
+    right = {"type": "radial", "cx": 0.85, "cy": 0.5, "rx": 0.2, "ry": 0.9, "feather": 30}
+    luma = {"lo": 60, "hi": 100, "feather_lo": 10, "feather_hi": 5}
+    for invert in (False, True):
+        old = editing.render(img, {"masks": [_stack(left, _part("add", right), invert=invert,
+                                                    range_luma=luma)]}, src=img)
+        new = editing.render(img, {"masks": [_stack(left, _part("add", right), invert=invert,
+                                                    *[_part("intersect", {"type": "range",
+                                                                          "range_luma": luma})])]},
+                             src=img)
+        assert np.array_equal(old, new), invert
+    assert editing.normalize_mask(_stack(left, _part("add", {"type": "range"})))["parts"] == []
+
+
+def test_a_layer_with_no_effect_yet_is_kept() -> None:
+    """Drawn first, sliders after: until a slider moves the layer changes no
+    pixel, and it was thrown away on Save as if it were not there."""
+    from pickapicka.server import _apply_edit_to_photo
+    drawn = _stack(_disc(0.5, 0.5, 0.2), _part("add", {"type": "linear", "x1": 0.5, "y1": 0.2,
+                                                       "x2": 0.5, "y2": 0.5}), adj={})
+    for edit in ({"masks": [drawn]}, {"masks": [{**drawn, "enabled": False}]},
+                 {"masks": [{**drawn, "amount": 0}]}):
+        assert editing.is_neutral(edit) and not editing.is_empty(edit)
+        assert editing.edit_hash(edit) == "", "the thumbnail should stay the plain one"
+        photo: dict = {}
+        _apply_edit_to_photo(photo, edit)
+        assert [m["type"] for m in photo["edit"]["masks"]] == ["radial"]
+        assert photo["edit"]["masks"][0]["parts"][0]["type"] == "linear"
+    for nothing in (None, {}, {"exposure": 0}):
+        assert editing.is_empty(nothing)
+        photo = {"edit": {"exposure": 1.0}, "edited_at": "x"}
+        _apply_edit_to_photo(photo, nothing)
+        assert "edit" not in photo and "edited_at" not in photo
+
+
+def test_stacking_leaves_the_cached_shapes_alone() -> None:
+    img = np.full((200, 300, 3), 100, dtype=np.uint8)
+    base = _disc(0.5, 0.5, 0.3)
+    alone = editing.render(img, {"masks": [_stack(base)]})
+    for op in editing.PART_OPS:
+        editing.render(img, {"masks": [_stack(base, _part(op, _disc(0.5, 0.5, 0.1)))]})
+    assert np.array_equal(editing.render(img, {"masks": [_stack(base)]}), alone)
+
+
+def test_a_window_with_parts_matches_the_whole_render() -> None:
+    """Drawn shapes only: a brush's feather is blurred within the window it is
+    drawn for, so near that window's edge it differs whether or not it is a
+    part."""
+    img = np.random.default_rng(4).integers(0, 256, (300, 400, 3), dtype=np.uint8)
+    edit = {"masks": [_stack(
+        {"type": "radial", "cx": 0.45, "cy": 0.5, "rx": 0.3, "ry": 0.35, "feather": 40},
+        _part("subtract", _disc(0.45, 0.5, 0.1, feather=30)),
+        _part("intersect", {"type": "linear", "x1": 0.5, "y1": 0.1, "x2": 0.5, "y2": 0.9,
+                            "feather": 60}),
+        _part("add", _disc(0.8, 0.2, 0.08, feather=50)))]}
+    full = editing.render(img, edit, geometry=False)
+    x0, y0, w, h = 120, 90, 200, 150
+    got = editing.render(img[y0:y0 + h, x0:x0 + w], edit, geometry=False,
+                         roi=(x0 / 400, y0 / 300, w / 400, h / 300))
+    diff = np.abs(got.astype(int) - full[y0:y0 + h, x0:x0 + w].astype(int))
+    assert diff.max() <= 1, f"the window disagrees by {diff.max()}"
+
+
+def test_a_brushed_part_renders_whole() -> None:
+    """A brush is drawn once per band otherwise, at a seam's cost; a brush
+    stacked as a part is still a brush."""
+    brush = {"type": "brush", "feather": 40, "strokes": _strokes(3, 30)}
+    edit = {"exposure": 0.2, "masks": [_stack(_disc(0.5, 0.5, 0.3), _part("add", brush))]}
+    assert editing._band_count(editing.normalize(edit), 900, 10, editing.BAND_WORKERS) == 1
+
+
 # ----- repairs: healing and red-eye (operators tested in their own suites) --
 
 def _spot_op(cx: float = 0.5, cy: float = 0.5, r: float = 0.06) -> dict:

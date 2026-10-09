@@ -1055,6 +1055,10 @@
             <canvas id="edit-overlay"></canvas>
             <span id="edit-tool-hint" class="hidden"></span>
             <span id="edit-status" role="status"></span>
+            <div id="fill-progress" class="hidden" role="progressbar" aria-live="polite">
+              <span id="fill-progress-text"></span>
+              <span class="fill-progress-track"><span id="fill-progress-bar"></span></span>
+            </div>
           </div>
           <!-- One row under the photo, not two: every row here is height a
                portrait frame does not get. -->
@@ -1101,7 +1105,7 @@
             <button id="edit-preset-delete" data-icon="trash" title="Delete the selected preset" aria-label="Delete the selected preset"></button>
           </div>
           <details class="edit-group" id="edit-mask-group">
-            <summary>Masks <span id="mask-summary-state"></span></summary>
+            <summary>Layers <span id="mask-summary-state"></span></summary>
             <div class="mask-panel">
               <div class="mask-head">
                 <span class="mask-head-title">Adjust</span>
@@ -1110,63 +1114,67 @@
                 </label>
               </div>
               <div class="mask-list" id="mask-list"></div>
-              <div class="mask-add">
-                <span class="mask-add-label">Add local</span>
-                <div class="mask-add-row">
-                  <button class="mask-add-btn" data-add-mask="radial"
-                          title="Radial: drag an ellipse on the photo (R)" data-icon="radial">Radial</button>
-                  <button class="mask-add-btn" data-add-mask="linear"
-                          title="Gradient: drag a direction on the photo (G)" data-icon="gradient">Gradient</button>
-                  <button class="mask-add-btn" data-add-mask="brush"
-                          title="Brush: paint on the photo (B)" data-icon="brush">Brush</button>
-                  <button class="mask-add-btn" data-add-mask="range"
-                          title="Range: select by tone rather than by shape" data-icon="palette">Range</button>
-                </div>
-              </div>
-              <div class="mask-add mask-add-auto">
-                <span class="mask-add-label">Add automatic</span>
-                <div class="mask-add-row">
-                  <button class="mask-add-btn" data-add-auto="subject"
-                          title="Everything that is not background">Subject</button>
-                  <button class="mask-add-btn" data-add-auto="background"
-                          title="Everything behind the subject">Background</button>
-                  <button class="mask-add-btn" data-add-auto="skin"
-                          title="Face and body skin">Skin</button>
-                  <button class="mask-add-btn" data-add-auto="face"
-                          title="Face skin only">Face</button>
-                  <button class="mask-add-btn" data-add-auto="hair">Hair</button>
-                  <button class="mask-add-btn" data-add-auto="clothes">Clothes</button>
-                </div>
-              </div>
+              <button type="button" class="mask-new" id="mask-new" data-icon="plus">New layer</button>
               <p class="mask-help">Drag the handles on the photo to reshape · Shift constrains ·
-                <kbd>\</kbd> show mask · <kbd>Del</kbd> remove</p>
+                <kbd>\</kbd> show mask · <kbd>Del</kbd> remove the selected shape</p>
               <div class="mask-detail hidden" id="mask-detail">
                 <label class="mask-name-row">
                   <span class="mask-name-label">Name</span>
                   <input type="text" id="mask-name" maxlength="40" />
                 </label>
-                <div class="mask-detail-bar">
-                  <button id="mask-invert" title="Adjust the area inside or outside the shape">Affect: inside</button>
-                  <button id="mask-duplicate" title="Copy this mask">Duplicate</button>
-                  <button id="mask-delete" data-icon="trash" title="Remove this mask (Delete)">Delete</button>
+                <div class="mask-add">
+                  <span class="mask-add-label">Shapes</span>
+                  <div class="mask-parts" id="mask-parts"></div>
                 </div>
-                <label class="look-row"><span class="look-name">Feather</span>
+                <div class="mask-add" id="mask-part-add">
+                  <div class="mask-part-add-head">
+                    <span class="mask-add-label" id="mask-part-add-label">Add shape</span>
+                    <select id="mask-part-op" title="How the new shape meets the ones above it">
+                      <option value="add">Add</option>
+                      <option value="subtract">Subtract</option>
+                      <option value="intersect">Intersect</option>
+                    </select>
+                  </div>
+                  <div class="mask-part-add-row">
+                    <button class="mask-add-btn" data-add-part="radial" data-icon="radial">Radial</button>
+                    <button class="mask-add-btn" data-add-part="linear" data-icon="gradient">Gradient</button>
+                    <button class="mask-add-btn" data-add-part="brush" data-icon="brush">Brush</button>
+                    <button class="mask-add-btn" data-add-part="range" data-icon="palette"
+                            title="Select by tone rather than by shape">Range</button>
+                  </div>
+                  <div class="mask-part-add-row mask-part-add-auto">
+                    <button class="mask-add-btn" data-add-part="auto" data-group="subject"
+                            title="Everything that is not background">Subject</button>
+                    <button class="mask-add-btn" data-add-part="auto" data-group="background"
+                            title="Everything behind the subject">Background</button>
+                    <button class="mask-add-btn" data-add-part="auto" data-group="skin"
+                            title="Face and body skin">Skin</button>
+                    <button class="mask-add-btn" data-add-part="auto" data-group="face"
+                            title="Face skin only">Face</button>
+                    <button class="mask-add-btn" data-add-part="auto" data-group="hair">Hair</button>
+                    <button class="mask-add-btn" data-add-part="auto" data-group="clothes">Clothes</button>
+                  </div>
+                </div>
+                <div class="mask-detail-bar">
+                  <button id="mask-invert" title="Select the inside or the outside of the selected shape">Affect: inside</button>
+                  <button id="mask-duplicate">Duplicate</button>
+                  <button id="mask-delete" data-icon="trash">Delete</button>
+                </div>
+                <label class="look-row" id="mask-feather-row"><span class="look-name">Feather</span>
                   <input type="range" id="mask-feather" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
                   <span class="look-val" id="mask-feather-val"></span></label>
                 <label class="look-row"><span class="look-name">Amount</span>
                   <input type="range" id="mask-amount" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
                   <span class="look-val" id="mask-amount-val"></span></label>
                 <div id="mask-range-tools" class="hidden">
-                  <label class="mask-range-enable">
-                    <input type="checkbox" id="mask-range-on" />
-                    <span>Narrow to a tonal range</span>
-                  </label>
                   <div class="mask-range-fields" id="mask-range-fields"></div>
                   <p class="mask-help" id="mask-range-note">Measured on the whole,
                     ungraded frame, so the selection is the same at every zoom and
-                    does not chase the exposure you set through it.</p>
+                    does not chase the exposure you set through it. To narrow a
+                    layer to some tones, add a Range that intersects it.</p>
                 </div>
                 <div id="mask-auto-tools" class="hidden">
+                  <span class="mask-add-label">This shape selects</span>
                   <div class="mask-auto-groups" id="mask-auto-groups"></div>
                   <p class="mask-help">Nothing to drag: what this selects is a
                     segmentation of the photo. Feather softens its edge.</p>

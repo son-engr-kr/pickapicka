@@ -74,7 +74,7 @@ import hashlib
 import json
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -99,6 +99,26 @@ EMBEDDING = "empty_prompt.npy"
 
 _sessions: dict[str, Any] = {}
 _LOCK = threading.Lock()
+# One fill at a time. Each holds 10 to 12.5 GB while it runs (see above), so
+# two side by side would want twice that, and on most machines the second
+# would push the first into swap instead of finishing sooner.
+_RUN = threading.Lock()
+
+# How far along a fill is, for the editor's progress bar: the share of a fill's
+# time each stage takes, from the timings above (encoder 2 s, each UNet call 1
+# to 2.5 s, decoder 5 s of a 15 s fill). A stage count would stall on the
+# decoder for a third of the wait.
+_WEIGHT = {"encode": 2.0, "step": 1.75, "decode": 5.0}
+_TOTAL = _WEIGHT["encode"] + STEPS * _WEIGHT["step"] + _WEIGHT["decode"]
+
+# (what it is doing, the fraction done, the fraction it will have done when
+# this stage ends), fractions in [0, 1]. The end lets a bar keep moving through
+# a stage rather than sit still for the decoder's five seconds.
+Progress = Callable[[str, float, float], None]
+
+
+def _quiet(stage: str, done: float, until: float) -> None:
+    pass
 
 
 def _alphas_cumprod() -> np.ndarray:
@@ -140,12 +160,16 @@ def is_installed(model_dir: Path | None = None) -> bool:
         and (d / EMBEDDING).is_file()
 
 
-def _session(name: str, model_dir: Path | None = None):
+def _session(name: str, model_dir: Path | None = None,
+             progress: Progress = _quiet, at: float = 0.0):
     import onnxruntime as ort
     d = model_dir or MODEL_DIR
     key = f"{d}/{name}"
     with _LOCK:
         if key not in _sessions:
+            # Loading the UNet is most of a first fill's extra seven seconds,
+            # and it is not a step of the fill: say so rather than stall.
+            progress("loading the model", at, at)
             so = ort.SessionOptions()
             so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             _sessions[key] = ort.InferenceSession(str(d / f"{name}.onnx"), so, providers=["CPUExecutionProvider"])
@@ -161,30 +185,39 @@ def release() -> None:
 
 # ----- inpainting a 512 square --------------------------------------------
 
-def inpaint(rgb: np.ndarray, hole: np.ndarray, seed: int, model_dir: Path | None = None) -> np.ndarray:
+def inpaint(rgb: np.ndarray, hole: np.ndarray, seed: int, model_dir: Path | None = None,
+            progress: Progress = _quiet) -> np.ndarray:
     """The model on a SIZE x SIZE uint8 RGB square and a boolean hole of the
     same size; returns the square with the model's output everywhere (the
-    caller keeps only the hole)."""
+    caller keeps only the hole). `progress` hears each stage as it starts."""
     assert rgb.shape == (SIZE, SIZE, 3) and rgb.dtype == np.uint8, "inpaint wants a 512 square, uint8"
     assert hole.shape == (SIZE, SIZE), "the hole must cover the square"
     image = (rgb.astype(np.float32) / 127.5 - 1.0).transpose(2, 0, 1)[None]
     masked = image * (~hole)[None, None].astype(np.float32)
     lat_hole = hole.reshape(SIZE // 8, 8, SIZE // 8, 8).max(axis=(1, 3)).astype(np.float32)[None, None]
-    enc = _session("vae_encoder", model_dir)
+    enc = _session("vae_encoder", model_dir, progress, 0.0)
+    progress("reading the photo", 0.0, _WEIGHT["encode"] / _TOTAL)
     masked_lat = enc.run(None, {"image": masked})[0] * LATENT_SCALE
     emb = np.load((model_dir or MODEL_DIR) / EMBEDDING).astype(np.float32)
     rng = np.random.default_rng(seed)
     x = rng.standard_normal((1, 4, SIZE // 8, SIZE // 8)).astype(np.float32)
-    unet = _session("unet", model_dir)
+    done = _WEIGHT["encode"]
+    unet = _session("unet", model_dir, progress, done / _TOTAL)
     ts = timesteps()
     for i, t in enumerate(ts):
+        progress(f"drawing, step {i + 1} of {len(ts)}", done / _TOTAL,
+                 (done + _WEIGHT["step"]) / _TOTAL)
         model_in = np.concatenate([x, lat_hole, masked_lat], axis=1).astype(np.float32)
         eps = unet.run(None, {"sample": model_in, "timestep": np.array([t], np.int64),
                               "encoder_hidden_states": emb})[0]
         last = i == len(ts) - 1
         noise = None if last else rng.standard_normal(x.shape).astype(np.float32)
         x, _ = lcm_step(x, eps, int(t), None if last else int(ts[i + 1]), noise)
-    out = _session("vae_decoder", model_dir).run(None, {"latent": (x / LATENT_SCALE).astype(np.float32)})[0][0]
+        done += _WEIGHT["step"]
+    dec = _session("vae_decoder", model_dir, progress, done / _TOTAL)
+    progress("finishing", done / _TOTAL, 1.0)
+    out = dec.run(None, {"latent": (x / LATENT_SCALE).astype(np.float32)})[0][0]
+    progress("finishing", 1.0, 1.0)
     return np.clip((out.transpose(1, 2, 0) + 1.0) * 127.5 + 0.5, 0, 255).astype(np.uint8)
 
 
@@ -225,9 +258,11 @@ def seed_for(op: dict[str, Any], frame_shape: tuple[int, ...]) -> int:
 
 
 def make_fill(frame: np.ndarray, op: dict[str, Any], seed: int | None = None,
-              model_dir: Path | None = None) -> tuple[np.ndarray, list[float]]:
+              model_dir: Path | None = None,
+              progress: Progress = _quiet) -> tuple[np.ndarray, list[float]]:
     """The patch a generative heal writes, made from the WHOLE uint8 `frame`;
-    the same contract as `aifill.make_fill`."""
+    the same contract as `aifill.make_fill`. Fills run one at a time; one
+    asked for while another runs waits, and says so through `progress`."""
     assert frame.dtype == np.uint8 and frame.ndim == 3, "make_fill wants the uint8 frame"
     h, w = frame.shape[:2]
     (x0, y0, x1, y1), hole = healing_mod.region_mask(op, w, h)
@@ -246,8 +281,15 @@ def make_fill(frame: np.ndarray, op: dict[str, Any], seed: int | None = None,
     # Grown a little at the model's size, so its output reaches past the
     # hole's rim and the heal's feathered edge blends into made pixels.
     small_hole = cv2.dilate(small_hole.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
-    out = inpaint(np.ascontiguousarray(small), small_hole,
-                  seed if seed is not None else seed_for(op, frame.shape), model_dir)
+    if not _RUN.acquire(blocking=False):
+        progress("waiting for the fill before it", 0.0, 0.0)
+        _RUN.acquire()
+    try:
+        out = inpaint(np.ascontiguousarray(small), small_hole,
+                      seed if seed is not None else seed_for(op, frame.shape), model_dir,
+                      progress=progress)
+    finally:
+        _RUN.release()
     if _COLOUR_MATCH:
         out = match_colour(out, small, small_hole)
     big = cv2.resize(out, (side, side), interpolation=cv2.INTER_LANCZOS4) if side != SIZE else out

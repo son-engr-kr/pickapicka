@@ -336,29 +336,80 @@ function neutralAdj() {
   return a;
 }
 
-function newMask(kind, aspect, group) {
-  const m = {
-    type: kind, name: "", enabled: true, invert: false,
-    feather: kind === "linear" ? 100 : 50, amount: 100, adj: neutralAdj(),
-    range_luma: null, range_color: null,
+// Mirrors editing.PART_OPS / PART_TYPES / PART_MAX. A mask stacks more shapes
+// onto its own, each meeting what is above it by its op, so "the subject minus
+// a brushed-out hand" is one mask with one set of sliders.
+const PART_OPS = [
+  { k: "add", label: "Add", hint: "Also select this shape" },
+  { k: "subtract", label: "Subtract", hint: "Take this shape out" },
+  { k: "intersect", label: "Intersect", hint: "Keep only where this shape overlaps" },
+];
+const PART_MAX = 8;
+
+// Mirrors editing._default_shape: a shape's feather and geometry, the same for
+// a mask's own shape and for a part stacked on it.
+function shapeDefaults(kind, aspect, group) {
+  if (kind === "radial") return { feather: 50, cx: 0.5, cy: 0.5, rx: 0.25, ry: 0.25 * (aspect || 1), angle: 0 };
+  if (kind === "linear") return { feather: 100, x1: 0.5, y1: 0.15, x2: 0.5, y2: 0.55 };
+  if (kind === "auto") return { feather: 0, group: group || "subject" };
+  if (kind === "range") return { feather: 0, range_luma: { ...LUMA_RANGE_NEW }, range_color: null };
+  return { feather: 50, strokes: [] };
+}
+
+// A layer is made empty, and its shapes are added to it: what it is is what is
+// in it. With no shape it selects nothing, so the server would drop it; it
+// lives here until one is added (see persistableMasks).
+function newLayer() {
+  return {
+    type: null, name: "", enabled: true, invert: false,
+    feather: 50, amount: 100, adj: neutralAdj(),
+    range_luma: null, range_color: null, parts: [],
   };
-  if (kind === "radial") Object.assign(m, { cx: 0.5, cy: 0.5, rx: 0.25, ry: 0.25 * (aspect || 1), angle: 0 });
-  else if (kind === "linear") Object.assign(m, { x1: 0.5, y1: 0.15, x2: 0.5, y2: 0.55 });
-  else if (kind === "auto") { m.group = group || "subject"; m.feather = 0; }
-  else if (kind === "range") { m.range_luma = { ...LUMA_RANGE_NEW }; m.feather = 0; }
-  else m.strokes = [];
-  return m;
+}
+
+function newPart(kind, op, aspect, group) {
+  return { op, type: kind, invert: false, ...shapeDefaults(kind, aspect, group) };
+}
+
+function cloneRange(s, c) {
+  c.range_luma = s.range_luma ? { ...s.range_luma } : null;
+  c.range_color = s.range_color
+    ? { ...s.range_color, samples: (s.range_color.samples || []).map((v) => v.slice()) }
+    : null;
+}
+
+// A shape's own fields, deep enough that dragging a copy leaves the original.
+function cloneShape(s) {
+  const c = { ...s };
+  if (s.strokes) c.strokes = s.strokes.map((st) => ({ ...st, points: st.points.map((p) => p.slice()) }));
+  if ("range_luma" in s || "range_color" in s) cloneRange(s, c);
+  return c;
 }
 
 function cloneMask(m) {
-  const c = { ...m, adj: { ...neutralAdj(), ...(m.adj || {}) } };
-  if (m.strokes) c.strokes = m.strokes.map((s) => ({ ...s, points: s.points.map((p) => p.slice()) }));
-  c.range_luma = m.range_luma ? { ...m.range_luma } : null;
-  c.range_color = m.range_color
-    ? { ...m.range_color, samples: (m.range_color.samples || []).map((v) => v.slice()) }
-    : null;
+  const c = { ...cloneShape(m), adj: { ...neutralAdj(), ...(m.adj || {}) } };
+  cloneRange(m, c);
+  c.parts = (m.parts || []).map(cloneShape);
+  // An edit from before shapes could stack narrows a layer to some tones with
+  // a range on the layer itself. That is the same selection as a Range shape
+  // intersecting at the end of its stack (editing.py renders the two alike),
+  // and the editor has only the one way to show and change it.
+  if (c.type !== "range" && (c.range_luma || c.range_color)) {
+    c.parts.push({ op: "intersect", type: "range", invert: false, feather: 0,
+                   range_luma: c.range_luma, range_color: c.range_color });
+    c.range_luma = null;
+    c.range_color = null;
+  }
   return c;
 }
+
+// A mask's own shape followed by its parts, in stacking order.
+function maskShapes(m) { return [m, ...(m.parts || [])]; }
+
+// A part the server would drop on normalize: a brush with nothing painted yet.
+function partIsEmpty(p) { return p.type === "brush" && !(p.strokes && p.strokes.length); }
+
+function opInfo(k) { return PART_OPS.find((o) => o.k === k) || PART_OPS[0]; }
 
 const rnd4 = (v) => Math.round((Number(v) || 0) * 1e4) / 1e4;
 
@@ -379,15 +430,28 @@ function canonMasks(masks) {
       ? [(m.range_color.samples || []).map((v) => v.map(Math.round)),
          r1(m.range_color.range), r1(m.range_color.feather)]
       : null;
-    if (m.type === "radial") o.g = [m.cx, m.cy, m.rx, m.ry, m.angle].map(rnd4);
-    else if (m.type === "linear") o.g = [m.x1, m.y1, m.x2, m.y2].map(rnd4);
-    // The group is the whole of an automatic mask's geometry. Leave it out and
-    // switching Subject to Hair would not register as a change.
-    else if (m.type === "auto") o.g = m.group;
-    else o.g = (m.strokes || []).map((s) => [rnd4(s.radius), !!s.erase,
-                                             s.points.map((p) => [rnd4(p[0]), rnd4(p[1])])]);
+    o.g = canonShape(m);
+    // Its own feather and invert are already in `f` and `i` above.
+    o.p = (m.parts || []).map((p) => [p.op, p.type, !!p.invert, r1(p.feather), canonShape(p)]);
     return o;
   }));
+}
+
+function canonRange(s) {
+  return [s.range_luma ? LUMA_RANGE_FIELDS.map((f) => r1(s.range_luma[f.k])) : null,
+          s.range_color ? [(s.range_color.samples || []).map((v) => v.map(Math.round)),
+                           r1(s.range_color.range), r1(s.range_color.feather)] : null];
+}
+
+function canonShape(s) {
+  if (s.type === "radial") return [s.cx, s.cy, s.rx, s.ry, s.angle].map(rnd4);
+  if (s.type === "linear") return [s.x1, s.y1, s.x2, s.y2].map(rnd4);
+  // The group is the whole of an automatic shape's geometry. Leave it out and
+  // switching Subject to Hair would not register as a change.
+  if (s.type === "auto") return s.group;
+  if (s.type === "range") return canonRange(s);
+  return (s.strokes || []).map((st) => [rnd4(st.radius), !!st.erase,
+                                        st.points.map((p) => [rnd4(p[0]), rnd4(p[1])])]);
 }
 
 function maskAdjNeutral(m) {
@@ -397,11 +461,11 @@ function maskAdjNeutral(m) {
     (k) => Math.abs((Number(m.adj[k]) || 0) - (EDIT_NEUTRAL[k] ?? 0)) < 1e-4);
 }
 
+// A layer is named for its place, not for its first shape: with shapes stacked
+// in it, "Radial 1" would describe only one of them. Its Shapes list says what
+// is in it.
 function maskLabel(m, idx) {
-  if (m.name) return m.name;
-  // "Subject 2" says more than "Auto 2" ever could.
-  if (m.type === "auto") return `${autoGroupLabel(m.group)} ${idx + 1}`;
-  return `${MASK_KINDS[m.type].label} ${idx + 1}`;
+  return m.name || `Layer ${idx + 1}`;
 }
 
 // ---------- icons ----------
@@ -455,6 +519,7 @@ const ICONS = {
   brush: "M17 3a3 3 0 0 1 4 4l-9 9-4 1 1-4zM7 14c-2 1-3 3-3 6 3 0 5-1 6-3z",
   warning: "M12 3 2 20h20zM12 9v5M12 17.5h.01",
   check: "M20 6 9 17l-5-5",
+  layers: "M12 3 3 7.5l9 4.5 9-4.5L12 3zM3 12l9 4.5 9-4.5M3 16.5l9 4.5 9-4.5",
   eyeOpen: "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"
     + "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
   eyeShut: "M3 3l18 18M10.6 5.2A10.9 10.9 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-2.4 3.2M6.4 6.4A17 17 0 0 0 2 12s3.5 7 10 7c1.6 0 3-.4 4.2-1"
@@ -555,11 +620,12 @@ const SHORTCUT_TIPS = {
   "#crop-tool": ["Crop — drag a box on the photo", null],
   "#crop-reset": ["Back to the whole frame, level", null],
   "#crop-tilt": ["Straighten. Positive levels a horizon drooping to the right", null],
-  '[data-add-mask="radial"]': ["Radial mask — drag an ellipse on the photo", "R"],
-  '[data-add-mask="linear"]': ["Gradient mask — drag a direction on the photo", "G"],
-  '[data-add-mask="brush"]': ["Brush mask — paint on the photo", "B"],
-  "#mask-delete": ["Remove this mask", "Del"],
-  "#mask-duplicate": ["Copy this mask", null],
+  "#mask-new": ["A new layer; add its shapes below", "N"],
+  '[data-add-part="radial"]': ["An ellipse: drag it on the photo", "R"],
+  '[data-add-part="linear"]': ["A gradient: drag its direction on the photo", "G"],
+  '[data-add-part="brush"]': ["Paint it on the photo", "B"],
+  "#mask-delete": ["Remove this layer and every shape in it", null],
+  "#mask-duplicate": ["Copy this layer", null],
   "#mask-brush-undo": ["Remove the last stroke", null],
   '.edit-zoom[data-zoom="0"]': ["Fit the whole photo", "F"],
   '.edit-zoom[data-zoom="1"]': ["Original pixels, 1:1", "F"],
@@ -2748,9 +2814,10 @@ async function applyLook() {
 const editSession = {
   idx: 0, relPath: null, edit: null, baseline: null,
   objUrl: null, origUrl: null, timer: null, comparing: false, built: false,
-  // Local adjustments: which mask the sliders drive (-1 = global), which create
-  // tool is armed, the brush settings, and the in-flight pointer drag.
-  activeMask: -1, tool: null, showMask: false, showRepairs: true, showFaces: true, drag: null, hover: null,
+  // Local adjustments: which mask the sliders drive (-1 = global), which of
+  // its shapes the handles and the brush act on (-1 = its own, else a part),
+  // which create tool is armed, the brush settings, and the in-flight drag.
+  activeMask: -1, activePart: -1, tool: null, showMask: false, showRepairs: true, showFaces: true, drag: null, hover: null,
   brush: { size: 60, erase: false },
   // Zoom: 0 = fit the whole frame (rendered from the cached preview), anything
   // else = that many CSS pixels per original image pixel, rendered from the
@@ -3902,6 +3969,19 @@ async function persistEdit() {
     if (updated.edit) { photo.edit = updated.edit; photo.edited_at = updated.edited_at; }
     else { delete photo.edit; delete photo.edited_at; }
   }
+  // What the server kept is what was saved. Layers it dropped (a layer with no
+  // effect yet once was, and a server older than this page drops shapes it
+  // does not know) must not show as saved: the editor would say so, ask
+  // nothing on leaving, and the work would be gone when the photo was opened
+  // again. The rest is compared already by the canon each part has.
+  const kept = mergeNeutralEdit(updated.edit || null);
+  if (canonMasks(kept.masks) !== canonMasks(editSession.edit.masks)) {
+    editSession.baseline = kept;
+    setEditDirty();
+    $("#edit-status").textContent = "not every layer was saved: the server left part of it out. "
+      + "If the app was updated while it ran, restart it and save again";
+    return false;
+  }
   editSession.baseline = mergeNeutralEdit(editSession.edit);
   setEditDirty();
   return true;
@@ -3914,8 +3994,11 @@ async function saveEdit() {
   renderMain();
 }
 
-// Moving to another photo keeps the edit, as Lightroom does: it used to be
-// dropped without a word, and ← → are what you press to look at the next one.
+// Moving to another photo with changes asks first. It used to drop them without
+// a word; then it saved them without one, as Lightroom does, which was no
+// better when the arrow was pressed by mistake: the photo was rewritten and its
+// undo history gone. Enter answers Save, so going on after an edit is still
+// one key.
 async function editNav(delta) {
   if (!state.filteredPhotos.length) return;
   await editGoTo(Math.max(0, Math.min(state.filteredPhotos.length - 1, editSession.idx + delta)));
@@ -3923,8 +4006,22 @@ async function editNav(delta) {
 
 async function editGoTo(i) {
   if (i === editSession.idx) return;
-  const kept = editIsDirty() ? basename(editSession.relPath) : null;
-  if (kept && !(await persistEdit())) return;
+  let kept = null;
+  if (editIsDirty()) {
+    const rel = editSession.relPath;
+    const name = basename(rel);
+    const answer = await askChoice(`Save your changes to ${name}?`,
+      "You are moving to another photo. Keep editing to stay on this one.", [
+        { id: "discard", label: "Discard", danger: true }, { id: "keep", label: "Keep editing" },
+        { id: "save", label: "Save", primary: true }]);
+    if (answer === "keep") return;
+    if (answer === "save") {
+      if (!(await persistEdit())) return;
+      kept = name;
+    } else {
+      dropFillsFor(rel);       // a fill still on its way is one of the changes
+    }
+  }
   openEditModal(i);
   if (kept) {
     renderMain();
@@ -3938,7 +4035,11 @@ async function editGoTo(i) {
 // the button said: Cancel means discard, so only that is confirmed; closing
 // offers to save.
 async function leaveEditor(how) {
-  if (!editIsDirty()) { closeEditModal(); return true; }
+  if (!editIsDirty()) {
+    if (how === "cancel") dropFillsFor(editSession.relPath);
+    closeEditModal();
+    return true;
+  }
   const name = basename(editSession.relPath);
   const answer = how === "cancel"
     ? await askChoice("Discard your changes?", `The edit to ${name} has not been saved.`, [
@@ -3947,7 +4048,7 @@ async function leaveEditor(how) {
         { id: "discard", label: "Discard", danger: true }, { id: "keep", label: "Keep editing" },
         { id: "save", label: "Save", primary: true }]);
   if (answer === "save") await saveEdit();
-  else if (answer === "discard") closeEditModal();
+  else if (answer === "discard") { dropFillsFor(editSession.relPath); closeEditModal(); }
   return $("#edit-modal").classList.contains("hidden");
 }
 
@@ -4863,7 +4964,9 @@ const EYE_CLICK_RADIUS = 0.02;   // a click with no drag: an eye in a portrait
 function isRepairTool(t) { return REPAIR_TOOLS.includes(t); }
 function isRepairBrush(t) { return t === "spot" || t === "heal" || t === "fill" || t === "gen" || t === "clone"; }
 // AI fill strokes waiting for their patch: drawn, not yet part of the edit.
-const pendingFills = [];
+// Each knows the photo it was drawn on, so leaving for another photo does not
+// carry the stroke over onto it.
+const pendingFills = [];          // { op, rel }
 function healOps() { return (editSession.edit.healing && editSession.edit.healing.ops) || []; }
 function eyeFixes() { return (editSession.edit.redeye && editSession.edit.redeye.corrections) || []; }
 function setHealOps(ops) { editSession.edit.healing = ops.length ? { ops } : null; }
@@ -4964,29 +5067,136 @@ function repairMove(e, f, d) {
   previewDuringDrag();
 }
 
+// ---------- fill progress ----------
+// A generative fill takes 15 to 22 seconds, and a dashed stroke that just sits
+// there, with a line of text at the foot of a panel that may be folded away,
+// read as nothing happening. Every fill in flight is a job the server reports
+// on; the chip over the photo says what it is doing and how long it has been.
+const fillJobs = new Map();       // job name -> { rel, model, stage, fraction, until, t0, at }
+const droppedFills = new Set();   // jobs whose result is no longer wanted
+let fillPollTimer = null;
+const FILL_POLL_MS = 500;
+
+function startFillJob(rel, model, stage) {
+  const id = crypto.randomUUID();
+  const now = performance.now();
+  fillJobs.set(id, { rel, model, stage, fraction: 0, until: 0, t0: now, at: now });
+  renderFillProgress();
+  if (!fillPollTimer) fillPollTimer = setTimeout(pollFillJobs, FILL_POLL_MS);
+  return id;
+}
+
+function endFillJob(id) {
+  fillJobs.delete(id);
+  droppedFills.delete(id);
+  renderFillProgress();
+}
+
+// Only a generative fill has stages to report; AI fill is done in a fifth of a
+// second. The chip is redrawn either way, so the seconds keep counting.
+async function pollFillJobs() {
+  fillPollTimer = null;
+  if (!fillJobs.size) return;
+  await Promise.all([...fillJobs].filter(([, j]) => j.model === "genfill").map(async ([id, j]) => {
+    const res = await fetch(`/api/edit/fill/progress?job=${encodeURIComponent(id)}`, { cache: "no-store" });
+    const p = await res.json();
+    if (!p.running) return;
+    if (p.stage !== j.stage || p.fraction !== j.fraction) j.at = performance.now();
+    Object.assign(j, { stage: p.stage, fraction: p.fraction, until: p.until });
+  }));
+  renderFillProgress();
+  if (fillJobs.size && !fillPollTimer) fillPollTimer = setTimeout(pollFillJobs, FILL_POLL_MS);
+}
+
+function renderFillProgress() {
+  const el = $("#fill-progress");
+  const jobs = [...fillJobs.values()];
+  if (!jobs.length || $("#edit-modal").classList.contains("hidden")) { el.classList.add("hidden"); return; }
+  const here = jobs.filter((j) => j.rel === editSession.relPath);
+  const j = here[0] || jobs[0];
+  const secs = Math.floor((performance.now() - j.t0) / 1000);
+  const what = j.model === "genfill" ? "Generative fill" : "AI fill";
+  const where = here.length ? "" : ` on ${basename(j.rel)}`;
+  const more = jobs.length > 1 ? ` · ${jobs.length - 1} more after it` : "";
+  $("#fill-progress-text").textContent = `${what}${where}: ${j.stage} · ${secs} s${more}`;
+  const bar = $("#fill-progress-bar");
+  // AI fill's stages are not reported, so its bar only says "working".
+  bar.classList.toggle("indeterminate", j.model !== "genfill");
+  bar.style.width = j.model === "genfill" ? `${Math.max(3, fillShown(j) * 100).toFixed(1)}%` : "";
+  el.classList.remove("hidden");
+}
+
+// Within a stage the bar eases toward where the stage ends, never past it, so
+// it keeps moving through the decoder's five seconds and stops short if this
+// machine is slower. The pace is the measured one: 15 s a fill on an M5 Pro
+// (genfill's notes), the stage's share of that its expected length.
+const FILL_SECONDS = 15;
+
+function fillShown(j) {
+  const span = j.until - j.fraction;
+  if (span <= 0) return j.fraction;
+  const t = (performance.now() - j.at) / 1000;
+  return j.fraction + span * (1 - Math.exp(-t / (span * FILL_SECONDS / 2)));
+}
+
+// Cancel means the photo's changes are not wanted, and a fill still on its
+// way is one of them.
+function dropFillsFor(rel) {
+  for (const [id, j] of fillJobs) if (j.rel === rel) droppedFills.add(id);
+}
+
+// A fill that comes back after the editor moved to another photo belongs to
+// the photo it was drawn on. Leaving a photo saves its edit, so the saved edit
+// is the one it goes into, as it would have gone into the one on screen.
+async function storeFillElsewhere(rel, change) {
+  const photo = state.photos.find((p) => p.rel_path === rel);
+  if (!photo) return;
+  const edit = mergeNeutralEdit(photo.edit);
+  const ops = change(edit.healing ? edit.healing.ops : []);
+  if (!ops) return;
+  edit.healing = { ops };
+  const res = await fetch("/api/edit", {
+    ...JSON_POST, body: JSON.stringify({ rel_path: rel, edit: { ...edit, masks: persistableMasks(edit.masks) } }),
+  });
+  if (!res.ok) {
+    $("#edit-status").textContent = `the fill for ${basename(rel)} was made but could not be saved to it: ${res.status}`;
+    return;
+  }
+  const updated = await res.json();
+  if (updated.edit) { photo.edit = updated.edit; photo.edited_at = updated.edited_at; }
+  $("#edit-status").textContent = `the fill for ${basename(rel)} finished and was added to it`;
+  renderMain();
+}
+
 // One stroke at a time goes to the model; the stroke stays on the overlay
 // meanwhile so it is clear what is being filled.
 async function fillStroke(op, model) {
   const rel = editSession.relPath;
-  pendingFills.push(op);
+  const pending = { op, rel };
+  pendingFills.push(pending);
   drawOverlay();
   const status = $("#repair-status");
+  let job = null;
   try {
     if (!(await needModel(model))) return;
-    status.textContent = model === "genfill" ? "generating… (about 20 seconds; the first one also loads the model)"
-      : "filling…";
+    job = startFillJob(rel, model, model === "genfill" ? "starting" : "filling");
+    status.textContent = "";
     const res = await fetch("/api/edit/fill", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rel_path: rel, ops: [op], edit: opticsPayload(), model }),
+      body: JSON.stringify({ rel_path: rel, ops: [op], edit: opticsPayload(), model, job }),
     });
     if (!res.ok) { status.textContent = `AI fill failed: ${res.status} ${await res.text()}`; return; }
     const made = (await res.json()).ops;
-    if (editSession.relPath !== rel) return;        // moved on to another photo meanwhile
-    status.textContent = "";
+    if (droppedFills.has(job)) return;
+    if (editSession.relPath !== rel) {
+      await storeFillElsewhere(rel, (ops) => [...ops, ...made]);
+      return;
+    }
     setHealOps([...healOps(), ...made]);
     repairChanged();
   } finally {
-    pendingFills.splice(pendingFills.indexOf(op), 1);
+    pendingFills.splice(pendingFills.indexOf(pending), 1);
+    if (job) endFillJob(job);
     drawOverlay();
   }
 }
@@ -4998,26 +5208,35 @@ async function fillAgain(i) {
   const rel = editSession.relPath;
   const status = $("#repair-status");
   const op = { ...old, method: "ns", fill: null };
-  pendingFills.push(op);
+  const pending = { op, rel };
+  pendingFills.push(pending);
   drawOverlay();
-  status.textContent = "drawing it again… (about 20 seconds)";
+  status.textContent = "";
+  const job = startFillJob(rel, "genfill", "starting");
   try {
     const res = await fetch("/api/edit/fill", {
       ...JSON_POST, body: JSON.stringify({ rel_path: rel, ops: [op], edit: opticsPayload(), model: "genfill",
-                                           seed: Math.floor(Math.random() * 2 ** 31) }),
+                                           seed: Math.floor(Math.random() * 2 ** 31), job }),
     });
     if (!res.ok) { status.textContent = `Generative fill failed: ${res.status} ${await res.text()}`; return; }
     const [made] = (await res.json()).ops;
-    if (editSession.relPath !== rel) return;
-    status.textContent = "";
-    const ops = healOps().slice();
-    const at = ops.indexOf(old);
-    if (at < 0) return;                       // removed meanwhile
-    ops[at] = { ...made, enabled: old.enabled };
+    if (droppedFills.has(job)) return;
+    // The one it replaces, found by its patch: the list may have moved meanwhile.
+    const swap = (ops) => {
+      const at = ops.findIndex((o) => o.fill && old.fill && o.fill.id === old.fill.id);
+      if (at < 0) return null;                  // removed meanwhile
+      const next = ops.slice();
+      next[at] = { ...made, enabled: ops[at].enabled };
+      return next;
+    };
+    if (editSession.relPath !== rel) { await storeFillElsewhere(rel, swap); return; }
+    const ops = swap(healOps());
+    if (!ops) return;
     setHealOps(ops);
     repairChanged();
   } finally {
-    pendingFills.splice(pendingFills.indexOf(op), 1);
+    pendingFills.splice(pendingFills.indexOf(pending), 1);
+    endFillJob(job);
     drawOverlay();
   }
 }
@@ -5120,7 +5339,8 @@ function drawRepairs(ctx, mr) {
     ctx.arc(px(c.cx), py(c.cy), c.r * mr.w, 0, Math.PI * 2);
     ctx.stroke();
   }
-  const filling = [...pendingFills, ...(d && d.kind === "repair-fill" ? [d.op] : [])];
+  const filling = [...pendingFills.filter((p) => p.rel === editSession.relPath).map((p) => p.op),
+                   ...(d && d.kind === "repair-fill" ? [d.op] : [])];
   for (const op of filling) {
     ctx.lineWidth = op.radius * mr.w * 2;
     ctx.strokeStyle = "rgba(167,139,250,0.35)";
@@ -5499,8 +5719,13 @@ function bindWatermarkUi() {
 // ---------- local adjustments: panel ----------
 // A mask that the server would drop on normalize (a brush with nothing painted)
 // is invisible to save/dirty-tracking, so it never counts as an unsaved change.
+// The same goes for a part with nothing painted yet, which the server drops
+// from its mask.
 function persistableMasks(masks) {
-  return (masks || []).filter((m) => m.type !== "brush" || (m.strokes && m.strokes.length));
+  return (masks || [])
+    .filter((m) => m.type && (m.type !== "brush" || (m.strokes && m.strokes.length)))
+    .map((m) => ((m.parts || []).some(partIsEmpty)
+      ? { ...m, parts: m.parts.filter((p) => !partIsEmpty(p)) } : m));
 }
 
 function activeMask() {
@@ -5508,16 +5733,45 @@ function activeMask() {
   return (editSession.edit && i >= 0) ? (editSession.edit.masks[i] || null) : null;
 }
 
+// The shape the handles, the brush, feather and invert act on: the selected
+// mask's own, or the part of it that is selected.
+function activeShape() {
+  const m = activeMask();
+  if (!m) return null;
+  const i = editSession.activePart;
+  return (i >= 0 && m.parts && m.parts[i]) || m;
+}
+
+// Picking a brush shape re-arms the brush, so painting continues immediately;
+// any other drops a mask tool that no longer fits what is selected. Backing
+// out with Esc only drops: it must not arm what it lands on.
+function armForShape(arm = true) {
+  const s = activeShape();
+  if (arm && s && s.type === "brush") setEditTool("brush");
+  else if (editSession.tool && (!s || s.type !== editSession.tool)) setEditTool(null);
+}
+
 function selectMask(idx, opts) {
   const masks = (editSession.edit && editSession.edit.masks) || [];
-  editSession.activeMask = (idx >= 0 && idx < masks.length) ? idx : -1;
+  const next = (idx >= 0 && idx < masks.length) ? idx : -1;
+  // Re-selecting the same mask (an undo, a slot) keeps the part it was on.
+  if (next !== editSession.activeMask) editSession.activePart = -1;
+  editSession.activeMask = next;
   const m = activeMask();
-  // Picking a brush mask re-arms the brush, so painting continues immediately.
-  if (m && m.type === "brush") setEditTool("brush");
-  else if (editSession.tool && (!m || m.type !== editSession.tool)) setEditTool(null);
+  if (!m || editSession.activePart >= (m.parts || []).length) editSession.activePart = -1;
+  armForShape();
   renderMaskList();
   renderMaskDetail();
   if (!(opts && opts.silent)) { syncEditSliders(); drawOverlay(); }
+}
+
+function selectPart(i, opts) {
+  const m = activeMask();
+  if (!m) return;
+  editSession.activePart = (i >= 0 && i < (m.parts || []).length) ? i : -1;
+  armForShape(!(opts && opts.backOut));
+  renderMaskDetail();
+  drawOverlay();
 }
 
 function setEditTool(tool) {
@@ -5529,8 +5783,9 @@ function setEditTool(tool) {
     editSession.showMask = true;
     $("#mask-show").checked = true;
   }
-  $$("#edit-modal .mask-add-btn[data-add-mask]").forEach((b) =>
-    b.classList.toggle("armed", b.dataset.addMask === tool));
+  // The button lit is the kind the tool is drawing.
+  $$("#edit-modal [data-add-part]").forEach((b) =>
+    b.classList.toggle("armed", b.dataset.addPart === tool));
   $("#wb-pick").classList.toggle("armed", tool === "wb");
   $$("#edit-repair-group [data-repair-tool]").forEach((b) =>
     b.classList.toggle("armed", b.dataset.repairTool === tool));
@@ -5566,23 +5821,83 @@ function setEditTool(tool) {
   drawOverlay();
 }
 
-function addMask(kind, group) {
+function addLayer() {
   $("#edit-mask-group").open = true;
-  if (!editSession.relPath) return;
+  if (!editSession.relPath) return null;
   if (editSession.edit.masks.length >= MASK_MAX) {
-    $("#edit-status").textContent = `mask limit reached (${MASK_MAX})`;
+    $("#edit-status").textContent = `layer limit reached (${MASK_MAX})`;
+    return null;
+  }
+  editSession.edit.masks.push(newLayer());
+  selectMask(editSession.edit.masks.length - 1);
+  return activeMask();
+}
+
+// Add a shape to the selected layer, or to a new one when the whole photo is
+// selected. An empty layer's first shape becomes its own and `op` does not
+// matter, as there is nothing above it; later ones stack by `op`. The shape
+// lands selected, with its tool armed: a radial or a gradient lands centred so
+// it shows at once, and the next drag puts it where it belongs.
+async function addShape(kind, op, group) {
+  const m = activeMask() || addLayer();
+  if (!m) return;
+  if (m.type && (m.parts || []).length >= PART_MAX) {
+    $("#edit-status").textContent = `shape limit reached (${PART_MAX + 1} in one layer)`;
     return;
   }
+  // The model is fetched on the first automatic shape, not at startup: a shoot
+  // with no people in it should never pay for it.
+  if (kind === "auto" && !(await ensureSegmentModel())) return;
   const r = overlayRect();
-  editSession.edit.masks.push(newMask(kind, r.h ? r.w / r.h : 1, group));
-  selectMask(editSession.edit.masks.length - 1);
-  // Radial/gradient masks land centred so they are visible right away; arming
-  // the tool lets the very next drag re-place them where the user wants. An
-  // automatic mask has nothing to drag, so no tool is armed for it.
-  setEditTool((kind === "auto" || kind === "range") ? null : kind);
-  setEditDirty();
-  drawOverlay();
-  if (kind !== "brush") fetchEditPreview(false);
+  const aspect = r.h ? r.w / r.h : 1;
+  if (!m.type) {
+    Object.assign(m, { type: kind, invert: false, ...shapeDefaults(kind, aspect, group) });
+    editSession.activePart = -1;
+  } else {
+    m.parts = m.parts || [];
+    m.parts.push(newPart(kind, op, aspect, group));
+    editSession.activePart = m.parts.length - 1;
+  }
+  // Nothing to drag for a selection the photo makes.
+  setEditTool(kind === "auto" || kind === "range" ? null : kind);
+  maskChanged(kind !== "brush");
+}
+
+// What a shape is, beyond its type, feather and invert: removing a layer's first
+// shape takes these off it before the next shape's are put on.
+const SHAPE_KEYS = ["cx", "cy", "rx", "ry", "angle", "x1", "y1", "x2", "y2", "strokes", "group"];
+
+// Remove one of the selected layer's shapes. The first goes like any other:
+// the next takes its place, and how that one was stacked stops mattering, as
+// there is nothing above it any more. Removing the last leaves the layer
+// empty, sliders and all, for another shape; Del on an empty layer removes it.
+function deleteShape(i) {
+  const m = activeMask();
+  if (!m) return;
+  if (i >= 0) { deletePart(i); return; }
+  if (!m.type) { deleteMask(editSession.activeMask); return; }
+  for (const k of SHAPE_KEYS) delete m[k];
+  // The layer's range is a shape's (cloneMask moved any refinement into one).
+  m.range_luma = null;
+  m.range_color = null;
+  if ((m.parts || []).length) {
+    const { op, ...next } = m.parts.shift();
+    Object.assign(m, cloneShape(next));
+  } else {
+    Object.assign(m, { type: null, invert: false, feather: 50 });
+  }
+  editSession.activePart = -1;
+  armForShape();
+  maskChanged(true);
+}
+
+function deletePart(i) {
+  const m = activeMask();
+  if (!m || !m.parts || !m.parts[i]) return;
+  m.parts.splice(i, 1);
+  editSession.activePart = -1;
+  armForShape();
+  maskChanged(true);
 }
 
 // ---------- range refinement ----------
@@ -5598,39 +5913,37 @@ function buildMaskRangeFields() {
   wrap.addEventListener("input", (e) => {
     const sl = e.target.closest("input[type=range][data-luma]");
     if (!sl) return;
-    const m = activeMask();
-    if (!m || !m.range_luma) return;
-    m.range_luma[sl.dataset.luma] = parseFloat(sl.value);
+    const s = activeShape();
+    if (!s || s.type !== "range" || !s.range_luma) return;
+    s.range_luma[sl.dataset.luma] = parseFloat(sl.value);
     // Keep the window the right way round rather than letting it invert
     // silently, which would select nothing and look like a broken slider.
-    if (m.range_luma.lo > m.range_luma.hi) {
-      if (sl.dataset.luma === "lo") m.range_luma.hi = m.range_luma.lo;
-      else m.range_luma.lo = m.range_luma.hi;
+    if (s.range_luma.lo > s.range_luma.hi) {
+      if (sl.dataset.luma === "lo") s.range_luma.hi = s.range_luma.lo;
+      else s.range_luma.lo = s.range_luma.hi;
     }
     maskChanged(false);
   });
   wrap.dataset.built = "1";
 }
 
-function renderMaskRange(m) {
+// The tones a Range shape selects. A layer is narrowed to some tones by a Range
+// that intersects it, so these sliders are a shape's, like its handles.
+function renderShapeRange(s) {
   const tools = $("#mask-range-tools");
-  if (!tools) return;
   buildMaskRangeFields();
-  // A range mask IS its range, so the toggle would be a way to delete the mask.
-  const togglable = m.type !== "range";
-  tools.classList.remove("hidden");
-  $("#mask-range-on").checked = !!m.range_luma;
-  $("#mask-range-on").disabled = !togglable;
-  $("#mask-range-fields").classList.toggle("hidden", !m.range_luma);
-  if (!m.range_luma) return;
+  const on = s.type === "range" && !!s.range_luma;
+  tools.classList.toggle("hidden", !on);
+  $("#mask-range-fields").classList.toggle("hidden", !on);
+  if (!on) return;
   for (const f of LUMA_RANGE_FIELDS) {
-    const v = r1(m.range_luma[f.k] ?? 0);
+    const v = r1(s.range_luma[f.k] ?? 0);
     const sl = $(`#mask-range-fields input[data-luma="${f.k}"]`);
     sl.value = v;
     $(`#mask-range-fields [data-luma-val="${f.k}"]`).textContent = fmtSlider(sl, v);
   }
   // Say when the range is doing nothing rather than leaving it a mystery.
-  $("#mask-range-note").classList.toggle("warn", lumaRangeIsAll(m.range_luma));
+  $("#mask-range-note").classList.toggle("warn", lumaRangeIsAll(s.range_luma));
 }
 
 // ---------- automatic mask previews ----------
@@ -5700,6 +6013,7 @@ async function ensureSegmentModel() {
 function deleteMask(idx) {
   if (!editSession.edit.masks[idx]) return;
   editSession.edit.masks.splice(idx, 1);
+  editSession.activePart = -1;    // the index now names another mask
   selectMask(Math.min(idx, editSession.edit.masks.length - 1));
   setEditDirty();
   fetchEditPreview(true);
@@ -5753,14 +6067,17 @@ function renderMaskList() {
     `<span class="mask-name">Global — whole photo</span></div>`,
   ];
   masks.forEach((m, i) => {
-    const hint = maskAdjNeutral(m) ? "no effect yet"
-      : (m.type === "brush" && !m.strokes.length) ? "nothing painted" : "";
+    const n = (m.parts || []).length;
+    const hint = !m.type ? "no shape yet"
+      : maskAdjNeutral(m) ? "no effect yet"
+      : (m.type === "brush" && !m.strokes.length) ? "nothing painted"
+      : n ? `${n + 1} shapes` : "";
     rows.push(
       `<div class="mask-row${i === editSession.activeMask ? " active" : ""}` +
       `${m.enabled ? "" : " off"}" data-mask="${i}">` +
       `<button class="mask-eye" data-mask-toggle="${i}" title="Show / hide this mask">` +
       `${icon(m.enabled ? "eyeOpen" : "eyeShut")}</button>` +
-      `<span class="mask-icon">${icon(MASK_KINDS[m.type].icon)}</span>` +
+      `<span class="mask-icon">${icon("layers")}</span>` +
       `<span class="mask-name">${escapeHtml(maskLabel(m, i))}</span>` +
       `<span class="mask-hint">${hint}</span>` +
       `<button class="mask-del" data-mask-del="${i}" title="Delete this mask">×</button></div>`
@@ -5796,36 +6113,88 @@ function renderMaskDetail() {
   // Don't fight the user mid-word if the panel re-renders while typing.
   if (document.activeElement !== nameEl) nameEl.value = m.name || "";
   nameEl.placeholder = maskLabel({ ...m, name: "" }, editSession.activeMask);
-  $("#mask-invert").textContent = m.invert ? "Affect: outside" : "Affect: inside";
-  $("#mask-invert").classList.toggle("active", m.invert);
-  $("#mask-feather").value = m.feather;
-  $("#mask-feather-val").textContent = fmtSlider($("#mask-feather"), m.feather);
+  renderMaskParts(m);
+  // Invert, feather, the range, the group and the brush belong to the selected
+  // shape, and an empty layer has none; the amount is the whole layer's.
+  const s = activeShape();
+  const shaped = !!s.type;
+  $("#mask-invert").classList.toggle("hidden", !shaped);
+  $("#mask-feather-row").classList.toggle("hidden", !shaped || s.type === "range");
+  $("#mask-invert").textContent = s.invert ? "Affect: outside" : "Affect: inside";
+  $("#mask-invert").classList.toggle("active", !!s.invert);
+  $("#mask-feather").value = s.feather;
+  $("#mask-feather-val").textContent = fmtSlider($("#mask-feather"), s.feather);
   $("#mask-amount").value = m.amount;
   $("#mask-amount-val").textContent = fmtSlider($("#mask-amount"), m.amount);
-  renderMaskRange(m);
-  const auto = m.type === "auto";
+  renderShapeRange(s);
+  const auto = s.type === "auto";
   $("#mask-auto-tools").classList.toggle("hidden", !auto);
   if (auto) {
     $("#mask-auto-groups").innerHTML = AUTO_GROUPS.map((g) =>
-      `<button type="button" class="mask-auto-group${g.k === m.group ? " active" : ""}" ` +
+      `<button type="button" class="mask-auto-group${g.k === s.group ? " active" : ""}" ` +
       `data-auto-group="${g.k}">${g.label}</button>`).join("");
     $$("#mask-auto-groups .mask-auto-group").forEach((b) => {
       b.addEventListener("click", () => {
-        if (b.dataset.autoGroup === m.group) return;
-        m.group = b.dataset.autoGroup;
+        if (b.dataset.autoGroup === s.group) return;
+        s.group = b.dataset.autoGroup;
         maskChanged(true);
       });
     });
   }
-  const brush = m.type === "brush";
+  const brush = s.type === "brush";
   $("#mask-brush-tools").classList.toggle("hidden", !brush);
   if (brush) {
     $("#mask-brush-size").value = editSession.brush.size;
     $("#mask-brush-size-val").textContent = editSession.brush.size;
     $("#mask-brush-paint").classList.toggle("active", !editSession.brush.erase);
     $("#mask-brush-erase").classList.toggle("active", editSession.brush.erase);
-    $("#mask-brush-undo").disabled = !m.strokes.length;
+    $("#mask-brush-undo").disabled = !s.strokes.length;
   }
+}
+
+function shapeLabel(s) {
+  if (s.type === "auto") return autoGroupLabel(s.group);
+  if (s.type === "range" && s.range_luma) return `Range ${r1(s.range_luma.lo)}–${r1(s.range_luma.hi)}`;
+  return MASK_KINDS[s.type].label;
+}
+
+// The mask's shapes, its own first: click one to put the handles on it.
+function renderMaskParts(m) {
+  const list = $("#mask-parts");
+  const parts = m.parts || [];
+  $("#mask-part-op").classList.toggle("hidden", !m.type);
+  $("#mask-part-add-label").textContent = m.type ? "Add shape" : "Add its first shape";
+  if (!m.type) {
+    list.innerHTML = `<div class="mask-parts-empty">None yet: this layer acts nowhere until one is added.</div>`;
+    $$("#mask-part-add [data-add-part]").forEach((b) => { b.disabled = false; });
+    return;
+  }
+  const rows = [
+    `<div class="mask-part-row${editSession.activePart < 0 ? " active" : ""}" data-part="-1">` +
+    `<span class="mask-icon">${icon(MASK_KINDS[m.type].icon)}</span>` +
+    `<span class="mask-part-name">${escapeHtml(shapeLabel(m))}${m.invert ? " (outside)" : ""}</span>` +
+    `<span class="mask-hint">${m.type === "brush" && !m.strokes.length ? "nothing painted" : ""}</span>` +
+    `<button class="mask-del" data-part-del="-1" title="${parts.length
+      ? "Remove this shape; the next one takes its place"
+      : "Remove this shape; the layer stays, with its sliders"}">×</button></div>`,
+  ];
+  parts.forEach((p, i) => {
+    const op = opInfo(p.op);
+    rows.push(
+      `<div class="mask-part-row${i === editSession.activePart ? " active" : ""}" data-part="${i}">` +
+      `<select class="mask-part-op" data-part-op="${i}" title="${escapeHtml(op.hint)}" ` +
+      `aria-label="How this shape meets the ones above it">` +
+      PART_OPS.map((o) => `<option value="${o.k}"${o.k === p.op ? " selected" : ""}>` +
+                          `${o.label}</option>`).join("") +
+      `</select>` +
+      `<span class="mask-icon">${icon(MASK_KINDS[p.type].icon)}</span>` +
+      `<span class="mask-part-name">${escapeHtml(shapeLabel(p))}${p.invert ? " (outside)" : ""}</span>` +
+      `<span class="mask-hint">${partIsEmpty(p) ? "nothing painted" : ""}</span>` +
+      `<button class="mask-del" data-part-del="${i}" title="Remove this shape">×</button></div>`);
+  });
+  list.innerHTML = rows.join("");
+  const full = parts.length >= PART_MAX;
+  $$("#mask-part-add [data-add-part]").forEach((b) => { b.disabled = full; });
 }
 
 // Any change to the selected mask's shape or strength: repaint and re-render.
@@ -6124,7 +6493,7 @@ function drawOverlay() {
       if (!other.enabled) continue;
       drawMaskTint(ctx, other, r, W, H);
       if (turned) { ctx.save(); applyMaskXform(ctx, r, mr); }
-      drawMaskOutline(ctx, other, mr);
+      for (const shape of maskShapes(other)) drawMaskOutline(ctx, shape, mr);
       if (turned) ctx.restore();
     }
   }
@@ -6134,13 +6503,17 @@ function drawOverlay() {
   // while dragging or brushing, which made the control look dead: the red was
   // there whether it was ticked or not. Arming the brush ticks it instead (see
   // setEditTool), so what you see always matches what the box says.
-  const painting = m.type === "brush" && editSession.tool === "brush";
+  const s = activeShape();
+  const painting = s.type === "brush" && editSession.tool === "brush";
   if (editSession.showMask) {
     const stroking = !!editSession.drag && editSession.drag.kind === "paint";
     drawMaskTint(ctx, m, r, W, H, painting ? 0.28 : 0.34, stroking);
   }
   if (turned) { ctx.save(); applyMaskXform(ctx, r, mr); }
-  drawMaskHandles(ctx, m, mr);
+  // The mask's other shapes stay outlined while one of them is being edited,
+  // so the stack can be seen and their handles grabbed.
+  for (const other of maskShapes(m)) if (other !== s) drawMaskOutline(ctx, other, mr);
+  drawMaskHandles(ctx, s, mr);
   // The wrap hides the system cursor for the brush, so this ring *is* the
   // cursor — it has to stay up mid-stroke, which is exactly when you need it.
   if (painting && editSession.hover) drawBrushCursor(ctx, mr);
@@ -6404,7 +6777,14 @@ function drawMaskOutline(ctx, m, r) {
   ctx.restore();
 }
 
+// Canvas compositing does each op exactly, bar "add": source-over gives
+// a + b - ab where the server takes the larger, the same at 0 and at 1 and
+// close on a feather. A brush's own strokes are drawn the same way.
+const PART_COMPOSITE = { add: "source-over", subtract: "destination-out", intersect: "destination-in" };
+let tintLayer = null;
+
 function drawMaskTint(ctx, m, r, W, H, alpha = 0.34, cheap = false) {
+  if (!m.type) return;              // an empty layer selects nothing
   if (!tintCanvas) tintCanvas = document.createElement("canvas");
   // Built in CSS pixels, not device pixels. On a Retina display that is four
   // times less area to rasterize and — the part that actually hurt — four
@@ -6415,18 +6795,38 @@ function drawMaskTint(ctx, m, r, W, H, alpha = 0.34, cheap = false) {
   const o = tintCanvas.getContext("2d");
   o.setTransform(1, 0, 0, 1, 0, 0);
   o.clearRect(0, 0, W, H);
-  if (m.invert) {
-    o.fillStyle = "#fff";
-    // The display rect, not the original frame's: inverted means everything the
-    // mask does not cover, and all of that is what you can see.
-    o.fillRect(r.x, r.y, r.w, r.h);
-    o.globalCompositeOperation = "destination-out";
+  paintShapeLayer(o, m, r, cheap);
+  // Each part on a layer of its own, since its invert and feather are its own,
+  // then onto the stack by its op, as the server combines them.
+  const parts = m.parts || [];
+  if (parts.length) {
+    if (!tintLayer) tintLayer = document.createElement("canvas");
+    tintLayer.width = tintCanvas.width;
+    tintLayer.height = tintCanvas.height;
+    const l = tintLayer.getContext("2d");
+    for (const p of parts) {
+      l.setTransform(1, 0, 0, 1, 0, 0);
+      l.clearRect(0, 0, W, H);
+      paintShapeLayer(l, p, r, cheap);
+      o.globalCompositeOperation = PART_COMPOSITE[p.op] || "source-over";
+      o.drawImage(tintLayer, 0, 0);
+    }
+    o.globalCompositeOperation = "source-over";
   }
-  const mr = maskRect(r);
-  const turned = !maskXformIsIdentity();
-  if (turned) { o.save(); applyMaskXform(o, r, mr); }
-  paintMaskShape(o, m, mr, m.invert, cheap);
-  if (turned) o.restore();
+  // A range refinement narrows the whole stack, which is what the server
+  // grades. destination-in multiplies the alphas, so this is the same product,
+  // not an approximation of it.
+  if (m.type !== "range" && (m.range_luma || m.range_color)) {
+    const img = rangeTintImage(editSession.relPath, m);
+    if (img) {
+      const mr = maskRect(r);
+      o.save();
+      if (!maskXformIsIdentity()) applyMaskXform(o, r, mr);
+      o.globalCompositeOperation = "destination-in";
+      o.drawImage(img, mr.x, mr.y, mr.w, mr.h);
+      o.restore();
+    }
+  }
   o.globalCompositeOperation = "source-in";
   o.fillStyle = MASK_TINT;
   o.fillRect(0, 0, W, H);
@@ -6436,6 +6836,23 @@ function drawMaskTint(ctx, m, r, W, H, alpha = 0.34, cheap = false) {
   ctx.globalAlpha = alpha * (m.amount / 100);
   ctx.drawImage(tintCanvas, 0, 0, W, H);
   ctx.restore();
+}
+
+// One shape's alpha, a mask's own or a part's, inverted if it asks to be, on a
+// clear canvas.
+function paintShapeLayer(o, s, r, cheap) {
+  o.save();
+  if (s.invert) {
+    o.fillStyle = "#fff";
+    // The display rect, not the original frame's: inverted means everything the
+    // shape does not cover, and all of that is what you can see.
+    o.fillRect(r.x, r.y, r.w, r.h);
+    o.globalCompositeOperation = "destination-out";
+  }
+  const mr = maskRect(r);
+  if (!maskXformIsIdentity()) applyMaskXform(o, r, mr);
+  paintMaskShape(o, s, mr, !!s.invert, cheap);
+  o.restore();
 }
 
 function paintMaskShape(o, m, r, inverted, cheap = false) {
@@ -6520,18 +6937,6 @@ function paintMaskShape(o, m, r, inverted, cheap = false) {
     o.filter = "none";
     o.restore();
   }
-  // A drawn shape carrying a range refinement: the tint is the shape narrowed to
-  // the selection, which is what the server grades. destination-in multiplies
-  // the alphas, so this is the same product, not an approximation of it.
-  if (m.type !== "range" && (m.range_luma || m.range_color)) {
-    const img = rangeTintImage(editSession.relPath, m);
-    if (img) {
-      o.save();
-      o.globalCompositeOperation = "destination-in";
-      o.drawImage(img, r.x, r.y, r.w, r.h);
-      o.restore();
-    }
-  }
 }
 
 function strokeHandle(ctx, p, kind) {
@@ -6545,7 +6950,7 @@ function strokeHandle(ctx, p, kind) {
 }
 
 function drawMaskHandles(ctx, m, r) {
-  if (m.type === "brush" || m.type === "auto" || m.type === "range") return;
+  if (m.type !== "radial" && m.type !== "linear") return;
   ctx.save();
   ctx.shadowColor = "rgba(0,0,0,0.75)";
   ctx.shadowBlur = 3;
@@ -6630,6 +7035,21 @@ function overlayHit(m, r, f) {
 const CURSORS = { move: "move", line: "move", rotate: "grab", rx: "ew-resize",
                   ry: "ns-resize", p1: "grab", p2: "grab" };
 
+// Which of the selected mask's shapes is under the pointer, and which grip of
+// it: the selected shape first, then the others from the top of the stack
+// down, so grabbing another shape's handle switches to it. -1 is the mask's
+// own shape, as in editSession.activePart.
+function shapeHit(m, r, f) {
+  const order = [editSession.activePart];
+  for (let i = (m.parts || []).length - 1; i >= -1; i--) if (i !== editSession.activePart) order.push(i);
+  for (const i of order) {
+    const s = i < 0 ? m : m.parts[i];
+    const hit = s.type !== "brush" ? overlayHit(s, r, f) : null;
+    if (hit) return { part: i, hit };
+  }
+  return null;
+}
+
 function overlayDown(e) {
   if (!editSession.relPath) return;
   const panButton = e.button === 1 || editSession.spaceHeld;   // middle / space-drag
@@ -6677,8 +7097,8 @@ function overlayDown(e) {
   }
   // Zoomed with nothing to grab? Then the drag pans the view. Space or the
   // middle button force a pan even when a mask is sitting under the cursor.
-  const wantsMask = !panButton && m && m.enabled &&
-    (editSession.tool === m.type || (m.type !== "brush" && overlayHit(m, r0, f0)));
+  const wantsMask = !panButton && m && m.enabled && !!m.type &&
+    (editSession.tool === activeShape().type || shapeHit(m, r0, f0));
   if (isZoomed() && !wantsMask) {
     editSession.drag = { kind: "pan", last: f0 };
     $("#edit-overlay").setPointerCapture(e.pointerId);
@@ -6686,17 +7106,18 @@ function overlayDown(e) {
     e.preventDefault();
     return;
   }
-  if (!m || !m.enabled) return;
+  if (!m || !m.enabled || !m.type) return;
   const r = r0, f = f0;
-  const armed = editSession.tool === m.type ? m.type : null;
+  let s = activeShape();
+  const armed = editSession.tool === s.type ? s.type : null;
   let drag = null;
-  // An armed tool owns the drag: a brand-new mask sits in the middle of the
+  // An armed tool owns the drag: a brand-new shape sits in the middle of the
   // frame, so its own handles must not steal the drag that places it.
   if (armed === "radial") {
-    Object.assign(m, { cx: f.x, cy: f.y, rx: MIN_RADIUS, ry: MIN_RADIUS, angle: 0 });
+    Object.assign(s, { cx: f.x, cy: f.y, rx: MIN_RADIUS, ry: MIN_RADIUS, angle: 0 });
     drag = { kind: "place-radial", start: f };
   } else if (armed === "linear") {
-    Object.assign(m, { x1: f.x, y1: f.y, x2: f.x, y2: f.y });
+    Object.assign(s, { x1: f.x, y1: f.y, x2: f.x, y2: f.y });
     drag = { kind: "place-linear", start: f };
   } else if (armed === "brush") {
     const stroke = {
@@ -6704,11 +7125,17 @@ function overlayDown(e) {
       erase: editSession.brush.erase !== e.altKey,   // Alt inverts the mode
       points: [[f.x, f.y]],
     };
-    m.strokes.push(stroke);
+    s.strokes.push(stroke);
     drag = { kind: "paint", stroke };
-  } else if (m.type !== "brush") {
-    const hit = overlayHit(m, r, f);
-    if (hit) drag = { kind: hit, start: f, orig: cloneMask(m) };
+  } else {
+    const at = shapeHit(m, r, f);
+    if (at) {
+      if (at.part !== editSession.activePart) {
+        selectPart(at.part);
+        s = activeShape();
+      }
+      drag = { kind: at.hit, start: f, orig: cloneShape(s) };
+    }
   }
   if (!drag) return;
   editSession.drag = drag;
@@ -6754,14 +7181,15 @@ function overlayMove(e) {
   }
   if (!d) {
     const cv = $("#edit-overlay");
-    if ((m && m.type === "brush" && editSession.tool === "brush") || isRepairBrush(editSession.tool)) {
+    if ((m && activeShape().type === "brush" && editSession.tool === "brush")
+        || isRepairBrush(editSession.tool)) {
       cv.style.cursor = "none";
       scheduleOverlay();           // the brush ring follows the pointer
     } else if (editSession.tool) {
       cv.style.cursor = "crosshair";
     } else {
-      const hit = m && m.enabled ? overlayHit(m, r, f) : null;
-      cv.style.cursor = hit ? CURSORS[hit] : (isZoomed() ? "grab" : "default");
+      const at = m && m.enabled ? shapeHit(m, r, f) : null;
+      cv.style.cursor = at ? CURSORS[at.hit] : (isZoomed() ? "grab" : "default");
     }
     return;
   }
@@ -6774,41 +7202,42 @@ function overlayMove(e) {
     return;
   }
   if (!m) return;
+  const s = activeShape();          // the shape being dragged, not the mask
   const aspect = r.h ? r.w / r.h : 1;
   if (d.kind === "move") {
-    m.cx = d.orig.cx + (f.x - d.start.x);
-    m.cy = d.orig.cy + (f.y - d.start.y);
+    s.cx = d.orig.cx + (f.x - d.start.x);
+    s.cy = d.orig.cy + (f.y - d.start.y);
   } else if (d.kind === "rx" || d.kind === "ry") {
     const { u, v } = radialLocal(d.orig, f);
-    if (d.kind === "rx") m.rx = Math.max(MIN_RADIUS, Math.abs(u) * d.orig.rx);
-    else m.ry = Math.max(MIN_RADIUS, Math.abs(v) * d.orig.ry);
+    if (d.kind === "rx") s.rx = Math.max(MIN_RADIUS, Math.abs(u) * d.orig.rx);
+    else s.ry = Math.max(MIN_RADIUS, Math.abs(v) * d.orig.ry);
     if (e.shiftKey) {  // keep the on-screen shape circular
-      if (d.kind === "rx") m.ry = m.rx * aspect; else m.rx = m.ry / aspect;
+      if (d.kind === "rx") s.ry = s.rx * aspect; else s.rx = s.ry / aspect;
     }
   } else if (d.kind === "rotate") {
-    let deg = Math.atan2(f.y - m.cy, f.x - m.cx) * 180 / Math.PI + 90;
+    let deg = Math.atan2(f.y - s.cy, f.x - s.cx) * 180 / Math.PI + 90;
     if (e.shiftKey) deg = Math.round(deg / 15) * 15;
-    m.angle = ((deg + 180) % 360 + 360) % 360 - 180;
+    s.angle = ((deg + 180) % 360 + 360) % 360 - 180;
   } else if (d.kind === "p1" || d.kind === "p2") {
-    const other = d.kind === "p1" ? [m.x2, m.y2] : [m.x1, m.y1];
+    const other = d.kind === "p1" ? [s.x2, s.y2] : [s.x1, s.y1];
     let [x, y] = [f.x, f.y];
     if (e.shiftKey) {
       if (Math.abs(x - other[0]) > Math.abs(y - other[1])) y = other[1]; else x = other[0];
     }
-    if (d.kind === "p1") { m.x1 = x; m.y1 = y; } else { m.x2 = x; m.y2 = y; }
+    if (d.kind === "p1") { s.x1 = x; s.y1 = y; } else { s.x2 = x; s.y2 = y; }
   } else if (d.kind === "line") {
     const dx = f.x - d.start.x, dy = f.y - d.start.y;
-    m.x1 = d.orig.x1 + dx; m.y1 = d.orig.y1 + dy;
-    m.x2 = d.orig.x2 + dx; m.y2 = d.orig.y2 + dy;
+    s.x1 = d.orig.x1 + dx; s.y1 = d.orig.y1 + dy;
+    s.x2 = d.orig.x2 + dx; s.y2 = d.orig.y2 + dy;
   } else if (d.kind === "place-radial") {
-    m.rx = Math.max(MIN_RADIUS, Math.abs(f.x - d.start.x));
-    m.ry = e.shiftKey ? m.rx * aspect : Math.max(MIN_RADIUS, Math.abs(f.y - d.start.y));
+    s.rx = Math.max(MIN_RADIUS, Math.abs(f.x - d.start.x));
+    s.ry = e.shiftKey ? s.rx * aspect : Math.max(MIN_RADIUS, Math.abs(f.y - d.start.y));
   } else if (d.kind === "place-linear") {
     let [x, y] = [f.x, f.y];
     if (e.shiftKey) {
-      if (Math.abs(x - m.x1) > Math.abs(y - m.y1)) y = m.y1; else x = m.x1;
+      if (Math.abs(x - s.x1) > Math.abs(y - s.y1)) y = s.y1; else x = s.x1;
     }
-    m.x2 = x; m.y2 = y;
+    s.x2 = x; s.y2 = y;
   } else if (d.kind === "paint") {
     // A pointermove can stand for several positions: when a frame runs long the
     // browser reports only the newest and folds the rest into it. Painting just
@@ -6885,15 +7314,15 @@ function overlayUp(e) {
     repairUp(d);
     return;
   }
-  const m = activeMask();
-  if (!m) return;
+  const s = activeShape();
+  if (!s) return;
   const r = overlayRect(), aspect = r.h ? r.w / r.h : 1;
   // A click without a drag still deserves a usable shape.
-  if (d.kind === "place-radial" && m.rx <= 0.02 && m.ry <= 0.02) {
-    m.rx = 0.22; m.ry = 0.22 * aspect;
+  if (d.kind === "place-radial" && s.rx <= 0.02 && s.ry <= 0.02) {
+    s.rx = 0.22; s.ry = 0.22 * aspect;
   }
-  if (d.kind === "place-linear" && Math.hypot(m.x2 - m.x1, m.y2 - m.y1) < 0.02) {
-    m.x2 = m.x1; m.y2 = m.y1 + 0.35;
+  if (d.kind === "place-linear" && Math.hypot(s.x2 - s.x1, s.y2 - s.y1) < 0.02) {
+    s.x2 = s.x1; s.y2 = s.y1 + 0.35;
   }
   if (d.kind === "place-radial" || d.kind === "place-linear") setEditTool(null);
   if (e && e.pointerId != null) {
@@ -6903,27 +7332,14 @@ function overlayUp(e) {
 }
 
 function undoLastStroke() {
-  const m = activeMask();
-  if (!m || m.type !== "brush" || !m.strokes.length) return;
-  m.strokes.pop();
+  const s = activeShape();
+  if (!s || s.type !== "brush" || !s.strokes.length) return;
+  s.strokes.pop();
   maskChanged(true);
 }
 
 function bindMaskUi() {
-  // Scoped to the buttons that name a kind. An automatic-mask button carries
-  // .mask-add-btn too, so a bare class selector matched it here as well and
-  // every click on Subject ran both handlers: this one first, with
-  // dataset.addMask undefined, pushing a typeless mask that MASK_KINDS has no
-  // entry for — which then threw out of renderMaskList and left the real mask
-  // missing from the list.
-  $$("#edit-modal .mask-add-btn[data-add-mask]").forEach((b) =>
-    b.addEventListener("click", () => addMask(b.dataset.addMask)));
-  $$("[data-add-auto]").forEach((b) =>
-    b.addEventListener("click", async () => {
-      // The model is fetched on the first automatic mask, not at startup: a
-      // shoot with no people in it should never pay for it.
-      if (await ensureSegmentModel()) addMask("auto", b.dataset.addAuto);
-    }));
+  $("#mask-new").addEventListener("click", addLayer);
 
   $("#mask-list").addEventListener("click", (e) => {
     const del = e.target.closest("[data-mask-del]");
@@ -6944,18 +7360,39 @@ function bindMaskUi() {
     const idx = row ? Number(row.dataset.mask) : -1;
     const m = editSession.edit.masks[idx];
     if (!m) return;
-    const name = prompt("Mask name:", maskLabel(m, idx));
+    const name = prompt("Layer name:", maskLabel(m, idx));
     if (name == null) return;
     m.name = name.trim().slice(0, 40);
     maskChanged(true);
   });
 
   $("#mask-invert").addEventListener("click", () => {
-    const m = activeMask();
-    if (!m) return;
-    m.invert = !m.invert;
+    const s = activeShape();
+    if (!s) return;
+    s.invert = !s.invert;
     maskChanged(true);
   });
+  // The mask's shapes: pick one, change how it stacks, or take it out.
+  $("#mask-parts").addEventListener("click", (e) => {
+    if (e.target.closest("select")) return;
+    const del = e.target.closest("[data-part-del]");
+    if (del) { deleteShape(Number(del.dataset.partDel)); return; }
+    const row = e.target.closest("[data-part]");
+    if (row) selectPart(Number(row.dataset.part));
+  });
+  $("#mask-parts").addEventListener("change", (e) => {
+    const sel = e.target.closest("[data-part-op]");
+    const m = activeMask();
+    if (!sel || !m) return;
+    const i = Number(sel.dataset.partOp);
+    m.parts[i].op = sel.value;
+    editSession.activePart = i;
+    armForShape();
+    maskChanged(true);
+  });
+  $$("#mask-part-add [data-add-part]").forEach((b) =>
+    b.addEventListener("click", () =>
+      addShape(b.dataset.addPart, $("#mask-part-op").value, b.dataset.group)));
   $("#mask-name").addEventListener("input", (e) => {
     const m = activeMask();
     if (!m) return;
@@ -6965,12 +7402,13 @@ function bindMaskUi() {
   });
   $("#mask-delete").addEventListener("click", () => deleteMask(editSession.activeMask));
   $("#mask-duplicate").addEventListener("click", duplicateActiveMask);
+  // Feather is the selected shape's own; the amount scales the whole mask.
   for (const key of ["feather", "amount"]) {
     $(`#mask-${key}`).addEventListener("input", (e) => {
-      const m = activeMask();
-      if (!m) return;
-      m[key] = parseFloat(e.target.value);
-      $(`#mask-${key}-val`).textContent = fmtSlider(e.target, m[key]);
+      const target = key === "feather" ? activeShape() : activeMask();
+      if (!target) return;
+      target[key] = parseFloat(e.target.value);
+      $(`#mask-${key}-val`).textContent = fmtSlider(e.target, target[key]);
       drawOverlay();
       setEditDirty();
       previewDuringDrag();
@@ -6991,12 +7429,6 @@ function bindMaskUi() {
     updateHsl(Object.fromEntries(HSL_FIELDS.map((f) => [f.k, 0]))));
   $("#grade-reset").addEventListener("click", () =>
     updateGradeZone(Object.fromEntries(GRADE_FIELDS.map((f) => [f.k, 0]))));
-  $("#mask-range-on").addEventListener("change", (e) => {
-    const m = activeMask();
-    if (!m) return;
-    m.range_luma = e.target.checked ? { ...LUMA_RANGE_NEW } : null;
-    maskChanged(true);
-  });
   $("#wb-pick").addEventListener("click", () =>
     setEditTool(editSession.tool === "wb" ? null : "wb"));
   $("#wb-reset").addEventListener("click", () => {
@@ -8004,8 +8436,10 @@ function bindKeys() {
       const tag = (e.target.tagName || "").toLowerCase();
       const typing = tag === "input" || tag === "select" || tag === "textarea";
       if (k === "Escape") {
-        // Esc backs out one level: armed tool, then mask selection, then modal.
+        // Esc backs out one level: armed tool, then a part back to its mask's
+        // own shape, then mask selection, then modal.
         if (editSession.tool) setEditTool(null);
+        else if (editSession.activePart >= 0) selectPart(-1, { backOut: true });
         else if (editSession.activeMask >= 0) selectMask(-1);
         else leaveEditor("close");
         e.preventDefault(); return;
@@ -8015,10 +8449,11 @@ function bindKeys() {
       if (k === "ArrowRight") { editNav(+1); e.preventDefault(); return; }
       if ((k === "c" || k === "C") && !e.repeat) { editCompareOn(); e.preventDefault(); return; }
       if (k === "Enter") { saveEdit(); e.preventDefault(); return; }
-      // Local adjustments
-      if (k === "r" || k === "R") { addMask("radial"); e.preventDefault(); return; }
-      if (k === "g" || k === "G") { addMask("linear"); e.preventDefault(); return; }
-      if (k === "b" || k === "B") { addMask("brush"); e.preventDefault(); return; }
+      // Layers: R, G and B add a shape to the selected one, as the buttons do
+      // (and to a new layer while the whole photo is selected).
+      if (k === "n" || k === "N") { addLayer(); e.preventDefault(); return; }
+      const kind = { r: "radial", g: "linear", b: "brush" }[k.toLowerCase()];
+      if (kind) { addShape(kind, $("#mask-part-op").value); e.preventDefault(); return; }
       if (k === "\\") {
         $("#mask-show").checked = editSession.showMask = !editSession.showMask;
         drawOverlay(); e.preventDefault(); return;
@@ -8031,7 +8466,9 @@ function bindKeys() {
         drawOverlay(); e.preventDefault(); return;
       }
       if ((k === "Delete" || k === "Backspace") && editSession.activeMask >= 0) {
-        deleteMask(editSession.activeMask); e.preventDefault(); return;
+        // The selected shape; the layer goes with its last one.
+        deleteShape(editSession.activePart);
+        e.preventDefault(); return;
       }
       if (k === "[" || k === "]") { nudgeBrushSize(k === "[" ? -8 : 8); e.preventDefault(); return; }
       if (k === "f" || k === "F") {
@@ -10934,20 +11371,21 @@ const KEYMAP = {
       { k: ["C"], label: "Hold to see the original", bar: "Original" },
       { k: ["F"], label: "Fit or 100%", bar: "Zoom" },
       { k: ["Enter"], label: "Save", bar: "Save" },
-      { k: ["Esc"], label: "Back out: tool, then mask, then the editor", bar: "Close" },
+      { k: ["Esc"], label: "Back out: tool, then shape, then mask, then the editor", bar: "Close" },
     ]},
     { group: "Undo", keys: [
       { k: [MOD, "Z"], label: "Undo", bar: "Undo" },
       { k: IS_MAC ? ["⇧", "⌘", "Z"] : ["Ctrl", "Y"], label: "Redo" },
     ]},
-    { group: "Masks", keys: [
-      { k: ["R"], label: "Add a radial mask" },
-      { k: ["G"], label: "Add a gradient mask" },
-      { k: ["B"], label: "Add a brush mask", bar: "Brush" },
+    { group: "Layers", keys: [
+      { k: ["N"], label: "New layer" },
+      { k: ["R"], label: "Add an ellipse to the layer" },
+      { k: ["G"], label: "Add a gradient to the layer" },
+      { k: ["B"], label: "Add a brush to the layer", bar: "Brush" },
       { k: ["[", "]"], label: "Brush size" },
       { k: ["\\"], label: "Show the mask" },
       { k: ["⇧", "\\"], label: "Show the heal and face marks" },
-      { k: ["Delete"], label: "Delete the selected mask" },
+      { k: ["Delete"], label: "Delete the selected shape, or an empty layer" },
     ]},
   ],
 };
@@ -11067,7 +11505,7 @@ const TOURS = {
     { target: ".edit-actionbar", title: "Auto, undo and presets",
       body: "<b>Auto</b> sets a starting tone. <kbd>⌘Z</kbd> / <kbd>Ctrl+Z</kbd> undoes and <kbd>⇧⌘Z</kbd> / <kbd>Ctrl+Y</kbd> redoes. Presets save a look to reuse." },
     { target: "#edit-mask-group", title: "Adjust the whole photo or part of it",
-      body: "The sliders change the whole photo. Open <b>Masks</b> to add a radial, gradient or brush, or an automatic Subject, Background or Skin mask, and the same sliders change only that part." },
+      body: "The sliders change the whole photo. Open <b>Layers</b>, make a new layer and add shapes to it, a radial, gradient, brush, tonal range or an automatic Subject, Background or Skin selection, each added or taken out, and the same sliders change only that part." },
     { target: "#edit-optics-group", title: "Lens & perspective",
       body: "Straighten leaning buildings with <b>Upright</b>, and correct distortion, colour fringes and dark corners." },
     { target: "#edit-portrait-group", title: "Portrait",

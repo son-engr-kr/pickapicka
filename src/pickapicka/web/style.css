@@ -825,6 +825,24 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
   background: rgba(0, 0, 0, 0.66); color: #fff; font-size: 11px; line-height: 1.4;
   text-align: center; pointer-events: none; border: 1px solid rgba(255, 255, 255, 0.14); }
 #edit-status:empty { display: none; }
+/* A fill in flight, under the status line so the two never cover each other. */
+#fill-progress { position: absolute; top: 40px; left: 50%; transform: translateX(-50%);
+  z-index: 2; width: min(360px, calc(100% - 24px)); padding: 6px 12px 8px;
+  border-radius: 10px; background: rgba(0, 0, 0, 0.72); color: #fff;
+  border: 1px solid rgba(196, 181, 253, 0.45); pointer-events: none;
+  display: flex; flex-direction: column; gap: 5px; font-size: 11px; line-height: 1.4;
+  text-align: center; }
+#fill-progress.hidden { display: none; }
+.fill-progress-track { display: block; height: 4px; border-radius: 2px; overflow: hidden;
+  background: rgba(255, 255, 255, 0.16); }
+/* The violet of the stroke being filled on the overlay (drawRepairs). */
+#fill-progress-bar { display: block; height: 100%; width: 3%; border-radius: 2px;
+  background: rgb(167, 139, 250); transition: width 0.45s ease-out; }
+#fill-progress-bar.indeterminate { width: 35%; animation: fill-sweep 1.1s ease-in-out infinite; }
+@keyframes fill-sweep { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+@media (prefers-reduced-motion: reduce) {
+  #fill-progress-bar.indeterminate { animation: none; width: 100%; opacity: 0.6; }
+}
 .edit-preview-bar { display: flex; align-items: center; justify-content: center;
   flex-wrap: wrap; gap: 6px 22px; }
 /* The adjustments and, under them, Save: one column whose width is the
@@ -903,13 +921,12 @@ body.resizing-edit, body.resizing-edit * { cursor: col-resize !important; user-s
 .mask-add { display: flex; flex-direction: column; gap: var(--s1); }
 .mask-add-label { font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.5px;
   text-transform: uppercase; color: var(--ink-faint); }
-/* Equal cells, matching .mask-auto-groups below. Wrapping a flex row left the
+/* Equal cells in .mask-part-add-row, matching .mask-auto-groups. Wrapping a flex row left the
    fourth kind stranded at its natural width under a label, reading as a stray
    control; a group that does not fill its last row still reads as a grid.
    min-width lets a cell be narrower than its label rather than widening the
    track — these buttons keep `white-space: nowrap` from the global rule, so
    without it a long label pushes the whole panel. */
-.mask-add-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s1); }
 .mask-add-btn { font-size: 11px; padding: 3px 8px; min-width: 0; }
 .mask-add-btn.armed { background: var(--accent); border-color: var(--accent); color: #fff; }
 .mask-help { margin: 0; font-size: 10px; color: var(--fg-dim); line-height: 1.5; }
@@ -930,8 +947,34 @@ body.resizing-edit, body.resizing-edit * { cursor: col-resize !important; user-s
 .mask-detail .look-row { display: grid; grid-template-columns: 74px 1fr 34px;
   gap: 8px; align-items: center; font-size: 11px; }
 .mask-detail .look-row input[type=range] { width: 100%; accent-color: var(--accent); }
+/* A mask's shapes: its own first, then what is stacked on it, each with how it
+   meets the ones above. Rows read like the mask list, a size down. */
+.mask-parts { display: flex; flex-direction: column; gap: 2px; }
+.mask-part-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px;
+  border-radius: 4px; cursor: pointer; font-size: 11px; border: 1px solid transparent; }
+.mask-part-row:hover { background: var(--bg-3); }
+.mask-part-row.active { background: var(--bg-3); border-color: var(--accent); }
+.mask-part-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.mask-part-op, #mask-part-op { background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px;
+  font: inherit; font-size: 11px; cursor: pointer; }
+.mask-part-add-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s1); }
+.mask-part-add-auto { grid-template-columns: repeat(3, 1fr); }
+/* The caption and how the next shape stacks, on one line above the kinds. */
+.mask-part-add-head { display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s2); }
+#mask-part-op.hidden { display: none; }
+.mask-new { align-self: flex-start; font-size: 11px; padding: 3px 10px; }
+.mask-detail .look-row.hidden { display: none; }
+.mask-detail-bar button.hidden { display: none; }
+.mask-parts-empty { font-size: 11px; color: var(--fg-dim); font-style: italic; padding: 2px 6px; }
 #mask-brush-tools { display: flex; flex-direction: column; gap: 8px; }
 #mask-brush-tools.hidden { display: none; }
+/* Its note ("nothing to drag") was shown under every shape, automatic or not:
+   only the group buttons inside it were ever empty. */
+#mask-auto-tools { display: flex; flex-direction: column; gap: var(--s1); }
+#mask-auto-tools.hidden, #mask-range-tools.hidden { display: none; }
 /* ---------- Watermark ---------- */
 #edit-wm-group.wm-on > summary { color: var(--accent); }
 #wm-summary-state { color: var(--accent); font-weight: 600; }
@@ -1531,9 +1574,7 @@ input[type="range"] { accent-color: var(--accent); }
 .mask-context { font-size: var(--fs-xs); color: var(--ink-faint);
   letter-spacing: 0.6px; text-transform: uppercase; }
 
-/* ----- range refinement ----- */
-.mask-range-enable { display: flex; align-items: center; gap: var(--s2);
-  font-size: var(--fs-sm); margin: var(--s1) 0; }
+/* ----- range shapes ----- */
 .mask-range-fields.hidden { display: none; }
 #mask-range-note.warn { color: var(--accent); }
 
@@ -1550,9 +1591,6 @@ input[type="range"] { accent-color: var(--accent); }
   text-transform: none; letter-spacing: 0; }
 
 /* ----- automatic masks ----- */
-/* Its own captioned group now, so it wants separating from the local one rather
-   than the negative margin that used to pull two label-and-buttons rows together. */
-.mask-add-auto { margin-top: var(--s2); }
 .mask-auto-groups { display: grid; grid-template-columns: repeat(3, 1fr);
   gap: var(--s1); margin-bottom: var(--s1); }
 .mask-auto-group { font-size: var(--fs-xs); padding: 3px 6px; border-radius: 6px;

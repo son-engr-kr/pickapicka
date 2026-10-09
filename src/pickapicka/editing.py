@@ -378,8 +378,27 @@ def geometry_norm_matrix(w: int, h: int,
 #
 # Common to all three: `feather` softens the edge, `amount` scales the whole
 # effect, `invert` flips inside/outside.
+#
+# A mask may also stack more shapes onto its own, Lightroom's mask components:
+#
+#   parts   [{op, type, invert, feather, ...that shape's geometry}, ...]
+#
+# `op` says how a part meets everything above it: "add" is the union (the
+# larger alpha), "subtract" takes it out (a * (1 - b)), "intersect" keeps only
+# the overlap (a * b). Each part has its own feather and its own invert, so
+# "the subject, minus a brushed-out hand" and "a gradient, only over the sky"
+# are one mask with one set of sliders. A part may be a range too, which is
+# how the editor narrows a mask to some tones now: an intersected range part
+# at the end of the stack does exactly what the mask-level refinement does,
+# and that refinement is still read, for edits made before parts existed.
+#
+# The order of a mask's alpha, then: its own shape, inverted if asked; each part
+# in turn, combined by its op; the range refinement; the amount.
 
 MASK_TYPES = ("radial", "linear", "brush", "auto", "range")
+PART_TYPES = ("radial", "linear", "brush", "auto", "range")
+PART_OPS = ("add", "subtract", "intersect")
+PART_MAX = 8               # parts stacked onto one mask
 
 # An "auto" mask is the odd one out and the difference is worth stating up front.
 # The other three are pure functions of geometry, which is why their alpha can be
@@ -442,23 +461,36 @@ def _default_mask(kind: str) -> dict[str, Any]:
         "adj": _neutral_adj(),
         "range_luma": None,
         "range_color": None,
+        "parts": [],
     }
-    if kind == "radial":
-        m.update(cx=0.5, cy=0.5, rx=0.25, ry=0.25, angle=0.0)
-    elif kind == "linear":
-        m.update(x1=0.5, y1=0.15, x2=0.5, y2=0.55, feather=100)
-    elif kind == "auto":
-        # Feather starts at zero here, unlike the drawn kinds: the model's own
-        # edge is already soft in the right places — half-covered hair comes out
-        # near 0.5 — and blurring that by default would throw the good edge away.
-        m.update(group="subject", feather=0)
-    elif kind == "range":
-        # Nothing but the range selection: the base covers the whole frame, so
-        # this kind is "everything that looks like this", with no shape at all.
-        m.update(feather=0)
-    else:
-        m.update(strokes=[])
+    m.update(_default_shape(kind))
     return m
+
+
+def _default_shape(kind: str) -> dict[str, Any]:
+    """A drawn or automatic shape's feather and geometry, centred and sized for a
+    sane first drag. Shared by a mask's own shape and the parts stacked on it."""
+    if kind == "radial":
+        return dict(feather=50, cx=0.5, cy=0.5, rx=0.25, ry=0.25, angle=0.0)
+    if kind == "linear":
+        return dict(feather=100, x1=0.5, y1=0.15, x2=0.5, y2=0.55)
+    if kind == "auto":
+        # Feather starts at zero here, unlike the drawn kinds: the model's own
+        # edge is already soft in the right places (half-covered hair comes out
+        # near 0.5), and blurring that by default would throw the good edge away.
+        return dict(feather=0, group="subject")
+    if kind == "range":
+        # Nothing but the range selection: "everything that looks like this",
+        # with no shape at all. A mask of this kind keeps its range in the same
+        # two fields every mask has for a refinement.
+        return dict(feather=0, range_luma=None, range_color=None)
+    assert kind == "brush", f"no shape for mask type {kind!r}"
+    return dict(feather=50, strokes=[])
+
+
+def _default_part(kind: str, op: str) -> dict[str, Any]:
+    """A neutral part of `kind`, stacked onto a mask by `op`."""
+    return {"op": op, "type": kind, "invert": False, **_default_shape(kind)}
 
 
 def _fnum(raw: Any, lo: float, hi: float, fallback: float) -> float:
@@ -495,9 +527,11 @@ def _normalize_adj(raw: Any) -> dict[str, Any]:
 # key, the analyses, the frame headers): at 36 000 points that was 15 ms a
 # time. The list is held by its entry, so its id cannot be reused while the
 # entry lives, and a normalized list maps to itself, so normalizing a
-# normalized edit is free. Both are shared: treat them as read-only.
+# normalized edit is free. Both are shared: treat them as read-only. Each list
+# takes two entries (what it came from, and itself), and a brush part has a
+# list of its own, so this holds a dozen of them.
 _STROKES_MEMO: "OrderedDict[int, tuple[Any, list[dict[str, Any]]]]" = OrderedDict()
-_STROKES_MEMO_MAX = 8
+_STROKES_MEMO_MAX = 24
 _STROKES_LOCK = threading.Lock()
 
 
@@ -559,36 +593,82 @@ def normalize_mask(raw: Any) -> dict[str, Any] | None:
     # than a mask type of its own.
     m["range_luma"] = rangemask_mod.normalize_luma(raw.get("range_luma"))
     m["range_color"] = rangemask_mod.normalize_color(raw.get("range_color"))
+    # A part that is not usable is dropped and the mask kept: a brush part with
+    # nothing painted yet is the normal state of one just added.
+    raw_parts = raw.get("parts")
+    if isinstance(raw_parts, (list, tuple)):
+        parts = (_normalize_part(p) for p in raw_parts[:PART_MAX])
+        m["parts"] = [p for p in parts if p is not None]
 
+    return m if _normalize_shape(m, raw, kind) else None
+
+
+def _normalize_part(raw: Any) -> dict[str, Any] | None:
+    """Coerce one stacked part, or None when it is not usable (unknown type or
+    op, or a shape that selects nothing)."""
+    if not isinstance(raw, dict):
+        return None
+    kind, op = raw.get("type"), raw.get("op")
+    if kind not in PART_TYPES or op not in PART_OPS:
+        return None
+    p = _default_part(kind, op)
+    p["invert"] = bool(raw.get("invert", False))
+    p["feather"] = _tenth(_fnum(raw.get("feather"), 0, 100, p["feather"]))
+    return p if _normalize_shape(p, raw, kind) else None
+
+
+def _normalize_shape(out: dict[str, Any], raw: dict[str, Any], kind: str) -> bool:
+    """Read a shape's geometry from `raw` into `out`. False when the shape
+    selects nothing, which makes the mask or the part holding it unusable."""
     if kind == "radial":
         # Centres may sit off-frame (a corner ellipse), radii must stay positive.
-        m["cx"] = _fnum(raw.get("cx"), -1.0, 2.0, 0.5)
-        m["cy"] = _fnum(raw.get("cy"), -1.0, 2.0, 0.5)
-        m["rx"] = _fnum(raw.get("rx"), 0.005, 3.0, 0.25)
-        m["ry"] = _fnum(raw.get("ry"), 0.005, 3.0, 0.25)
-        m["angle"] = _fnum(raw.get("angle"), -180.0, 180.0, 0.0)
+        out["cx"] = _fnum(raw.get("cx"), -1.0, 2.0, 0.5)
+        out["cy"] = _fnum(raw.get("cy"), -1.0, 2.0, 0.5)
+        out["rx"] = _fnum(raw.get("rx"), 0.005, 3.0, 0.25)
+        out["ry"] = _fnum(raw.get("ry"), 0.005, 3.0, 0.25)
+        out["angle"] = _fnum(raw.get("angle"), -180.0, 180.0, 0.0)
     elif kind == "linear":
-        m["x1"] = _fnum(raw.get("x1"), -1.0, 2.0, 0.5)
-        m["y1"] = _fnum(raw.get("y1"), -1.0, 2.0, 0.15)
-        m["x2"] = _fnum(raw.get("x2"), -1.0, 2.0, 0.5)
-        m["y2"] = _fnum(raw.get("y2"), -1.0, 2.0, 0.55)
-        if abs(m["x2"] - m["x1"]) < 1e-4 and abs(m["y2"] - m["y1"]) < 1e-4:
-            return None  # zero-length gradient has no direction
+        out["x1"] = _fnum(raw.get("x1"), -1.0, 2.0, 0.5)
+        out["y1"] = _fnum(raw.get("y1"), -1.0, 2.0, 0.15)
+        out["x2"] = _fnum(raw.get("x2"), -1.0, 2.0, 0.5)
+        out["y2"] = _fnum(raw.get("y2"), -1.0, 2.0, 0.55)
+        if abs(out["x2"] - out["x1"]) < 1e-4 and abs(out["y2"] - out["y1"]) < 1e-4:
+            return False  # zero-length gradient has no direction
     elif kind == "auto":
         group = raw.get("group")
         if group not in segment_mod.CLASS_GROUPS:
-            return None  # a group the model cannot produce selects nothing
-        m["group"] = group
-    elif kind == "range":
-        if m["range_luma"] is None and m["range_color"] is None:
-            return None  # a range mask with no range selects everything
+            return False  # a group the model cannot produce selects nothing
+        out["group"] = group
     elif kind == "brush":
-        m["strokes"] = _normalize_strokes(raw.get("strokes"))
-        if not m["strokes"]:
-            return None
+        out["strokes"] = _normalize_strokes(raw.get("strokes"))
+        if not out["strokes"]:
+            return False
+    elif kind == "range":
+        out["range_luma"] = rangemask_mod.normalize_luma(raw.get("range_luma"))
+        out["range_color"] = rangemask_mod.normalize_color(raw.get("range_color"))
+        if out["range_luma"] is None and out["range_color"] is None:
+            return False  # a range that selects every tone is no shape
     else:
         raise AssertionError(f"unhandled mask type {kind!r}")
-    return m
+    return True
+
+
+def mask_shapes(mask: dict[str, Any]) -> list[dict[str, Any]]:
+    """A normalized mask's own shape followed by its parts, in stacking order."""
+    return [mask, *mask["parts"]]
+
+
+def mask_reads_ranges(mask: dict[str, Any]) -> bool:
+    """Whether a normalized mask selects by tone anywhere: as its own shape, as
+    a refinement or in a part. Each needs the whole ungraded frame (`src`)."""
+    return any(s["range_luma"] is not None or s["range_color"] is not None
+               for s in mask_shapes(mask) if s is mask or s["type"] == "range")
+
+
+def mask_groups(mask: dict[str, Any]) -> set[str]:
+    """The segmentation groups a normalized mask reads, from its own shape and
+    its parts: what the caller has to supply as `auto` fields to render it."""
+    return {s["group"] for s in mask_shapes(mask) if s["type"] == "auto"}
 
 
 def _adj_is_neutral(adj: dict[str, Any]) -> bool:
@@ -832,6 +912,20 @@ def is_neutral(edit: dict[str, Any] | None) -> bool:
     if e["portrait"] is not None:
         return False   # portrait.normalize drops a panel at zero
     return all(_curve_is_identity(e[k]) for k in CURVE_KEYS)
+
+
+def is_empty(edit: dict[str, Any] | None) -> bool:
+    """True when `edit` holds nothing worth keeping: it leaves the pixels alone
+    and has no masks either.
+
+    Not the same as `is_neutral`. A mask whose shapes are drawn but whose
+    sliders have not been moved yet changes no pixel, and nor does one switched
+    off or at zero amount, but each is work someone did: drawing the shapes
+    first and setting the sliders after is the usual order. Stored only when it
+    was not neutral, such a mask on an otherwise untouched photo was thrown
+    away on Save, while the editor showed it as saved.
+    """
+    return is_neutral(edit) and not normalize(edit)["masks"]
 
 
 def edit_hash(edit: dict[str, Any] | None) -> str:
@@ -1511,7 +1605,7 @@ def _linear_alpha(m: dict[str, Any], sh: int, sw: int,
 # list: entry k names strokes[:k + 1]. Worked out once a request rather than
 # once for the alpha cache's key and again for the brush's own.
 _DIGEST_MEMO: "OrderedDict[int, tuple[Any, list[bytes]]]" = OrderedDict()
-_DIGEST_MEMO_MAX = 8
+_DIGEST_MEMO_MAX = 12      # a stroke list each, as _STROKES_MEMO holds
 
 
 def _stroke_digests(strokes: list[dict[str, Any]]) -> list[bytes]:
@@ -1644,7 +1738,8 @@ def _window_of(field: np.ndarray, sh: int, sw: int,
 def _range_alpha(mask: dict[str, Any], sh: int, sw: int,
                  roi: tuple[float, float, float, float],
                  src: np.ndarray | None) -> np.ndarray | None:
-    """A mask's range refinement, or None when it carries none.
+    """A mask's range refinement, or None when it carries none; for a range
+    part, its selection.
 
     `src` is the whole photo, ungraded. Both of those matter. Whole, because the
     selection has to be the same one at every zoom. Ungraded, because a selection
@@ -1695,28 +1790,84 @@ def _auto_alpha(mask: dict[str, Any], sh: int, sw: int,
     return np.clip(window, 0.0, 1.0)
 
 
-_ALPHA_CACHE_MAX = 12
+# Entries are shapes, not masks, so a mask with parts holds one per shape.
+_ALPHA_CACHE_MAX = 20
 _ALPHA_LOCK = threading.Lock()
 
 
-def _alpha_key(mask: dict[str, Any], sh: int, sw: int,
+def _alpha_key(shape: dict[str, Any], sh: int, sw: int,
                roi: tuple[float, float, float, float]) -> bytes:
-    """Everything that changes the alpha, and nothing that doesn't."""
+    """Everything that changes a shape's alpha, and nothing that doesn't. The
+    mask's amount is not in it: that scales the whole stack, after the parts."""
     h = hashlib.blake2b(digest_size=16)
-    h.update(f"{mask['type']}|{mask['invert']}|{mask['feather']}|{mask['amount']}"
+    h.update(f"{shape['type']}|{shape['invert']}|{shape['feather']}"
              f"|{sh}x{sw}|{roi}".encode())
-    if mask["type"] == "radial":
-        h.update(np.asarray([mask[k] for k in ("cx", "cy", "rx", "ry", "angle")],
+    if shape["type"] == "radial":
+        h.update(np.asarray([shape[k] for k in ("cx", "cy", "rx", "ry", "angle")],
                             dtype=np.float64).tobytes())
-    elif mask["type"] == "linear":
-        h.update(np.asarray([mask[k] for k in ("x1", "y1", "x2", "y2")],
+    elif shape["type"] == "linear":
+        h.update(np.asarray([shape[k] for k in ("x1", "y1", "x2", "y2")],
                             dtype=np.float64).tobytes())
-    elif mask["type"] in ("auto", "range"):
+    elif shape["type"] in ("auto", "range"):
         raise AssertionError(
-            f"{mask['type']} masks depend on the pixels and are not cached here")
+            f"{shape['type']} masks depend on the pixels and are not cached here")
     else:
-        h.update(_stroke_digests(mask["strokes"])[-1])
+        h.update(_stroke_digests(shape["strokes"])[-1])
     return h.digest()
+
+
+def _shape_alpha(shape: dict[str, Any], sh: int, sw: int,
+                 roi: tuple[float, float, float, float],
+                 auto: dict[str, np.ndarray] | None,
+                 src: np.ndarray | None) -> np.ndarray:
+    """One shape's alpha, a mask's own or one of its parts: its feather and its
+    inversion, and nothing of the mask's (the parts, the range, the amount).
+
+    A drawn shape is cached and shared, so treat the result as read-only. An
+    automatic one is not cached at all: the cache is keyed on the numbers
+    describing a shape, and those say nothing about which photo it is being
+    applied to, so a hit would be plain wrong. It is a crop and a resize of a
+    small field, which is cheaper than hashing the photo.
+    """
+    if shape["type"] in ("auto", "range"):
+        alpha = (_auto_alpha(shape, sh, sw, roi, auto) if shape["type"] == "auto"
+                 else _range_alpha(shape, sh, sw, roi, src))
+        return 1.0 - alpha if shape["invert"] else alpha
+
+    key = _alpha_key(shape, sh, sw, roi)
+    with _ALPHA_LOCK:
+        hit = _ALPHA_CACHE.get(key)
+        if hit is not None:
+            _ALPHA_CACHE.move_to_end(key)
+            return hit
+
+    if shape["type"] == "radial":
+        alpha = _radial_alpha(shape, sh, sw, roi)
+    elif shape["type"] == "linear":
+        alpha = _linear_alpha(shape, sh, sw, roi)
+    else:
+        alpha = _brush_alpha(shape, sh, sw, roi)
+    if shape["invert"]:
+        alpha = 1.0 - alpha
+    alpha = alpha.astype(np.float32)
+    alpha.flags.writeable = False   # it is shared; nobody may scribble on it
+
+    with _ALPHA_LOCK:
+        _ALPHA_CACHE[key] = alpha
+        while len(_ALPHA_CACHE) > _ALPHA_CACHE_MAX:
+            _ALPHA_CACHE.popitem(last=False)
+    return alpha
+
+
+def _combine(a: np.ndarray, b: np.ndarray, op: str) -> np.ndarray:
+    """Stack part `b` onto the alpha `a` built so far. Always a new array, since
+    either may be a shared cache entry."""
+    if op == "add":
+        return np.maximum(a, b)       # the union, as a brush's own strokes
+    if op == "subtract":
+        return a * (1.0 - b)
+    assert op == "intersect", f"unknown part op {op!r}"
+    return a * b
 
 
 def _mask_alpha_at(mask: dict[str, Any], sh: int, sw: int,
@@ -1725,65 +1876,28 @@ def _mask_alpha_at(mask: dict[str, Any], sh: int, sw: int,
                    src: np.ndarray | None = None) -> np.ndarray:
     """Build a mask's alpha at exactly sh x sw, covering `roi` of the frame.
 
-    The result is cached and shared — treat it as read-only. Masks whose alpha
-    depends on the pixels are not cached at all: the cache is keyed on the
-    numbers describing a mask, and those say nothing about which photo it is
-    being applied to, so a hit would be plain wrong. Both such paths are a crop
-    and a resize of a small field, which is cheaper than hashing the photo.
+    The result may be a shared cache entry (a lone drawn shape at full amount
+    is returned as it is), so treat it as read-only.
+
+    Inversion belongs to each shape and is applied before the range, for every
+    kind: "outside this shape, but only these tones". Inverting the product
+    instead would select the whole rest of the frame. An automatic mask once
+    inverted after its range while the editor's tint inverted before it, so
+    the two disagreed for that one combination; they now agree.
     """
     ranged = _range_alpha(mask, sh, sw, roi, src)
-
-    if mask["type"] == "auto":
-        alpha = _auto_alpha(mask, sh, sw, roi, auto)
-    elif mask["type"] == "range":
+    if mask["type"] == "range":
         assert ranged is not None, "a range mask normalizes away without a range"
-        alpha = np.ones((sh, sw), dtype=np.float32)
+        # The range is this mask's shape here, not a refinement of one.
+        alpha, ranged = (1.0 - ranged if mask["invert"] else ranged), None
     else:
-        alpha = None
-
-    if alpha is not None:
-        if ranged is not None:
-            alpha = alpha * ranged
-        if mask["invert"]:
-            alpha = 1.0 - alpha
-        if mask["amount"] != 100:
-            alpha = alpha * (mask["amount"] / 100.0)
-        return np.clip(alpha, 0.0, 1.0).astype(np.float32)
-
+        alpha = _shape_alpha(mask, sh, sw, roi, auto, src)
+    for part in mask["parts"]:
+        alpha = _combine(alpha, _shape_alpha(part, sh, sw, roi, auto, src), part["op"])
     if ranged is not None:
-        # A drawn shape refined by a range: the shape is cacheable, the
-        # refinement is not, so take the cached shape and narrow a copy of it.
-        shape = _mask_alpha_at({**mask, "range_luma": None, "range_color": None},
-                               sh, sw, roi)
-        # Inversion has already been applied to the cached shape. Applying the
-        # range after it is what "this shape, narrowed to these tones" means;
-        # inverting the product instead would select the whole rest of the frame.
-        return np.clip(shape * ranged, 0.0, 1.0).astype(np.float32)
-
-    key = _alpha_key(mask, sh, sw, roi)
-    with _ALPHA_LOCK:
-        hit = _ALPHA_CACHE.get(key)
-        if hit is not None:
-            _ALPHA_CACHE.move_to_end(key)
-            return hit
-
-    if mask["type"] == "radial":
-        alpha = _radial_alpha(mask, sh, sw, roi)
-    elif mask["type"] == "linear":
-        alpha = _linear_alpha(mask, sh, sw, roi)
-    else:
-        alpha = _brush_alpha(mask, sh, sw, roi)   # "auto" returned above
-    if mask["invert"]:
-        alpha = 1.0 - alpha
+        alpha = alpha * ranged
     if mask["amount"] != 100:
         alpha = alpha * (mask["amount"] / 100.0)
-    alpha = alpha.astype(np.float32)
-    alpha.flags.writeable = False   # it is shared; nobody may scribble on it
-
-    with _ALPHA_LOCK:
-        _ALPHA_CACHE[key] = alpha
-        while len(_ALPHA_CACHE) > _ALPHA_CACHE_MAX:
-            _ALPHA_CACHE.popitem(last=False)
     return alpha
 
 
@@ -2388,7 +2502,8 @@ def _band_count(e: dict[str, Any], h: int, pad: int, workers: int) -> int:
                                "lens": None, "transform": None})
     active = [m for m in e["masks"] if mask_is_active(m)]
     if tone_neutral or workers < 2 or e["dehaze"] or e["denoise"] \
-            or any(m["adj"]["dehaze"] or m["adj"]["denoise"] or m["type"] == "brush"
+            or any(m["adj"]["dehaze"] or m["adj"]["denoise"]
+                   or any(s["type"] == "brush" for s in mask_shapes(m))
                    for m in active):
         return 1
     n = min(workers * _BANDS_PER_WORKER, h // _BAND_ROWS_MIN)

@@ -66,7 +66,7 @@ def _stroke(**kw) -> dict:
 def test_the_patch_keeps_the_aifill_contract(monkeypatch) -> None:
     seen = {}
 
-    def fake(rgb, hole, seed, model_dir=None):
+    def fake(rgb, hole, seed, model_dir=None, progress=None):
         seen["shape"], seen["hole"], seen["seed"] = rgb.shape, hole.copy(), seed
         out = rgb.copy()
         out[hole] = (250, 20, 200)
@@ -84,6 +84,70 @@ def test_the_patch_keeps_the_aifill_contract(monkeypatch) -> None:
     assert (np.abs(patch[hole].astype(int) - (250, 20, 200)) <= 2).mean() > 0.95
     # The hole given to the model covers the stroke, grown a little.
     assert seen["hole"].sum() > hole.sum() * (genfill.SIZE / 900) ** 2
+
+
+class _FakeSession:
+    """The three graphs' shapes without their weights."""
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def run(self, _outputs, feeds):
+        if self.name == "vae_decoder":
+            return [np.zeros((1, 3, genfill.SIZE, genfill.SIZE), np.float32)]
+        return [np.zeros((1, 4, genfill.SIZE // 8, genfill.SIZE // 8), np.float32)]
+
+
+def _stand_in(monkeypatch, tmp_path) -> None:
+    np.save(tmp_path / genfill.EMBEDDING, np.zeros((1, 77, 768), np.float32))
+    loaded = set()
+
+    def session(name, model_dir=None, progress=genfill._quiet, at=0.0):
+        if name not in loaded:          # as the real one: said only on a first load
+            loaded.add(name)
+            progress("loading the model", at, at)
+        return _FakeSession(name)
+    monkeypatch.setattr(genfill, "_session", session)
+
+
+def test_progress_is_reported_stage_by_stage(monkeypatch, tmp_path) -> None:
+    _stand_in(monkeypatch, tmp_path)
+    heard = []
+    rgb = np.zeros((genfill.SIZE, genfill.SIZE, 3), np.uint8)
+    hole = np.zeros((genfill.SIZE, genfill.SIZE), bool)
+    hole[200:260, 200:260] = True
+    genfill.inpaint(rgb, hole, seed=1, model_dir=tmp_path,
+                    progress=lambda s, f, u: heard.append((s, f, u)))
+    stages = [s for s, _, _ in heard]
+    assert stages[0] == "loading the model" and stages[-1] == "finishing"
+    assert [s for s in stages if s.startswith("drawing")] == \
+        [f"drawing, step {i} of {genfill.STEPS}" for i in range(1, genfill.STEPS + 1)]
+    fractions = [f for _, f, _ in heard]
+    assert fractions == sorted(fractions), "the bar went backwards"
+    assert fractions[0] == 0.0 and fractions[-1] == 1.0
+    # Each stage ends where the next one starts, so a bar easing toward the end
+    # of one never has to come back.
+    for (_, f, u), (_, f_next, _) in zip(heard, heard[1:]):
+        assert f <= u <= f_next + 1e-9, (f, u, f_next)
+
+
+def test_a_second_fill_waits_for_the_first_and_says_so(monkeypatch) -> None:
+    import threading
+    monkeypatch.setattr(genfill, "inpaint", lambda rgb, hole, seed, model_dir=None, progress=None: rgb)
+    monkeypatch.setattr(genfill, "_COLOUR_MATCH", False)
+    frame = np.random.default_rng(3).integers(0, 255, (900, 1200, 3)).astype(np.uint8)
+    heard = []
+    genfill._RUN.acquire()              # a fill already running
+    try:
+        t = threading.Thread(target=genfill.make_fill, args=(frame, _stroke()),
+                             kwargs={"progress": lambda s, f, u: heard.append(s)})
+        t.start()
+        t.join(timeout=0.3)
+        assert t.is_alive(), "it did not wait"
+        assert heard == ["waiting for the fill before it"]
+    finally:
+        genfill._RUN.release()
+    t.join(timeout=5)
+    assert not t.is_alive()
 
 
 def test_the_same_stroke_gets_the_same_noise() -> None:

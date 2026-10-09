@@ -21,8 +21,10 @@ adjustments bake in only on export or download.
   photos either side are decoded ahead, so stepping to the next one is
   immediate. Export grades a frame in bands on four threads.
 - **Edits are not lost by leaving.** Moving to the next or previous photo
-  (`←` `→`) saves the edit, and says so beside Save. Closing with `Esc` or `×`
-  while something is unsaved asks whether to save, discard or keep editing;
+  (`←` `→`, or the filmstrip) with something unsaved asks whether to save,
+  discard or keep editing, so a stray arrow does not rewrite the photo; `Enter`
+  answers Save, and the editor says so beside Save. Closing with `Esc` or `×`
+  while something is unsaved asks the same;
   **Cancel** asks before discarding; and the browser warns before a reload or a
   closed tab would drop an unsaved edit.
 - **White balance by click.** Temperature and Tint are channel gains rather
@@ -267,14 +269,14 @@ Two stages that fix the captured image rather than interpret it, and they run
   radial or a brush, but a segmentation is not a shape it can redraw, so that one
   comes back from the server as an image.
 
-## Range masks
+## Range shapes
 
-- **Select by tone, not by shape.** A **Range** mask has no geometry at all: it
+- **Select by tone, not by shape.** A **Range** has no geometry at all: it
   selects every pixel in a band of perceptual lightness, so "every mid-tone" is
   one click.
-- Better, a range is a **refinement any mask can carry** — including an automatic
-  one. "The subject, but only its highlights" is one mask with one slider set,
-  not two masks fighting over the same pixels.
+- Better, a range **narrows any layer** when it intersects it, an automatic
+  selection included. "The subject, but only its highlights" is one layer with
+  one slider set, not two fighting over the same pixels.
 - The selection is measured on the **whole, ungraded frame** at one fixed grid,
   and both halves of that matter. Measured on a 1:1 window it would select a
   different set of tones than the fit preview did, because a window's histogram
@@ -285,8 +287,41 @@ Two stages that fix the captured image rather than interpret it, and they run
   is not available. A range mask will not pick single leaves out of a sky or
   catch a one-pixel specular highlight. That is the trade for a slider you can
   tune against the preview and trust on export.
-- Press `\` to see the selection. For a shape carrying a refinement the tint is
-  the shape *narrowed* to the selection, which is what actually gets graded.
+- Press `\` to see the selection. For a layer narrowed by a range the tint is
+  the stack *narrowed* to the selection, which is what actually gets graded.
+
+## Layers and their shapes
+
+- **A layer is a set of shapes with one set of sliders.** **New layer** (`N`)
+  makes an empty one; **Add shape** puts things in it: a radial, a gradient, a
+  brush, a tonal range, or an automatic Subject, Background, Skin, Face, Hair
+  or Clothes selection. The list names layers by their place, not by what is
+  in them; the layer's **Shapes** list says that. So "the subject, minus a
+  brushed-out hand" or "a gradient, but only over the ellipse" is one layer,
+  Lightroom's mask components.
+- **Each shape after the first says how it meets the ones above it**: **Add**
+  (the union, the larger alpha wins), **Subtract** (taken out, `a × (1 − b)`)
+  or **Intersect** (only the overlap, `a × b`). The choice sits on the shape's
+  row and can be changed at any time; the one beside Add shape is for the next.
+- **Narrowing a layer to some tones is a Range that intersects it.** Edits made
+  before shapes stacked carried that range on the layer itself; the editor
+  shows it as the same Range shape, last in the stack, and renders it the same.
+- **Feather, inside/outside and a Range's tones belong to each shape**, the
+  amount to the whole layer. Click a shape's row, or grab its handle on the
+  photo, to work on it; the other shapes stay outlined. `R`, `G` and `B` add
+  an ellipse, a gradient or a brush to the selected layer, and to a new one
+  while the whole photo is selected.
+- `Del` removes the selected shape. Removing the first moves the next one up
+  into its place; removing the last leaves the layer empty, with its sliders,
+  for another shape, and `Del` on an empty layer removes it. **Delete** in the
+  layer's bar removes it and everything in it at once. `Esc` backs out of a
+  shape before it backs out of the layer. A layer holds up to 9 shapes. One with
+  none acts nowhere and is not saved.
+- One meaning changed with this, for an inverted **automatic** mask that also
+  carries a range: it used to invert after the range (everything except the
+  subject's dark tones), while the tint showed the other reading. Every kind
+  now inverts its own shape first and narrows that, so "outside the subject, but
+  only its dark tones" renders as the tint showed it.
 
 ## Lens and perspective
 
@@ -470,7 +505,8 @@ noise actually lives, and negative texture can be brushed onto skin alone.
   ellipse (drag to place, handles to resize and rotate), a **gradient** for
   skies and foregrounds, or **brush** an area freehand (Alt to erase). Each mask
   carries its own full slider set plus Feather, Amount and an inside/outside
-  toggle; stack up to 16 per photo. Press `\` to tint the affected area.
+  toggle, and can hold several shapes (see *Layers and their shapes*); up to
+  16 layers per photo. Press `\` to tint the affected area.
 - **Creative effects**, global or masked: **defocus** (disc-shaped lens blur, so
   highlights bloom into circles — put it on an inverted radial for fake shallow
   depth of field), **motion** blur with an angle (mask the car out of it and you

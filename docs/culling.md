@@ -30,7 +30,8 @@ whole job: decide, filter, move on.
 - **The viewer** (`Enter`) shows the photo at once from its thumbnail while the
   full image loads, with the decision buttons, the reasons for the suggestion,
   and a **filmstrip** of the scene along the bottom. The editor has the same
-  filmstrip; moving to another photo there saves the edit. Preferences can turn
+  filmstrip; moving to another photo there with an unsaved edit asks whether to
+  save it first. Preferences can turn
   the filmstrip off, which gives its height to the photo.
 - **Zoom in the viewer**: a click goes to 100% where it lands and a second one
   back to fit; scroll or pinch zooms about the pointer (up to 400%), `+` and `-`
