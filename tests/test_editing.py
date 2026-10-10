@@ -553,10 +553,12 @@ def test_merge_of_nothing_is_the_base() -> None:
 
 def test_stacking_local_presets_composes() -> None:
     """The point of the feature: two local presets applied in turn give both."""
-    from pickapicka import presets
-    by_id = {p["id"]: p["edit"] for p in presets.list_builtins()}
-    edit = editing.merge_additive(None, by_id["car-bokeh"])
-    edit = editing.merge_additive(edit, by_id["car-plate"])
+    bokeh = {"masks": [{"type": "radial", "name": "Bokeh", "invert": True, "cx": 0.5, "cy": 0.55,
+                        "rx": 0.42, "ry": 0.34, "feather": 60, "adj": {"blur": 38}}]}
+    plate = {"masks": [{"type": "radial", "name": "Plate", "cx": 0.5, "cy": 0.72,
+                        "rx": 0.12, "ry": 0.05, "feather": 10, "adj": {"pixelate": 55}}]}
+    edit = editing.merge_additive(None, bokeh)
+    edit = editing.merge_additive(edit, plate)
     assert len(edit["masks"]) == 2
     kinds = {m["name"] for m in edit["masks"]}
     assert kinds == {"Bokeh", "Plate"}, "stacked presets keep distinct names"

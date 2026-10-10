@@ -72,13 +72,13 @@ def test_view_survives_alongside_the_rest_of_the_file(tmp_path) -> None:
     """The view map must not disturb recents or presets, which share the file."""
     u = _fresh(tmp_path)
     u.remember_open(tmp_path / "picks.json", tmp_path, "JPEG")
-    u.save_preset("Punchy", {"exposure": 0.3})
+    u.save_preset("Punchy", {"parts": ["light"], "edit": {"exposure": 0.3}})
     u.set_view("/p", {"filter": "pick", "page_size": 2, "page": 0, "scene": "s"})
     assert len(u.get_recents()) == 1
     assert [p["name"] for p in u.list_presets()] == ["Punchy"]
     assert u.get_view("/p")["filter"] == "pick"
     # …and the reverse order, in case one writer clobbers the other.
-    u.save_preset("Flat", {"contrast": -0.2})
+    u.save_preset("Flat", {"parts": ["light"], "edit": {"contrast": -0.2}})
     assert u.get_view("/p")["filter"] == "pick"
     assert len(u.list_presets()) == 2
 

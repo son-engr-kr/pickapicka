@@ -1084,453 +1084,487 @@
              aria-label="Resize the adjustments panel" tabindex="0"
              title="Drag to resize the panel · double-click for the default width"></div>
         <div class="edit-side">
-        <div class="edit-controls">
-          <!-- In the order a photo is usually worked: tone and colour first, then
-               looks, geometry and retouching; saved versions last. Each section
-               remembers whether it was left open. -->
-          <div class="edit-actionbar">
-            <button id="edit-undo" data-icon="undo" title="Undo" aria-label="Undo" disabled></button>
-            <button id="edit-redo" data-icon="undo" class="redo" title="Redo" aria-label="Redo" disabled></button>
-            <button id="edit-auto" class="primary" data-icon="wand" title="Auto-tone from the histogram">Auto</button>
-            <button id="edit-reset"
-                    title="Reset the selected mask, or — on Global — every adjustment and mask">Reset</button>
-            <select id="edit-preset-select" title="Apply a saved preset">
-              <option value="">Presets…</option>
-            </select>
-            <span id="preset-mode">
-              <button data-preset-mode="add" class="active">add</button><button
-                      data-preset-mode="replace">replace</button>
-            </span>
-            <button id="edit-preset-save" title="Save current adjustments as a preset">Save preset…</button>
-            <button id="edit-preset-delete" data-icon="trash" title="Delete the selected preset" aria-label="Delete the selected preset"></button>
+        <!-- Above the tabs and outside their scroll, so undo, Auto and Reset are
+             always to hand, whichever tab is open. -->
+        <div class="edit-actionbar">
+          <button id="edit-undo" data-icon="undo" title="Undo" aria-label="Undo" disabled></button>
+          <button id="edit-redo" data-icon="undo" class="redo" title="Redo" aria-label="Redo" disabled></button>
+          <button id="edit-auto" class="primary" data-icon="wand" title="Auto-tone from the histogram">Auto</button>
+          <button id="edit-reset">Reset</button>
+        </div>
+        <!-- Presets sit above the tabs: one carries parts from any of them. While
+             the one just applied is still as it landed, its chip says so and
+             takes an Amount or a Remove. -->
+        <div class="preset-bar">
+          <button type="button" id="preset-open" data-icon="look" aria-haspopup="dialog"
+                  aria-expanded="false">Presets</button>
+          <div class="preset-live hidden" id="preset-live">
+            <span class="preset-live-name" id="preset-live-name"></span>
+            <input type="range" id="preset-amount" min="0" max="200" step="1" value="100"
+                   aria-label="How much of the preset" />
+            <span class="look-val" id="preset-amount-val">100</span>
+            <button type="button" id="preset-remove" class="quiet"
+                    title="Back to the edit before this preset">Remove</button>
           </div>
-          <details class="edit-group" id="edit-mask-group">
-            <summary>Layers <span id="mask-summary-state"></span></summary>
-            <div class="mask-panel">
-              <div class="mask-head">
-                <span class="mask-head-title">Adjust</span>
-                <label class="mask-show" title="Tint the affected area red (\)">
-                  <input type="checkbox" id="mask-show" /> show mask (red)
-                </label>
-              </div>
-              <div class="mask-list" id="mask-list"></div>
-              <button type="button" class="mask-new" id="mask-new" data-icon="plus">New layer</button>
-              <p class="mask-help">Drag the handles on the photo to reshape · Shift constrains ·
-                <kbd>\</kbd> show mask · <kbd>Del</kbd> remove the selected shape</p>
-              <div class="mask-detail hidden" id="mask-detail">
-                <label class="mask-name-row">
-                  <span class="mask-name-label">Name</span>
-                  <input type="text" id="mask-name" maxlength="40" />
-                </label>
-                <div class="mask-add">
-                  <span class="mask-add-label">Shapes</span>
-                  <div class="mask-parts" id="mask-parts"></div>
+          <div class="preset-panel hidden" id="preset-panel" role="dialog" aria-label="Presets">
+            <div class="preset-list" id="preset-list"></div>
+            <p class="mask-help" id="preset-list-help">Click to apply. Clicking another one
+              replaces it while it is as it landed; <kbd>Shift</kbd>-click lays one over
+              the other. Hover to see it on the photo.</p>
+            <button type="button" id="preset-new" data-icon="plus">Save this edit as a preset…</button>
+          </div>
+        </div>
+        <p class="preset-note hidden" id="preset-note"></p>
+        <nav class="edit-tabs" role="tablist" aria-label="Editor tools">
+          <button type="button" role="tab" id="edit-tabbtn-adjust" data-edit-tab="adjust" aria-controls="edit-tab-adjust"
+                  title="Light, colour, detail and looks, for the whole photo or one layer of it"><span class="edit-tab-icon" data-icon="sliders"></span><span class="edit-tab-label">Adjust</span><span class="edit-tab-badge" data-tab-badge="adjust"></span></button>
+          <button type="button" role="tab" id="edit-tabbtn-retouch" data-edit-tab="retouch" aria-controls="edit-tab-retouch"
+                  title="Heal, red eye and portrait"><span class="edit-tab-icon" data-icon="heal"></span><span class="edit-tab-label">Retouch</span><span class="edit-tab-badge" data-tab-badge="retouch"></span></button>
+          <button type="button" role="tab" id="edit-tabbtn-geometry" data-edit-tab="geometry" aria-controls="edit-tab-geometry"
+                  title="Crop, straighten, lens and perspective"><span class="edit-tab-icon" data-icon="crop"></span><span class="edit-tab-label">Geometry</span><span class="edit-tab-badge" data-tab-badge="geometry"></span></button>
+          <button type="button" role="tab" id="edit-tabbtn-output" data-edit-tab="output" aria-controls="edit-tab-output"
+                  title="Watermark and saved versions"><span class="edit-tab-icon" data-icon="download"></span><span class="edit-tab-label">Output</span><span class="edit-tab-badge" data-tab-badge="output"></span></button>
+        </nav>
+        <div class="edit-controls">
+          <!-- One tab at a time: adjusting (the whole photo or a layer of it),
+               then what is done to the photo itself, retouching and geometry,
+               and what goes out with it. Each section remembers whether it was
+               left open, and the editor which tab. -->
+          <div class="edit-tab" id="edit-tab-adjust" role="tabpanel" aria-labelledby="edit-tabbtn-adjust" data-tab="adjust" hidden>
+            <!-- Where first, then what: the whole photo or one layer, and under it
+                 the sliders of whichever is picked. A layer has the sections a layer
+                 can carry; the rest belong to the whole photo and hide meanwhile. -->
+              <div class="mask-panel">
+                <div class="mask-head">
+                  <span class="mask-head-title">Applies to</span>
+                  <label class="mask-show" title="Tint the affected area red (\)">
+                    <input type="checkbox" id="mask-show" /> show mask (red)
+                  </label>
                 </div>
-                <div class="mask-add" id="mask-part-add">
-                  <div class="mask-part-add-head">
-                    <span class="mask-add-label" id="mask-part-add-label">Add shape</span>
-                    <select id="mask-part-op" title="How the new shape meets the ones above it">
-                      <option value="add">Add</option>
-                      <option value="subtract">Subtract</option>
-                      <option value="intersect">Intersect</option>
-                    </select>
+                <div class="mask-list" id="mask-list"></div>
+                <button type="button" class="mask-new" id="mask-new" data-icon="plus">New layer</button>
+                <p class="mask-help">Drag the handles on the photo to reshape · Shift constrains ·
+                  <kbd>\</kbd> show mask · <kbd>Del</kbd> remove the selected shape</p>
+                <div class="mask-detail hidden" id="mask-detail">
+                  <label class="mask-name-row">
+                    <span class="mask-name-label">Name</span>
+                    <input type="text" id="mask-name" maxlength="40" />
+                  </label>
+                  <div class="mask-add">
+                    <span class="mask-add-label">Shapes</span>
+                    <div class="mask-parts" id="mask-parts"></div>
                   </div>
-                  <div class="mask-part-add-row">
-                    <button class="mask-add-btn" data-add-part="radial" data-icon="radial">Radial</button>
-                    <button class="mask-add-btn" data-add-part="linear" data-icon="gradient">Gradient</button>
-                    <button class="mask-add-btn" data-add-part="brush" data-icon="brush">Brush</button>
-                    <button class="mask-add-btn" data-add-part="range" data-icon="palette"
-                            title="Select by tone rather than by shape">Range</button>
+                  <div class="mask-add" id="mask-part-add">
+                    <div class="mask-part-add-head">
+                      <span class="mask-add-label" id="mask-part-add-label">Add shape</span>
+                      <select id="mask-part-op" title="How the new shape meets the ones above it">
+                        <option value="add">Add</option>
+                        <option value="subtract">Subtract</option>
+                        <option value="intersect">Intersect</option>
+                      </select>
+                    </div>
+                    <div class="mask-part-add-row">
+                      <button class="mask-add-btn" data-add-part="radial" data-icon="radial">Radial</button>
+                      <button class="mask-add-btn" data-add-part="linear" data-icon="gradient">Gradient</button>
+                      <button class="mask-add-btn" data-add-part="brush" data-icon="brush">Brush</button>
+                      <button class="mask-add-btn" data-add-part="range" data-icon="palette"
+                              title="Select by tone rather than by shape">Range</button>
+                    </div>
+                    <div class="mask-part-add-row mask-part-add-auto">
+                      <button class="mask-add-btn" data-add-part="auto" data-group="subject"
+                              title="Everything that is not background">Subject</button>
+                      <button class="mask-add-btn" data-add-part="auto" data-group="background"
+                              title="Everything behind the subject">Background</button>
+                      <button class="mask-add-btn" data-add-part="auto" data-group="skin"
+                              title="Face and body skin">Skin</button>
+                      <button class="mask-add-btn" data-add-part="auto" data-group="face"
+                              title="Face skin only">Face</button>
+                      <button class="mask-add-btn" data-add-part="auto" data-group="hair">Hair</button>
+                      <button class="mask-add-btn" data-add-part="auto" data-group="clothes">Clothes</button>
+                    </div>
                   </div>
-                  <div class="mask-part-add-row mask-part-add-auto">
-                    <button class="mask-add-btn" data-add-part="auto" data-group="subject"
-                            title="Everything that is not background">Subject</button>
-                    <button class="mask-add-btn" data-add-part="auto" data-group="background"
-                            title="Everything behind the subject">Background</button>
-                    <button class="mask-add-btn" data-add-part="auto" data-group="skin"
-                            title="Face and body skin">Skin</button>
-                    <button class="mask-add-btn" data-add-part="auto" data-group="face"
-                            title="Face skin only">Face</button>
-                    <button class="mask-add-btn" data-add-part="auto" data-group="hair">Hair</button>
-                    <button class="mask-add-btn" data-add-part="auto" data-group="clothes">Clothes</button>
-                  </div>
-                </div>
-                <div class="mask-detail-bar">
-                  <button id="mask-invert" title="Select the inside or the outside of the selected shape">Affect: inside</button>
-                  <button id="mask-duplicate">Duplicate</button>
-                  <button id="mask-delete" data-icon="trash">Delete</button>
-                </div>
-                <label class="look-row" id="mask-feather-row"><span class="look-name">Feather</span>
-                  <input type="range" id="mask-feather" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
-                  <span class="look-val" id="mask-feather-val"></span></label>
-                <label class="look-row"><span class="look-name">Amount</span>
-                  <input type="range" id="mask-amount" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
-                  <span class="look-val" id="mask-amount-val"></span></label>
-                <div id="mask-range-tools" class="hidden">
-                  <div class="mask-range-fields" id="mask-range-fields"></div>
-                  <p class="mask-help" id="mask-range-note">Measured on the whole,
-                    ungraded frame, so the selection is the same at every zoom and
-                    does not chase the exposure you set through it. To narrow a
-                    layer to some tones, add a Range that intersects it.</p>
-                </div>
-                <div id="mask-auto-tools" class="hidden">
-                  <span class="mask-add-label">This shape selects</span>
-                  <div class="mask-auto-groups" id="mask-auto-groups"></div>
-                  <p class="mask-help">Nothing to drag: what this selects is a
-                    segmentation of the photo. Feather softens its edge.</p>
-                </div>
-                <div id="mask-brush-tools" class="hidden">
-                  <label class="look-row"><span class="look-name">Brush size</span>
-                    <input type="range" id="mask-brush-size" min="5" max="300" step="1" />
-                    <span class="look-val" id="mask-brush-size-val"></span></label>
                   <div class="mask-detail-bar">
-                    <button id="mask-brush-paint" class="active">Paint</button>
-                    <button id="mask-brush-erase" title="Or hold Alt while painting">Erase</button>
-                    <button id="mask-brush-undo" data-icon="undo" title="Remove the last stroke">Undo stroke</button>
+                    <button id="mask-invert" title="Select the inside or the outside of the selected shape">Affect: inside</button>
+                    <button id="mask-duplicate">Duplicate</button>
+                    <button id="mask-delete" data-icon="trash">Delete</button>
+                  </div>
+                  <label class="look-row" id="mask-feather-row"><span class="look-name">Feather</span>
+                    <input type="range" id="mask-feather" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
+                    <span class="look-val" id="mask-feather-val"></span></label>
+                  <label class="look-row"><span class="look-name">Amount</span>
+                    <input type="range" id="mask-amount" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
+                    <span class="look-val" id="mask-amount-val"></span></label>
+                  <div id="mask-range-tools" class="hidden">
+                    <div class="mask-range-fields" id="mask-range-fields"></div>
+                    <p class="mask-help" id="mask-range-note">Measured on the whole,
+                      ungraded frame, so the selection is the same at every zoom and
+                      does not chase the exposure you set through it. To narrow a
+                      layer to some tones, add a Range that intersects it.</p>
+                  </div>
+                  <div id="mask-auto-tools" class="hidden">
+                    <span class="mask-add-label">This shape selects</span>
+                    <div class="mask-auto-groups" id="mask-auto-groups"></div>
+                    <p class="mask-help">Nothing to drag: what this selects is a
+                      segmentation of the photo. Feather softens its edge.</p>
+                  </div>
+                  <div id="mask-brush-tools" class="hidden">
+                    <label class="look-row"><span class="look-name">Brush size</span>
+                      <input type="range" id="mask-brush-size" min="5" max="300" step="1" />
+                      <span class="look-val" id="mask-brush-size-val"></span></label>
+                    <div class="mask-detail-bar">
+                      <button id="mask-brush-paint" class="active">Paint</button>
+                      <button id="mask-brush-erase" title="Or hold Alt while painting">Erase</button>
+                      <button id="mask-brush-undo" data-icon="undo" title="Remove the last stroke">Undo stroke</button>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-          </details>
-          <div class="mask-context" id="mask-context">Global adjustments</div>
-          <details class="edit-group" id="edit-light-group" open>
-            <summary>Light</summary>
-            <div class="edit-group-body" data-group="light"></div>
-          </details>
-          <details class="edit-group" id="edit-color-group" open>
-            <summary>Color</summary>
-            <div class="wb-row">
-              <button id="wb-pick" data-icon="pipette">White balance</button>
-              <button id="wb-reset">Neutral</button>
-            </div>
-            <div class="edit-group-body" data-group="color"></div>
-          </details>
-          <details class="edit-group" id="edit-curve-group">
-            <summary>Tone curve <span id="curve-summary-state"></span></summary>
-            <div class="curve-channels" id="curve-channels"></div>
-            <div class="edit-curve-wrap">
-              <canvas id="edit-curve" width="256" height="256"></canvas>
-            </div>
-            <button id="edit-curve-reset" class="linkish">Reset curve</button>
-          </details>
-          <details class="edit-group" id="edit-hsl-group">
-            <summary>Color Mixer <span id="hsl-summary-state"></span></summary>
-            <div class="edit-group-body">
-              <p class="hsl-note">
-                Eight hue bands, blended into each other rather than windowed, so
-                there is no seam between orange and yellow. Near-greys are left
-                alone: their hue is numerical noise, and pushing it would speckle
-                a flat wall.
-              </p>
-              <div class="hsl-bands" id="hsl-bands"></div>
-              <div class="hsl-fields" id="hsl-fields"></div>
-              <button class="hsl-reset" id="hsl-reset" type="button">Reset band</button>
-            </div>
-          </details>
-          <details class="edit-group" id="edit-grade-group">
-            <summary>Color Grading <span id="grade-summary-state"></span></summary>
-            <div class="edit-group-body">
-              <p class="hsl-note">
-                A hue and a strength per tonal region. Adding colour never moves
-                brightness: every tint is a vector with zero luma, so the
-                exposure you set stays the exposure you get.
-              </p>
-              <div class="grade-zones" id="grade-zones"></div>
-              <div class="grade-fields" id="grade-fields"></div>
-              <div class="grade-globals" id="grade-globals"></div>
-              <button class="hsl-reset" id="grade-reset" type="button">Reset zone</button>
-            </div>
-          </details>
-          <details class="edit-group" id="edit-detail-group">
-            <summary>Detail &amp; Effects</summary>
-            <div class="edit-group-body" data-group="detail"></div>
-          </details>
-          <details class="edit-group" id="edit-creative-group">
-            <summary>Creative</summary>
-            <div class="edit-group-body" data-group="creative"></div>
-          </details>
-          <details class="edit-group" id="edit-look-group">
-            <summary>Look <span id="look-summary-state"></span></summary>
-            <div class="edit-group-body">
-              <p class="hsl-note">
-                A colour lookup table under every slider, the way a profile sits
-                under Lightroom's: import a <code>.cube</code>, or match this
-                photo's colours to another frame of the same scene, such as one
-                from a second camera. Whole photo only.
-              </p>
-              <div class="look-pick-row">
-                <select id="look-select" aria-label="Look"></select>
-                <button id="look-delete" type="button" data-icon="trash"
-                        title="Remove this look from the library" aria-label="Remove this look from the library"></button>
+            <div class="mask-context hidden" id="mask-context"></div>
+            <details class="edit-group" id="edit-light-group" open>
+              <summary>Light</summary>
+              <div class="edit-group-body" data-group="light"></div>
+            </details>
+            <details class="edit-group" id="edit-color-group" open>
+              <summary>Color</summary>
+              <div class="wb-row">
+                <button id="wb-pick" data-icon="pipette">White balance</button>
+                <button id="wb-reset">Neutral</button>
               </div>
-              <label class="look-row"><span class="look-name">Amount</span>
-                <input type="range" id="look-amount" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
-                <span class="look-val" id="look-amount-val"></span></label>
-              <div class="look-actions">
-                <button id="look-import" type="button">Import .cube…</button>
-                <button id="look-match" type="button">Match colours to…</button>
+              <div class="edit-group-body" data-group="color"></div>
+            </details>
+            <details class="edit-group" id="edit-curve-group">
+              <summary>Tone curve <span id="curve-summary-state"></span></summary>
+              <div class="curve-channels" id="curve-channels"></div>
+              <div class="edit-curve-wrap">
+                <canvas id="edit-curve" width="256" height="256"></canvas>
               </div>
-              <input type="file" id="look-file" accept=".cube,.CUBE" hidden />
-              <div id="look-match-picker" class="hidden">
+              <button id="edit-curve-reset" class="linkish">Reset curve</button>
+            </details>
+            <details class="edit-group" id="edit-hsl-group">
+              <summary>Color Mixer <span id="hsl-summary-state"></span></summary>
+              <div class="edit-group-body">
                 <p class="hsl-note">
-                  Pick the frame to match. It is taken as you edited it; this photo
-                  is taken as shot, and your sliders here then apply on top. Works
-                  best on the same subject under the same light.
+                  Eight hue bands, blended into each other rather than windowed, so
+                  there is no seam between orange and yellow. Near-greys are left
+                  alone: their hue is numerical noise, and pushing it would speckle
+                  a flat wall.
                 </p>
-                <div id="look-match-thumbs"></div>
+                <div class="hsl-bands" id="hsl-bands"></div>
+                <div class="hsl-fields" id="hsl-fields"></div>
+                <button class="hsl-reset" id="hsl-reset" type="button">Reset band</button>
               </div>
-              <p class="hsl-note" id="look-status"></p>
-            </div>
-          </details>
-          <details class="edit-group" id="edit-film-group">
-            <summary>Film <span id="film-summary-state"></span></summary>
-            <div class="edit-group-body">
-              <label class="film-enable">
-                <input type="checkbox" id="film-enabled" />
-                <span>Emulate film</span>
-              </label>
-              <p class="film-note">
-                A response curve applied to log exposure, a dye-crosstalk matrix
-                in density space, highlight scatter that bleeds warm, and grain
-                whose size is fixed against the frame rather than the render.
-              </p>
-              <div class="film-stocks" id="film-stocks"></div>
-              <div class="film-fields" id="film-fields"></div>
-            </div>
-          </details>
-          <details class="edit-group" id="edit-crop-group">
-            <summary>Crop &amp; Straighten</summary>
-            <div class="edit-group-body">
-              <div class="crop-row">
-                <button id="crop-tool" class="crop-arm" data-icon="crop">Crop</button>
-                <button id="crop-reset">Reset</button>
+            </details>
+            <details class="edit-group" id="edit-grade-group">
+              <summary>Color Grading <span id="grade-summary-state"></span></summary>
+              <div class="edit-group-body">
+                <p class="hsl-note">
+                  A hue and a strength per tonal region. Adding colour never moves
+                  brightness: every tint is a vector with zero luma, so the
+                  exposure you set stays the exposure you get.
+                </p>
+                <div class="grade-zones" id="grade-zones"></div>
+                <div class="grade-fields" id="grade-fields"></div>
+                <div class="grade-globals" id="grade-globals"></div>
+                <button class="hsl-reset" id="grade-reset" type="button">Reset zone</button>
               </div>
-              <div class="crop-aspects" id="crop-aspects">
-                <button data-aspect="free" class="active">Free</button>
-                <button data-aspect="orig">Original</button>
-                <button data-aspect="1:1">1:1</button>
-                <button data-aspect="4:5">4:5</button>
-                <button data-aspect="5:4">5:4</button>
-                <button data-aspect="2:3">2:3</button>
-                <button data-aspect="3:2">3:2</button>
-                <button data-aspect="16:9">16:9</button>
+            </details>
+            <details class="edit-group" id="edit-detail-group">
+              <summary>Detail &amp; Effects</summary>
+              <div class="edit-group-body" data-group="detail"></div>
+            </details>
+            <details class="edit-group" id="edit-creative-group">
+              <summary>Creative</summary>
+              <div class="edit-group-body" data-group="creative"></div>
+            </details>
+            <details class="edit-group" id="edit-look-group">
+              <summary>Look <span id="look-summary-state"></span></summary>
+              <div class="edit-group-body">
+                <p class="hsl-note">
+                  A colour lookup table under every slider, the way a profile sits
+                  under Lightroom's: import a <code>.cube</code>, or match this
+                  photo's colours to another frame of the same scene, such as one
+                  from a second camera. Whole photo only.
+                </p>
+                <div class="look-pick-row">
+                  <select id="look-select" aria-label="Look"></select>
+                  <button id="look-delete" type="button" data-icon="trash"
+                          title="Remove this look from the library" aria-label="Remove this look from the library"></button>
+                </div>
+                <label class="look-row"><span class="look-name">Amount</span>
+                  <input type="range" id="look-amount" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" />
+                  <span class="look-val" id="look-amount-val"></span></label>
+                <div class="look-actions">
+                  <button id="look-import" type="button">Import .cube…</button>
+                  <button id="look-match" type="button">Match colours to…</button>
+                </div>
+                <input type="file" id="look-file" accept=".cube,.CUBE" hidden />
+                <div id="look-match-picker" class="hidden">
+                  <p class="hsl-note">
+                    Pick the frame to match. It is taken as you edited it; this photo
+                    is taken as shot, and your sliders here then apply on top. Works
+                    best on the same subject under the same light.
+                  </p>
+                  <div id="look-match-thumbs"></div>
+                </div>
+                <p class="hsl-note" id="look-status"></p>
               </div>
-              <label class="look-row" data-field="tilt">
-                <span class="look-name">Straighten</span>
-                <input type="range" id="crop-tilt" min="-45" max="45" step="0.1" />
-                <span class="look-val" id="crop-tilt-val"></span>
-              </label>
-              <div class="crop-size" id="crop-size"></div>
-            </div>
-          </details>
-          <details class="edit-group" id="edit-optics-group">
-            <summary>Lens &amp; perspective <span id="optics-summary-state"></span></summary>
-            <div class="edit-group-body">
-              <p class="hsl-note">
-                Corrections for what the lens and the camera angle did, applied
-                before everything else. Masks and repairs are placed on the
-                corrected picture, so set these first.
-              </p>
-              <div class="optics-sub">Upright</div>
-              <div class="optics-upright" id="optics-upright">
-                <button type="button" data-upright="level" title="Level the horizon (sets Straighten)">Level</button>
-                <button type="button" data-upright="vertical" title="Level, then make leaning verticals vertical">Vertical</button>
-                <button type="button" data-upright="full" title="Level, and straighten both verticals and horizontals">Full</button>
-                <button type="button" data-upright="auto" title="Full, held back so the result does not look staged">Auto</button>
+            </details>
+            <details class="edit-group" id="edit-film-group">
+              <summary>Film <span id="film-summary-state"></span></summary>
+              <div class="edit-group-body">
+                <label class="film-enable">
+                  <input type="checkbox" id="film-enabled" />
+                  <span>Emulate film</span>
+                </label>
+                <p class="film-note">
+                  A response curve applied to log exposure, a dye-crosstalk matrix
+                  in density space, highlight scatter that bleeds warm, and grain
+                  whose size is fixed against the frame rather than the render.
+                </p>
+                <div class="film-stocks" id="film-stocks"></div>
+                <div class="film-fields" id="film-fields"></div>
               </div>
-              <div id="optics-transform-fields"></div>
-              <div class="optics-sub">Lens</div>
-              <label class="optics-check" title="Estimate the colour fringing from the photo itself">
-                <input type="checkbox" id="lens-ca-auto" /> Remove colour fringing automatically
-              </label>
-              <div id="optics-lens-fields"></div>
-              <button class="hsl-reset" id="optics-reset" type="button">Reset lens &amp; perspective</button>
-              <p class="hsl-note" id="optics-status"></p>
-            </div>
-          </details>
-          <details class="edit-group" id="edit-portrait-group">
-            <summary>Portrait <span id="portrait-summary-state"></span></summary>
-            <div class="edit-group-body">
-              <p class="hsl-note">
-                Applied to every face found, and sized to each, so a headshot and
-                a group photo get the same look. A face can have settings of its own.
-              </p>
-              <label class="mask-show portrait-show" title="Outline the faces found on the photo (Shift+\)">
-                <input type="checkbox" id="portrait-show" checked /> show faces
-              </label>
-              <div class="portrait-target" id="portrait-target" role="group" aria-label="Which faces the sliders set"></div>
-              <div class="portrait-target-row">
-                <p class="hsl-note" id="portrait-target-note"></p>
-                <button type="button" id="portrait-target-reset" class="quiet hidden"
-                        title="Take this face's own settings away, so it follows All faces again">Same as all faces</button>
+            </details>
+          </div>
+          <div class="edit-tab" id="edit-tab-retouch" role="tabpanel" aria-labelledby="edit-tabbtn-retouch" data-tab="retouch" hidden>
+            <details class="edit-group" id="edit-repair-group" open>
+              <summary>Heal &amp; red eye <span id="repair-summary-state"></span></summary>
+              <div class="edit-group-body">
+                <div class="repair-tools">
+                  <button type="button" data-repair-tool="spot" title="Click a dust spot or a blemish">Spot</button>
+                  <button type="button" data-repair-tool="heal" title="Paint over something to fill it in from around it">Heal</button>
+                  <button type="button" data-repair-tool="fill" title="Paint over something and a model draws what belongs there: skin with its pores, a jaw line carried through">AI fill</button>
+                  <button type="button" data-repair-tool="gen" title="Generative fill: a diffusion model for larger regions where AI fill runs out (an eye bag, crow&apos;s feet, glasses across skin). About 20 seconds a stroke; an opt-in download">Generative</button>
+                  <button type="button" data-repair-tool="clone" title="Alt-click where to copy from, then paint">Clone</button>
+                </div>
+                <label class="mask-show repair-show" title="Outline every spot, heal, clone and eye fix on the photo (Shift+\)">
+                  <input type="checkbox" id="repair-show" checked /> show marks
+                </label>
+                <label class="look-row"><span class="look-name">Size</span>
+                  <input type="range" id="repair-size" min="1" max="150" step="1" />
+                  <span class="look-val" id="repair-size-val"></span></label>
+                <p class="hsl-note">
+                  Heal fills in from the edges: right for dust, spots, a stray hair
+                  or a wire against the sky, but it smears texture like skin,
+                  fabric, grass or hair. AI fill draws that texture instead (a
+                  28 MB MIT-licensed model), and Generative redraws larger
+                  regions with a diffusion model (1.9 GB, opt-in); Clone copies
+                  real texture from a place you choose. Runs before every other
+                  adjustment.
+                </p>
+                <div class="repair-list" id="repair-list"></div>
+                <div class="repair-sub">Red eye</div>
+                <div class="repair-tools">
+                  <button type="button" id="redeye-auto" title="Find people's red eyes automatically">Find red eyes</button>
+                  <button type="button" data-repair-tool="redeye" title="Drag from the pupil's centre to the edge of the iris">Fix an eye</button>
+                  <button type="button" data-repair-tool="peteye" title="Drag from the centre of a pet's eye to the edge of the glow">Pet eye</button>
+                </div>
+                <div class="repair-list" id="redeye-list"></div>
+                <p class="hsl-note" id="repair-status"></p>
               </div>
-              <span class="edit-subhead">Skin</span>
-              <label class="look-row" title="Even out blotches and fine lines; the pores stay, and the eyes, brows and mouth are left alone">
-                <span class="look-name">Smooth skin</span>
-                <input type="range" id="portrait-smooth" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
-                <span class="look-val" id="portrait-smooth-val"></span></label>
-              <label class="look-row" title="Softens the lines on the face (crow&apos;s feet, forehead, smile lines) and keeps the pores; the lids, the eyes and the nose keep their shape">
-                <span class="look-name">Wrinkles</span>
-                <input type="range" id="portrait-wrinkles" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
-                <span class="look-val" id="portrait-wrinkles-val"></span></label>
-              <label class="look-row" title="Lifts the shadow under each eye towards the colour of the cheek below it; the texture stays">
-                <span class="look-name">Dark circles</span>
-                <input type="range" id="portrait-dark_circles" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
-                <span class="look-val" id="portrait-dark_circles-val"></span></label>
-              <label class="look-row" title="Softens the lines and creases on the neck">
-                <span class="look-name">Neck lines</span>
-                <input type="range" id="portrait-neck" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
-                <span class="look-val" id="portrait-neck-val"></span></label>
-              <div class="portrait-blemish-row">
-                <button type="button" id="portrait-blemishes"
-                        title="Find spots and blemishes and heal them; each one lands in Heal &amp; red eye">Remove blemishes</button>
-                <label title="Heal each one with AI fill, which keeps the skin&apos;s pores, rather than filling it in from its edges">
-                  <input type="checkbox" id="portrait-blemish-ai" checked /> with AI fill</label>
+            </details>
+            <details class="edit-group" id="edit-portrait-group">
+              <summary>Portrait <span id="portrait-summary-state"></span></summary>
+              <div class="edit-group-body">
+                <p class="hsl-note">
+                  Applied to every face found, and sized to each, so a headshot and
+                  a group photo get the same look. A face can have settings of its own.
+                </p>
+                <label class="mask-show portrait-show" title="Outline the faces found on the photo (Shift+\)">
+                  <input type="checkbox" id="portrait-show" checked /> show faces
+                </label>
+                <div class="portrait-target" id="portrait-target" role="group" aria-label="Which faces the sliders set"></div>
+                <div class="portrait-target-row">
+                  <p class="hsl-note" id="portrait-target-note"></p>
+                  <button type="button" id="portrait-target-reset" class="quiet hidden"
+                          title="Take this face's own settings away, so it follows All faces again">Same as all faces</button>
+                </div>
+                <span class="edit-subhead">Skin</span>
+                <label class="look-row" title="Even out blotches and fine lines; the pores stay, and the eyes, brows and mouth are left alone">
+                  <span class="look-name">Smooth skin</span>
+                  <input type="range" id="portrait-smooth" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                  <span class="look-val" id="portrait-smooth-val"></span></label>
+                <label class="look-row" title="Softens the lines on the face (crow&apos;s feet, forehead, smile lines) and keeps the pores; the lids, the eyes and the nose keep their shape">
+                  <span class="look-name">Wrinkles</span>
+                  <input type="range" id="portrait-wrinkles" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                  <span class="look-val" id="portrait-wrinkles-val"></span></label>
+                <label class="look-row" title="Lifts the shadow under each eye towards the colour of the cheek below it; the texture stays">
+                  <span class="look-name">Dark circles</span>
+                  <input type="range" id="portrait-dark_circles" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                  <span class="look-val" id="portrait-dark_circles-val"></span></label>
+                <label class="look-row" title="Softens the lines and creases on the neck">
+                  <span class="look-name">Neck lines</span>
+                  <input type="range" id="portrait-neck" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                  <span class="look-val" id="portrait-neck-val"></span></label>
+                <div class="portrait-blemish-row">
+                  <button type="button" id="portrait-blemishes"
+                          title="Find spots and blemishes and heal them; each one lands in Heal &amp; red eye">Remove blemishes</button>
+                  <label title="Heal each one with AI fill, which keeps the skin&apos;s pores, rather than filling it in from its edges">
+                    <input type="checkbox" id="portrait-blemish-ai" checked /> with AI fill</label>
+                </div>
+                <span class="edit-subhead">Eyes &amp; teeth</span>
+                <label class="look-row" title="Takes the yellow out of the teeth and brightens them; lips and gums are left alone">
+                  <span class="look-name">Whiten teeth</span>
+                  <input type="range" id="portrait-teeth" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                  <span class="look-val" id="portrait-teeth-val"></span></label>
+                <label class="look-row" title="Clears redness from the whites of the eyes and brightens them">
+                  <span class="look-name">Whiten eyes</span>
+                  <input type="range" id="portrait-eyes" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                  <span class="look-val" id="portrait-eyes-val"></span></label>
+                <span class="edit-subhead">Face shape</span>
+                <p class="hsl-note">
+                  A warp of the face&apos;s own landmarks: nothing is painted in, and
+                  the background beside a moved jaw stretches with it.
+                </p>
+                <label class="look-row" title="+ enlarges the eyes, − makes them smaller">
+                  <span class="look-name">Eye size</span>
+                  <input type="range" id="portrait-eye_size" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                  <span class="look-val" id="portrait-eye_size-val"></span></label>
+                <label class="look-row" title="− slims the cheeks, + widens them">
+                  <span class="look-name">Face width</span>
+                  <input type="range" id="portrait-face_width" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                  <span class="look-val" id="portrait-face_width-val"></span></label>
+                <label class="look-row" title="− narrows the jaw into a V line, + widens it">
+                  <span class="look-name">Jaw</span>
+                  <input type="range" id="portrait-jaw_width" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                  <span class="look-val" id="portrait-jaw_width-val"></span></label>
+                <label class="look-row" title="+ lengthens the chin, − shortens it">
+                  <span class="look-name">Chin</span>
+                  <input type="range" id="portrait-chin_length" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                  <span class="look-val" id="portrait-chin_length-val"></span></label>
+                <label class="look-row" title="− narrows the nose, + widens it">
+                  <span class="look-name">Nose width</span>
+                  <input type="range" id="portrait-nose_width" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                  <span class="look-val" id="portrait-nose_width-val"></span></label>
+                <label class="look-row" title="+ widens the mouth, − narrows it">
+                  <span class="look-name">Mouth width</span>
+                  <input type="range" id="portrait-mouth_width" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
+                  <span class="look-val" id="portrait-mouth_width-val"></span></label>
+                <p class="hsl-note" id="portrait-faces"></p>
               </div>
-              <span class="edit-subhead">Eyes &amp; teeth</span>
-              <label class="look-row" title="Takes the yellow out of the teeth and brightens them; lips and gums are left alone">
-                <span class="look-name">Whiten teeth</span>
-                <input type="range" id="portrait-teeth" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
-                <span class="look-val" id="portrait-teeth-val"></span></label>
-              <label class="look-row" title="Clears redness from the whites of the eyes and brightens them">
-                <span class="look-name">Whiten eyes</span>
-                <input type="range" id="portrait-eyes" min="0" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
-                <span class="look-val" id="portrait-eyes-val"></span></label>
-              <span class="edit-subhead">Face shape</span>
-              <p class="hsl-note">
-                A warp of the face&apos;s own landmarks: nothing is painted in, and
-                the background beside a moved jaw stretches with it.
-              </p>
-              <label class="look-row" title="+ enlarges the eyes, − makes them smaller">
-                <span class="look-name">Eye size</span>
-                <input type="range" id="portrait-eye_size" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
-                <span class="look-val" id="portrait-eye_size-val"></span></label>
-              <label class="look-row" title="− slims the cheeks, + widens them">
-                <span class="look-name">Face width</span>
-                <input type="range" id="portrait-face_width" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
-                <span class="look-val" id="portrait-face_width-val"></span></label>
-              <label class="look-row" title="− narrows the jaw into a V line, + widens it">
-                <span class="look-name">Jaw</span>
-                <input type="range" id="portrait-jaw_width" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
-                <span class="look-val" id="portrait-jaw_width-val"></span></label>
-              <label class="look-row" title="+ lengthens the chin, − shortens it">
-                <span class="look-name">Chin</span>
-                <input type="range" id="portrait-chin_length" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
-                <span class="look-val" id="portrait-chin_length-val"></span></label>
-              <label class="look-row" title="− narrows the nose, + widens it">
-                <span class="look-name">Nose width</span>
-                <input type="range" id="portrait-nose_width" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
-                <span class="look-val" id="portrait-nose_width-val"></span></label>
-              <label class="look-row" title="+ widens the mouth, − narrows it">
-                <span class="look-name">Mouth width</span>
-                <input type="range" id="portrait-mouth_width" min="-100" max="100" step="0.1" data-coarse="1" data-fine="0.1" data-zero />
-                <span class="look-val" id="portrait-mouth_width-val"></span></label>
-              <p class="hsl-note" id="portrait-faces"></p>
-            </div>
-          </details>
-          <details class="edit-group" id="edit-repair-group">
-            <summary>Heal &amp; red eye <span id="repair-summary-state"></span></summary>
-            <div class="edit-group-body">
-              <div class="repair-tools">
-                <button type="button" data-repair-tool="spot" title="Click a dust spot or a blemish">Spot</button>
-                <button type="button" data-repair-tool="heal" title="Paint over something to fill it in from around it">Heal</button>
-                <button type="button" data-repair-tool="fill" title="Paint over something and a model draws what belongs there: skin with its pores, a jaw line carried through">AI fill</button>
-                <button type="button" data-repair-tool="gen" title="Generative fill: a diffusion model for larger regions where AI fill runs out (an eye bag, crow&apos;s feet, glasses across skin). About 20 seconds a stroke; an opt-in download">Generative</button>
-                <button type="button" data-repair-tool="clone" title="Alt-click where to copy from, then paint">Clone</button>
+            </details>
+          </div>
+          <div class="edit-tab" id="edit-tab-geometry" role="tabpanel" aria-labelledby="edit-tabbtn-geometry" data-tab="geometry" hidden>
+            <details class="edit-group" id="edit-crop-group" open>
+              <summary>Crop &amp; Straighten</summary>
+              <div class="edit-group-body">
+                <div class="crop-row">
+                  <button id="crop-tool" class="crop-arm" data-icon="crop">Crop</button>
+                  <button id="crop-reset">Reset</button>
+                </div>
+                <div class="crop-aspects" id="crop-aspects">
+                  <button data-aspect="free" class="active">Free</button>
+                  <button data-aspect="orig">Original</button>
+                  <button data-aspect="1:1">1:1</button>
+                  <button data-aspect="4:5">4:5</button>
+                  <button data-aspect="5:4">5:4</button>
+                  <button data-aspect="2:3">2:3</button>
+                  <button data-aspect="3:2">3:2</button>
+                  <button data-aspect="16:9">16:9</button>
+                </div>
+                <label class="look-row" data-field="tilt">
+                  <span class="look-name">Straighten</span>
+                  <input type="range" id="crop-tilt" min="-45" max="45" step="0.1" />
+                  <span class="look-val" id="crop-tilt-val"></span>
+                </label>
+                <div class="crop-size" id="crop-size"></div>
               </div>
-              <label class="mask-show repair-show" title="Outline every spot, heal, clone and eye fix on the photo (Shift+\)">
-                <input type="checkbox" id="repair-show" checked /> show marks
-              </label>
-              <label class="look-row"><span class="look-name">Size</span>
-                <input type="range" id="repair-size" min="1" max="150" step="1" />
-                <span class="look-val" id="repair-size-val"></span></label>
-              <p class="hsl-note">
-                Heal fills in from the edges: right for dust, spots, a stray hair
-                or a wire against the sky, but it smears texture like skin,
-                fabric, grass or hair. AI fill draws that texture instead (a
-                28 MB MIT-licensed model), and Generative redraws larger
-                regions with a diffusion model (1.9 GB, opt-in); Clone copies
-                real texture from a place you choose. Runs before every other
-                adjustment.
-              </p>
-              <div class="repair-list" id="repair-list"></div>
-              <div class="repair-sub">Red eye</div>
-              <div class="repair-tools">
-                <button type="button" id="redeye-auto" title="Find people's red eyes automatically">Find red eyes</button>
-                <button type="button" data-repair-tool="redeye" title="Drag from the pupil's centre to the edge of the iris">Fix an eye</button>
-                <button type="button" data-repair-tool="peteye" title="Drag from the centre of a pet's eye to the edge of the glow">Pet eye</button>
+            </details>
+            <details class="edit-group" id="edit-optics-group">
+              <summary>Lens &amp; perspective <span id="optics-summary-state"></span></summary>
+              <div class="edit-group-body">
+                <p class="hsl-note">
+                  Corrections for what the lens and the camera angle did, applied
+                  before everything else. Masks and repairs are placed on the
+                  corrected picture, so set these first.
+                </p>
+                <div class="optics-sub">Upright</div>
+                <div class="optics-upright" id="optics-upright">
+                  <button type="button" data-upright="level" title="Level the horizon (sets Straighten)">Level</button>
+                  <button type="button" data-upright="vertical" title="Level, then make leaning verticals vertical">Vertical</button>
+                  <button type="button" data-upright="full" title="Level, and straighten both verticals and horizontals">Full</button>
+                  <button type="button" data-upright="auto" title="Full, held back so the result does not look staged">Auto</button>
+                </div>
+                <div id="optics-transform-fields"></div>
+                <div class="optics-sub">Lens</div>
+                <label class="optics-check" title="Estimate the colour fringing from the photo itself">
+                  <input type="checkbox" id="lens-ca-auto" /> Remove colour fringing automatically
+                </label>
+                <div id="optics-lens-fields"></div>
+                <button class="hsl-reset" id="optics-reset" type="button">Reset lens &amp; perspective</button>
+                <p class="hsl-note" id="optics-status"></p>
               </div>
-              <div class="repair-list" id="redeye-list"></div>
-              <p class="hsl-note" id="repair-status"></p>
-            </div>
-          </details>
-          <details class="edit-group" id="edit-wm-group">
-            <summary>Watermark <span id="wm-summary-state"></span></summary>
-            <div class="wm-body">
-              <label class="wm-toggle">
-                <input type="checkbox" id="wm-enabled" /> Stamp this photo
-              </label>
-              <div class="wm-row">
-                <span class="wm-label">Style</span>
-                <div class="wm-seg" id="wm-style"></div>
+            </details>
+          </div>
+          <div class="edit-tab" id="edit-tab-output" role="tabpanel" aria-labelledby="edit-tabbtn-output" data-tab="output" hidden>
+            <details class="edit-group" id="edit-wm-group" open>
+              <summary>Watermark <span id="wm-summary-state"></span></summary>
+              <div class="wm-body">
+                <label class="wm-toggle">
+                  <input type="checkbox" id="wm-enabled" /> Stamp this photo
+                </label>
+                <div class="wm-row">
+                  <span class="wm-label">Style</span>
+                  <div class="wm-seg" id="wm-style"></div>
+                </div>
+                <div class="wm-row">
+                  <span class="wm-label">Position</span>
+                  <div class="wm-seg wm-pos" id="wm-position"></div>
+                </div>
+                <label class="wm-row">
+                  <span class="wm-label">Name</span>
+                  <input type="text" id="wm-name" placeholder="your name" />
+                </label>
+                <label class="wm-row">
+                  <span class="wm-label">Camera</span>
+                  <input type="text" id="wm-camera" list="wm-camera-list"
+                         placeholder="auto from EXIF" />
+                  <datalist id="wm-camera-list"></datalist>
+                </label>
+                <p class="wm-detected" id="wm-detected"></p>
+                <div class="wm-lines">
+                  <label class="wm-row"><span class="wm-label">Line 1</span>
+                    <input type="text" id="wm-line1" data-wm-line /></label>
+                  <label class="wm-row"><span class="wm-label">Line 2</span>
+                    <input type="text" id="wm-line2" data-wm-line /></label>
+                  <label class="wm-row"><span class="wm-label">Line 3</span>
+                    <input type="text" id="wm-line3" data-wm-line /></label>
+                  <div class="wm-tokens" id="wm-tokens"></div>
+                </div>
+                <label class="look-row"><span class="look-name">Size</span>
+                  <input type="range" id="wm-size" min="30" max="300" step="1" />
+                  <span class="look-val" id="wm-size-val"></span></label>
+                <label class="look-row"><span class="look-name">Opacity</span>
+                  <input type="range" id="wm-opacity" min="0" max="100" step="1" />
+                  <span class="look-val" id="wm-opacity-val"></span></label>
+                <label class="look-row"><span class="look-name">Inset</span>
+                  <input type="range" id="wm-margin" min="0" max="300" step="1" />
+                  <span class="look-val" id="wm-margin-val"></span></label>
+                <div class="wm-row">
+                  <span class="wm-label">Colour</span>
+                  <input type="color" id="wm-color" />
+                  <button id="wm-white" class="linkish">white</button>
+                  <button id="wm-black" class="linkish">black</button>
+                </div>
+                <p class="wm-note">
+                  Not drawn on grid thumbnails — it would be unreadable at tile
+                  size. Shows in the editor, the viewer and the export.
+                </p>
               </div>
-              <div class="wm-row">
-                <span class="wm-label">Position</span>
-                <div class="wm-seg wm-pos" id="wm-position"></div>
+            </details>
+            <details class="edit-group" id="edit-slots-group">
+              <summary>Slots <span id="slot-summary-state"></span></summary>
+              <div class="edit-group-body">
+                <p class="hsl-note">
+                  Versions of this photo, kept on disk. Saving into a slot changes
+                  nothing about the photo itself, and loading one only changes
+                  what is on screen until you press Save — so Cancel loses the
+                  working edit and keeps every slot.
+                </p>
+                <div class="slot-list" id="edit-slots"></div>
               </div>
-              <label class="wm-row">
-                <span class="wm-label">Name</span>
-                <input type="text" id="wm-name" placeholder="your name" />
-              </label>
-              <label class="wm-row">
-                <span class="wm-label">Camera</span>
-                <input type="text" id="wm-camera" list="wm-camera-list"
-                       placeholder="auto from EXIF" />
-                <datalist id="wm-camera-list"></datalist>
-              </label>
-              <p class="wm-detected" id="wm-detected"></p>
-              <div class="wm-lines">
-                <label class="wm-row"><span class="wm-label">Line 1</span>
-                  <input type="text" id="wm-line1" data-wm-line /></label>
-                <label class="wm-row"><span class="wm-label">Line 2</span>
-                  <input type="text" id="wm-line2" data-wm-line /></label>
-                <label class="wm-row"><span class="wm-label">Line 3</span>
-                  <input type="text" id="wm-line3" data-wm-line /></label>
-                <div class="wm-tokens" id="wm-tokens"></div>
-              </div>
-              <label class="look-row"><span class="look-name">Size</span>
-                <input type="range" id="wm-size" min="30" max="300" step="1" />
-                <span class="look-val" id="wm-size-val"></span></label>
-              <label class="look-row"><span class="look-name">Opacity</span>
-                <input type="range" id="wm-opacity" min="0" max="100" step="1" />
-                <span class="look-val" id="wm-opacity-val"></span></label>
-              <label class="look-row"><span class="look-name">Inset</span>
-                <input type="range" id="wm-margin" min="0" max="300" step="1" />
-                <span class="look-val" id="wm-margin-val"></span></label>
-              <div class="wm-row">
-                <span class="wm-label">Colour</span>
-                <input type="color" id="wm-color" />
-                <button id="wm-white" class="linkish">white</button>
-                <button id="wm-black" class="linkish">black</button>
-              </div>
-              <p class="wm-note">
-                Not drawn on grid thumbnails — it would be unreadable at tile
-                size. Shows in the editor, the viewer and the export.
-              </p>
-            </div>
-          </details>
-          <details class="edit-group" id="edit-slots-group">
-            <summary>Slots <span id="slot-summary-state"></span></summary>
-            <div class="edit-group-body">
-              <p class="hsl-note">
-                Versions of this photo, kept on disk. Saving into a slot changes
-                nothing about the photo itself, and loading one only changes
-                what is on screen until you press Save — so Cancel loses the
-                working edit and keeps every slot.
-              </p>
-              <div class="slot-list" id="edit-slots"></div>
-            </div>
-          </details>
+            </details>
+          </div>
         </div>
         <!-- Under the adjustments rather than across the whole dialog, so the
              photo runs to the bottom of the window. -->
@@ -1653,6 +1687,40 @@
 
   <div id="download-toast" class="hidden"></div>
 
+  <div id="preset-save-modal" class="hidden">
+    <div class="bulk-box preset-save-box">
+      <header>
+        <h2>Save a preset</h2>
+        <button id="preset-save-close" title="Esc" data-icon="close" aria-label="Close"></button>
+      </header>
+      <div class="bulk-body">
+        <div class="bulk-row">
+          <label for="preset-save-name">Name</label>
+          <input type="text" id="preset-save-name" maxlength="60" placeholder="what the look is for" />
+        </div>
+        <div class="bulk-row" style="align-items:flex-start;">
+          <label>Carries</label>
+          <div class="preset-parts">
+            <div class="preset-parts-quick">
+              <button type="button" data-parts-quick="modified" class="active">Modified</button>
+              <button type="button" data-parts-quick="all">All</button>
+              <button type="button" data-parts-quick="none">None</button>
+            </div>
+            <div class="preset-parts-grid" id="preset-parts-grid"></div>
+          </div>
+        </div>
+        <p class="bulk-hint">Applying it sets what is ticked, a zero included, and
+          leaves the rest of a photo's edit alone. Heals, red eye and a face's own
+          portrait settings stay with this photo.</p>
+        <div id="preset-save-status" class="bulk-hint"></div>
+      </div>
+      <footer>
+        <span id="preset-save-summary" class="preset-save-summary"></span>
+        <button id="preset-save-cancel" type="button">Cancel</button>
+        <button id="preset-save-confirm" type="button" class="primary">Save</button>
+      </footer>
+    </div>
+  </div>
   <div id="bulk-modal" class="hidden">
     <div class="bulk-box">
       <header>

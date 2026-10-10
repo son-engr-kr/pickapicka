@@ -92,17 +92,20 @@ def list_presets() -> list[dict[str, Any]]:
     return _load().get("presets", [])
 
 
-def save_preset(name: str, edit: dict[str, Any]) -> dict[str, Any]:
-    """Create or update (by name) a global edit preset. Returns the stored one."""
+def save_preset(name: str, stored: dict[str, Any]) -> dict[str, Any]:
+    """Create or update (by name) a global preset from `presets.make`'s
+    {parts, edit}. Returns the stored one."""
     data = _load()
     presets = data.get("presets", [])
-    name = name.strip() or "Preset"
+    name = name.strip()
+    assert name, "a preset needs a name"
     existing = next((p for p in presets if p.get("name") == name), None)
     if existing is not None:
-        existing["edit"] = edit
+        existing.update(parts=stored["parts"], edit=stored["edit"])
         preset = existing
     else:
-        preset = {"id": uuid.uuid4().hex[:8], "name": name, "edit": edit}
+        preset = {"id": uuid.uuid4().hex[:8], "name": name,
+                  "parts": stored["parts"], "edit": stored["edit"]}
         presets.append(preset)
     data["presets"] = presets
     _save(data)

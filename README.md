@@ -77,10 +77,11 @@ peaking that measures edge steepness rather than contrast, a loupe, HDR bracket
 auto-merge, and subject and face grouping.
 → [docs/culling.md](docs/culling.md)
 
-**Editing** — the full slider set plus a tone curve, up to 16 local masks,
-crop and straighten, defocus and motion and bloom and mosaic, film emulation
-built as a chain rather than a filter, watermarks from EXIF templates, presets
-that stack.
+**Editing** — the full slider set plus a tone curve, up to 16 layers each built
+from shapes that add, subtract and intersect, crop and straighten, defocus and
+motion and bloom and mosaic, film emulation built as a chain rather than a
+filter, watermarks from EXIF templates, presets that carry only the parts you
+tick.
 → [docs/editing.md](docs/editing.md)
 
 **Projects** — workspaces holding projects by name, three folder layouts, RAW

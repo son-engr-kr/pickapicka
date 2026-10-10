@@ -870,7 +870,8 @@ body.resizing-edit, body.resizing-edit * { cursor: col-resize !important; user-s
   .edit-side { flex: 1 1 100%; }
   .edit-controls { overflow-y: visible; }
 }
-.edit-actionbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.edit-actionbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  flex: none; margin-bottom: var(--s2); }
 .edit-actionbar select { background: var(--bg-3); color: var(--fg);
   border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px;
   font: inherit; font-size: 12px; cursor: pointer; }
@@ -1012,8 +1013,8 @@ body.resizing-edit, body.resizing-edit * { cursor: col-resize !important; user-s
 
 .mask-context { font-size: 11px; font-weight: 600; letter-spacing: 0.4px;
   color: var(--fg-dim); }
-.mask-context.local { color: var(--accent); }
-#edit-curve-group.hidden { display: none; }
+/* The heading over a layer's sliders, so the target is said where they are. */
+#mask-context { color: var(--accent); border-top: 1px solid var(--line); padding-top: var(--s3); }
 .edit-curve-wrap { display: flex; justify-content: center; padding: 4px 0; }
 #edit-curve { width: 240px; height: 240px; max-width: 100%; background: var(--bg);
   border: 1px solid var(--border); border-radius: 6px; cursor: crosshair;
@@ -2378,7 +2379,90 @@ button.primary:disabled { background: var(--raised); border-color: var(--line); 
   transform: rotate(-45deg); transition: transform 0.12s; opacity: 0.7; }
 .edit-group[open] > summary::before { transform: rotate(45deg); }
 .edit-group > summary:hover { color: var(--ink); }
-#edit-mask-group .mask-panel { margin-top: 0; }
+/* ----- editor tabs -----
+   The top bar's module tabs, a size down and stacked: an icon over its name in
+   a sunken well, the open one raised with the accent under it. Outside the
+   scrolling column, so they stay put while a long tab scrolls. */
+.edit-tabs { flex: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px; padding: 3px; margin-bottom: var(--s2); background: var(--sunken);
+  border: 1px solid var(--line); border-radius: var(--r2); }
+.edit-tabs button { position: relative; display: flex; flex-direction: column; align-items: center;
+  gap: 3px; min-width: 0; height: auto; padding: 6px 2px 5px; border: none; border-radius: var(--r1);
+  background: none; color: var(--ink-dim); font-size: var(--fs-xs); font-weight: 600; }
+.edit-tabs button:hover:not(:disabled) { color: var(--ink); background: var(--raised); }
+.edit-tabs button.active { background: var(--raised); color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--accent); }
+.edit-tab-icon { display: flex; }
+.edit-tab-icon .icon { width: 17px; height: 17px; }
+.edit-tab-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* What a tab holds: Adjust's number of layers, or a dot for anything set. */
+.edit-tab-badge { position: absolute; top: 3px; left: calc(50% + 8px); }
+.edit-tab-badge.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.edit-tab-badge.count { min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px;
+  background: var(--accent); color: var(--accent-ink); font-size: 9.5px; line-height: 14px;
+  text-align: center; font-variant-numeric: tabular-nums; }
+.edit-tab { display: flex; flex-direction: column; gap: 10px; }
+.edit-tab[hidden] { display: none; }
+/* ----- presets -----
+   A button that opens the list over the panel, and beside it, while the
+   preset just applied is as it landed, a chip with its Amount and a Remove. */
+.preset-bar { position: relative; flex: none; display: flex; gap: 6px; align-items: center;
+  margin-bottom: var(--s2); }
+#preset-open.active { background: var(--raised); border-color: var(--accent); }
+.preset-live { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
+  padding: 2px 4px 2px 8px; border: 1px solid var(--accent); border-radius: var(--r2);
+  background: var(--accent-quiet); font-size: var(--fs-sm); }
+.preset-live.hidden { display: none; }
+.preset-live-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-weight: 600; }
+.preset-live input[type=range] { flex: 1 1 60px; min-width: 40px; }
+.preset-live .look-val { width: 26px; text-align: right; }
+.preset-note { flex: none; margin: -4px 0 var(--s2); font-size: var(--fs-xs); color: var(--review); }
+.preset-note.hidden { display: none; }
+.preset-panel { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px);
+  max-height: min(70vh, 560px); overflow-y: auto; display: flex; flex-direction: column;
+  gap: var(--s2); padding: var(--s2); background: var(--panel); border: 1px solid var(--line-strong);
+  border-radius: var(--r2); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); }
+.preset-panel.hidden { display: none; }
+.preset-list { display: flex; flex-direction: column; gap: 2px; }
+.preset-item { display: flex; align-items: center; gap: var(--s2); padding: 4px;
+  border-radius: var(--r1); border: 1px solid transparent; cursor: pointer; }
+.preset-item:hover, .preset-item:focus-visible { background: var(--raised); outline: none; }
+.preset-item.active { border-color: var(--accent); }
+.preset-thumb { flex: none; width: 64px; height: 44px; object-fit: cover; border-radius: 3px;
+  background: var(--sunken); }
+.preset-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.preset-name { font-size: var(--fs-sm); font-weight: 600; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.preset-chips { display: flex; flex-wrap: wrap; gap: 3px; }
+.preset-chip { font-size: 9.5px; line-height: 1.5; padding: 0 5px; border-radius: 7px;
+  background: var(--sunken); color: var(--ink-dim); border: 1px solid var(--line); white-space: nowrap; }
+#preset-new { align-self: flex-start; font-size: 11px; }
+/* The save dialog, on the bulk dialog's frame. */
+#preset-save-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center; z-index: 180; }
+#preset-save-modal.hidden { display: none; }
+.preset-save-box { width: min(560px, 94vw); }
+#preset-save-name { flex: 1; min-width: 0; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; font: inherit; font-size: 12px; }
+.preset-parts { flex: 1; display: flex; flex-direction: column; gap: var(--s2); }
+.preset-parts-quick { display: inline-flex; gap: 2px; padding: 2px; align-self: flex-start;
+  background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r1); }
+.preset-parts-quick button { border: none; background: none; padding: 2px 10px; font-size: 11px;
+  color: var(--ink-dim); }
+.preset-parts-quick button.active { background: var(--raised); color: var(--ink); }
+.preset-parts-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s2) var(--s3); }
+.preset-parts-group { display: flex; flex-direction: column; gap: 2px; }
+.preset-part { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
+.preset-part input { accent-color: var(--accent); }
+.preset-part-hint { font-size: 10px; color: var(--ink-faint); }
+.preset-part.set .preset-part-hint { color: var(--accent); }
+.preset-save-summary { flex: 1; font-size: 11px; color: var(--fg-dim); }
+#preset-save-modal footer button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+#preset-save-modal footer button.primary:disabled { background: var(--bg-3); border-color: var(--border); color: var(--fg-dim); }
+/* The target list heads Adjust; it needs no box round it. */
+#edit-tab-adjust .mask-panel { border: none; background: none; padding: 0; }
+#mask-context.hidden, .edit-tab > .edit-group.hidden { display: none; }
 
 /* ----- editor sliders: a quiet track, filled from zero ----- */
 #edit-modal input[type=range] { -webkit-appearance: none; appearance: none; height: 18px;

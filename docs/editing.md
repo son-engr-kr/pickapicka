@@ -61,8 +61,8 @@ Two stages that fix the captured image rather than interpret it, and they run
   and fills it from what surrounds it; **Clone** copies from a place you pick
   (Alt-click, or the first click), through a feathered edge, and every stroke
   reads from that same point. **Size** is the brush, `[` and `]` nudge it, and
-  each repair in the list can be switched off or removed. Opening the panel
-  shows every repair on the photo.
+  each repair in the list can be switched off or removed. The repairs are
+  drawn on the photo while the panel is open on the **Retouch** tab.
   - What this is good at, and what it is not, stated plainly: dust, sensor
     spots, lint, a blemish, a stray hair, a power line against a sky — excellent,
     indistinguishable in practice. Anything asked to reproduce *texture* —
@@ -598,6 +598,19 @@ licence and whether it is here.
   process 1 and renders exactly as it did; the header says **Old process** and
   **Update** moves it across, converting exposure so mid grey stays put. New
   edits, Auto and a reset are made at the current process.
+- **Four tabs, one open at a time**: **Adjust**, then what is done to the
+  photo itself, **Retouch** (heal and red eye, portrait) and **Geometry** (crop
+  and straighten, lens and perspective), and **Output** (watermark, slots).
+  Adjust starts with what its sliders act on: **Whole photo**, or one of its
+  layers. With the whole photo picked it has every section, light and colour
+  through the tone curve, colour mixer, grading, detail, creative effects,
+  look and film; with a layer picked it shows that layer's shapes and the
+  sections a layer can carry (light, colour, detail, creative), under a heading
+  naming it. Undo, Auto, Reset and the presets stay above the tabs, Save and
+  Cancel below. A tab that holds something shows a dot, Adjust the number of
+  layers, so a crop or a heal is not forgotten behind a tab nobody opened.
+  Leaving a tab puts its tool down, and the editor opens on the tab it was left
+  on.
 - **A panel as wide as you want it**: drag the divider between the photo and the
   adjustments (or focus it and use the arrow keys); double-click it for the
   default width. The width is kept for next time. Save, Cancel and Apply to
@@ -613,7 +626,7 @@ licence and whether it is here.
 
 ## Slots
 
-Six stashes per photo, listed above the adjustment panel. Each row says what it
+Six stashes per photo, on the **Output** tab. Each row says what it
 holds — `light · colour · 2 masks` — and when it was put there, and carries its
 own controls:
 
@@ -657,35 +670,48 @@ on stays exactly as small in the database as it was before slots existed.
 
 ## Presets
 
-Thirty-nine built-in presets in six groups, each a plain edit dict — so a
-preset can carry anything the editor can do, including the colour mixer, the
-grading wheels, the channel curves and local masks. They are parametric all the
-way down, which is the difference between these and a `.cube` LUT: every number
-a preset sets is still a slider you can then move.
+A preset is a named set of **parts** of an edit, and it carries only the parts
+ticked when it was saved. None ship with the app; the 39 that once did went
+unused. How it behaves follows what Lightroom, Capture One, darktable and DxO
+PhotoLab agree on, which is also what the old *add* and *replace* modes did not
+do.
 
-| Group | What it is for |
-| --- | --- |
-| **Portrait** | Skin. Bright skin, airy and fair, clean beauty, warm glow, backlit rescue, the tungsten and fluorescent indoor fixes, and a local one that cools and smooths the skin alone through an automatic mask. |
-| **Look** | A colour identity over a correct photo: teal and orange, faded matte, bleach bypass, moody blue, golden hour, cross process, cinematic matte, vintage warm, neon night, pastel. |
-| **Mono** | Classic, high key, noir, and a sepia toned by the film stage. |
-| **Scene** | Landscape pop, a sky gradient, interior, food, snow and beach. |
-| **Fix** | One problem each: underexposed, overexposed, hazy, high ISO, flat JPEG. |
-| **Car** | Glossy paint, studio white, night neon, golden hour, plus mask-carrying ones for a speed pan, background bokeh and plate blurring. |
-
-One ordering consequence is worth stating, because it decides what a preset in
-this file can be: **saturation runs after the colour mixer and the grading
-wheels**, so a toned monochrome cannot be built from `saturation: -100` plus a
-grade — the grade is exactly what the saturation then removes. Sepia gets its
-colour from the film stage instead, which is the one colour stage running after
-saturation.
-
-- Built-ins are read-only; tweak and save your own.
-  Presets load **additively** by default, so a local preset drops its mask onto
-  whatever you already have instead of wiping it — stack "background bokeh" and
-  "blur a plate" on top of your own grade, and a slider the preset leaves
-  neutral keeps your value. Switch to *replace* for a clean slate. Bulk apply
-  has the same choice, so you can add one mask to every pick without touching
-  their individual grades.
+- **Saving** (**Presets** above the tabs, then *Save this edit as a preset*)
+  lists every part: Light, Color, Tone curve, Color mixer, Color grading,
+  Detail & effects, Creative, Look, Film, Layers, Portrait (all faces), Crop &
+  straighten, Lens & perspective, Watermark, and Auto light. *Modified* (the
+  default) ticks every part this edit sets; crop, lens and the watermark are
+  marked as usually the photo's own when they are, to untick if the preset is
+  a look rather than this photo. *All* and *None* are there too. Heals, red
+  eye and a face's own portrait settings are never part of one.
+- **Applying** sets each ticked part to the stored value, **a zero included**,
+  and leaves every other part of the photo's edit as it was. Values are
+  absolute: a preset at +0.5 EV puts the photo at +0.5 EV, whatever it was at.
+- **Layers** a preset brings are added beside the photo's own, marked as its,
+  and applying the same preset again replaces them instead of stacking a second
+  set. An automatic layer (Subject, Skin, Hair...) selects what that photo
+  has; when it has nothing for it (a Skin layer on a photo with nobody in it)
+  the layer is left out and the editor says so. "Nothing" is no pixel above
+  0.5, the segmenter's own line between more likely than not.
+- **Auto light** is a part with no values: on applying, each photo's own auto
+  tone sets exposure, contrast, whites and blacks, so one preset suits frames
+  exposed differently. It runs after a stored Light part, so it wins for those
+  four.
+- **The preset just applied** shows a chip beside **Presets** for as long as
+  the edit is exactly as it left it: **Amount** (0 to 200) moves every value
+  from where the photo had it towards the preset's, and **Remove** goes back to
+  the edit from before. Clicking another preset meanwhile *replaces* it;
+  **Shift**-click lays the new one over it. Any other change makes the preset
+  part of the edit and the chip goes; undoing back to it brings the chip back.
+- What Amount cannot scale is set as stored whenever it is above 0: a look, a
+  film stock, a crop, a blur's angle, sharpening's radius, detail and masking.
+  A look's and a film's own strength scale up to 100 and no further, as those
+  are blends.
+- **The list** shows each preset as it would land on this photo, with a chip
+  per part it carries ("Mixer · 3 bands", "1 layer"), and hovering one shows it
+  on the photo until the pointer moves off.
+- **Apply to more** takes a preset too, and lays it on each photo's own edit by
+  the same rules (each with its own auto tone and its own automatic layers).
 
 ## Pipeline order
 

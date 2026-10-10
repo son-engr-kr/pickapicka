@@ -31,8 +31,8 @@ from pydantic import BaseModel, Field
 from . import (
     aifill as aifill_mod, cameras, db, editing, genfill as genfill_mod, healing as healing_mod,
     modelstore, exifinfo, exporting, film as film_mod, folderinfo, fsutil, hdr, imfile,
-    launch, lut as lut_mod, metadata as metadata_mod, portrait as portrait_mod, presets as presets_mod,
-    projects as projects_mod,
+    launch, lut as lut_mod, metadata as metadata_mod, portrait as portrait_mod,
+    presets as presets_mod, projects as projects_mod,
     redeye as redeye_mod, transform as transform_mod, raw, relink, scenes, segment as segment_mod,
     updater as updater_mod, userstate, watermark as watermark_mod,
 )
@@ -162,6 +162,10 @@ class EditBulkPayload(BaseModel):
     # "add" lays the edit over whatever each photo already has (masks append);
     # "replace" overwrites, which is what this endpoint has always done.
     mode: Literal["replace", "add"] = "replace"
+    # A preset instead of an edit: laid on each photo's own by presets.apply,
+    # which has no modes; `edit` and `mode` are then not read.
+    preset_id: str | None = None
+    amount: float = Field(default=100, ge=0, le=200)
 
 
 class AutoTonePayload(BaseModel):
@@ -201,6 +205,18 @@ class ViewPayload(BaseModel):
 class PresetSavePayload(BaseModel):
     name: str
     edit: dict[str, Any] = {}
+    parts: list[str]                     # which parts of `edit` it carries
+
+
+class PresetApplyPayload(BaseModel):
+    rel_path: str
+    edit: dict[str, Any] | None = None   # the edit to lay it on
+    preset_id: str
+    amount: float = Field(default=100, ge=0, le=200)
+
+
+class PresetInspectPayload(BaseModel):
+    edit: dict[str, Any] | None = None
 
 
 # Every field optional: what is not sent falls back to the project's saved
@@ -3481,19 +3497,28 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             photo = ctx.photo_index.get(rp)
             if photo is None:
                 raise HTTPException(status_code=404, detail=f"photo not found: {rp}")
+        preset = _preset(payload.preset_id) if payload.preset_id else None
+        skipped: dict[str, list[str]] = {}
         for rp in payload.rel_paths:
             photo = ctx.photo_index[rp]
-            edit = payload.edit
-            if payload.mode == "add":
-                edit = editing.merge_additive(photo.get("edit"), edit)
+            if preset is not None:
+                edit, left_out = _apply_preset(rp, photo.get("edit"), preset, payload.amount)
+                if left_out:
+                    skipped[rp] = left_out
+            elif payload.mode == "add":
+                edit = editing.merge_additive(photo.get("edit"), payload.edit)
             else:
-                edit = _keep_own(editing.normalize(edit), photo.get("edit"))
+                edit = _keep_own(editing.normalize(payload.edit), photo.get("edit"))
             _keep_lut(ctx, edit)
             _apply_edit_to_photo(photo, edit)
         with ctx.save_lock:
             db.save(ctx.db_path, ctx.data)
         _prebuild_thumbs(ctx, list(payload.rel_paths))
-        return {"updated": len(payload.rel_paths)}
+        # Each photo as it now is: a preset lands differently on each (its own
+        # auto tone, the layers it has nothing for), so the grid is told rather
+        # than left to work it out.
+        return {"updated": len(payload.rel_paths), "skipped": skipped,
+                "photos": {rp: _photo_wire(ctx.photo_index[rp]) for rp in payload.rel_paths}}
 
     @app.post("/api/edit/upgrade")
     def upgrade_edit(payload: EditPreviewPayload) -> dict[str, Any]:
@@ -3584,8 +3609,46 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         }
 
     def _all_presets() -> list[dict[str, Any]]:
-        """Built-ins first, then the user's own — one list for the picker."""
-        return presets_mod.list_builtins() + userstate.list_presets()
+        """The user's own presets, each in today's shape (presets.upgrade). None
+        ship with the app: the 39 that did went unused."""
+        return [presets_mod.upgrade(p) for p in userstate.list_presets()]
+
+    def _preset(preset_id: str) -> dict[str, Any]:
+        found = next((p for p in _all_presets() if p["id"] == preset_id), None)
+        if found is None:
+            raise HTTPException(status_code=404, detail=f"no preset {preset_id}")
+        return found
+
+    def _apply_preset(rel_path: str, base: dict[str, Any] | None, preset: dict[str, Any],
+                      amount: float) -> tuple[dict[str, Any], list[str]]:
+        """`preset` laid on `base` for this photo, and the names of the layers
+        left out because the photo has nothing for them to select.
+
+        Two things depend on the photo itself. Auto light is its own auto
+        tone, from the same decode the editor's Auto reads. And an automatic
+        layer the preset brings selects whatever the photo has of its group: a
+        Skin layer on a photo with nobody in it would be an empty layer the
+        photographer then has to find and delete (Lightroom ships a command
+        for exactly that). A group counts as absent when no pixel of its field
+        is above 0.5, the model's own line between more likely than not.
+        Measured on three photos: with people, every group had 4 to 43 % of
+        the frame above it; without (two of a chinchilla), the highest pixel
+        of any person group was 0.40.
+        """
+        auto = (editing.auto_tone(ctx.get_decoded_base(rel_path))
+                if presets_mod.AUTO_LIGHT in preset["parts"] else None)
+        out = presets_mod.apply(base, preset, amount, auto=auto)
+        skipped: list[str] = []
+        brought = [m for m in out["masks"] if m.get("preset") == preset["id"]
+                   and all(s["type"] == "auto" for s in editing.mask_shapes(m))]
+        if brought:
+            fields = ctx.auto_fields(rel_path, {**out, "masks": [
+                {**m, "adj": {**m["adj"], "exposure": 1.0}} for m in brought]})
+            for m in brought:
+                if all(float(fields[g].max()) <= 0.5 for g in editing.mask_groups(m)):
+                    skipped.append(m["name"] or ", ".join(sorted(editing.mask_groups(m))))
+                    out["masks"].remove(m)
+        return editing.normalize(out), skipped
 
     @app.get("/api/film/stocks")
     def film_stocks() -> dict[str, Any]:
@@ -3597,25 +3660,38 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     def get_presets() -> dict[str, Any]:
         return {"presets": _all_presets()}
 
+    @app.post("/api/presets/inspect")
+    def inspect_preset(payload: PresetInspectPayload) -> dict[str, Any]:
+        """For the save dialog: every part a preset can carry, the ones the
+        edit sets ("Modified"), and the ones usually the photo's own."""
+        return {"parts": list(presets_mod.PART_NAMES),
+                "modified": presets_mod.modified_parts(payload.edit),
+                "photo_own": list(presets_mod.PHOTO_OWN)}
+
     @app.post("/api/presets")
     def save_preset(payload: PresetSavePayload) -> dict[str, Any]:
         name = payload.name.strip()
         if not name:
             raise HTTPException(status_code=400, detail="preset name is required")
-        edit = editing.normalize(payload.edit)
-        # A preset goes onto other photos; an AI fill is this one's pixels.
-        edit["healing"] = healing_mod.without_fills(edit["healing"])
-        edit["portrait"] = portrait_mod.without_faces(edit["portrait"])
-        preset = userstate.save_preset(name, edit)
+        unknown = set(payload.parts) - set(presets_mod.PART_NAMES)
+        if unknown or not payload.parts:
+            raise HTTPException(status_code=400, detail=f"bad parts: {sorted(unknown) or 'none'}")
+        preset = userstate.save_preset(name, presets_mod.make(payload.edit, payload.parts))
         return {"preset": preset, "presets": _all_presets()}
+
+    @app.post("/api/presets/apply")
+    def apply_preset(payload: PresetApplyPayload) -> dict[str, Any]:
+        """A preset laid on an edit for one photo (nothing saved): the editor
+        shows it, and keeps the edit it was laid on for Amount and Remove."""
+        _require_loaded()
+        if ctx.photo_index.get(payload.rel_path) is None:
+            raise HTTPException(status_code=404, detail="photo not found")
+        edit, skipped = _apply_preset(payload.rel_path, payload.edit,
+                                      _preset(payload.preset_id), payload.amount)
+        return {"edit": edit, "skipped": skipped}
 
     @app.delete("/api/presets/{preset_id}")
     def delete_preset(preset_id: str) -> dict[str, Any]:
-        if presets_mod.is_builtin(preset_id):
-            raise HTTPException(
-                status_code=400,
-                detail="built-in presets can't be deleted — save your own version instead",
-            )
         userstate.delete_preset(preset_id)
         return {"presets": _all_presets()}
 

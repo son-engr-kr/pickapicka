@@ -38,7 +38,6 @@ const state = {
   brackets: [],
   hdrLook: {},
   presets: [],
-  presetMode: "add",        // additive by default: local presets stack
   selection: new Set(),   // rel_paths selected for batch actions
   minRating: 0,           // show photos with at least this many stars
   labelFilter: "",        // show photos with this colour label ("" = any)
@@ -520,6 +519,10 @@ const ICONS = {
   warning: "M12 3 2 20h20zM12 9v5M12 17.5h.01",
   check: "M20 6 9 17l-5-5",
   layers: "M12 3 3 7.5l9 4.5 9-4.5L12 3zM3 12l9 4.5 9-4.5M3 16.5l9 4.5 9-4.5",
+  sliders: "M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"
+    + "M15 4v4M9 10v4M17 16v4",
+  heal: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18M12 8v8M8 12h8",
+  look: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18M12 3v18M12 7.5h4.5M12 12h6M12 16.5h4.5",
   eyeOpen: "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"
     + "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
   eyeShut: "M3 3l18 18M10.6 5.2A10.9 10.9 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-2.4 3.2M6.4 6.4A17 17 0 0 0 2 12s3.5 7 10 7c1.6 0 3-.4 4.2-1"
@@ -613,8 +616,7 @@ const SHORTCUT_TIPS = {
   "#edit-undo": ["Undo", `${MOD_KEY}Z`],
   "#edit-redo": ["Redo", IS_MAC ? "⇧⌘Z" : "Ctrl+Y"],
   "#edit-apply-more": ["Apply this edit to more photos", null],
-  '[data-preset-mode="add"]': ["Lay the preset on top: its masks are added to yours", null],
-  '[data-preset-mode="replace"]': ["Discard the current edit and use the preset alone", null],
+  "#preset-open": ["Presets: apply one, or save this edit as one", null],
   "#wb-pick": ["White balance — click something that should be grey", null],
   "#wb-reset": ["Zero Temperature and Tint", null],
   "#crop-tool": ["Crop — drag a box on the photo", null],
@@ -2817,7 +2819,7 @@ const editSession = {
   // Local adjustments: which mask the sliders drive (-1 = global), which of
   // its shapes the handles and the brush act on (-1 = its own, else a part),
   // which create tool is armed, the brush settings, and the in-flight drag.
-  activeMask: -1, activePart: -1, tool: null, showMask: false, showRepairs: true, showFaces: true, drag: null, hover: null,
+  activeMask: -1, activePart: -1, tool: null, tab: "adjust", showMask: false, showRepairs: true, showFaces: true, drag: null, hover: null,
   brush: { size: 60, erase: false },
   // Zoom: 0 = fit the whole frame (rendered from the cached preview), anything
   // else = that many CSS pixels per original image pixel, rendered from the
@@ -3038,7 +3040,7 @@ function openEditModal(absIdx) {
     `${basename(photo.rel_path)} · ${absIdx + 1}/${state.filteredPhotos.length}`;
   $("#edit-compare").classList.remove("holding");
   $("#edit-status").textContent = "";
-  $("#edit-preset-select").value = "";
+  editSession.livePreset = null;     // a preset is live on the photo it was applied to
   // Every photo opens fitted; the zoom is a per-photo inspection, not a mode.
   editSession.view = { zoom: 0, cx: 0.5, cy: 0.5 };
   editSession.natural = { w: photo.width || 0, h: photo.height || 0 };
@@ -3064,15 +3066,15 @@ function openEditModal(absIdx) {
   portraitState.key = "";
   portraitState.selected = null;
   $("#portrait-faces").textContent = "";
-  if ($("#edit-portrait-group").open) setTimeout(loadPortraitFaces, 0);
+  if (portraitShown()) setTimeout(loadPortraitFaces, 0);
   renderLookPanel();
   renderRepairPanel();
   renderOpticsPanel();
   renderPortraitPanel();
   loadWatermarkInfo(photo.rel_path);
   selectMask(-1, { silent: true });
-  if (editSession.edit.masks.length) $("#edit-mask-group").open = true;
   setEditTool(null);
+  setEditTab(editSession.tab);     // the tab it was left on, with this photo's badges
   syncEditSliders();
   drawCurve();
   resetEditHistory();
@@ -3115,9 +3117,15 @@ function renderEditControls() {
 
 // The slider panel drives either the global edit or the selected mask's own
 // sliders; everything else about it (layout, ranges, formatting) is identical.
+// What the sliders drive: the layer picked at the top of Adjust, else the whole
+// photo. Layers are where, the sliders what: one target, chosen first.
+function editingLayer() {
+  return editSession.tab === "adjust" ? activeMask() : null;
+}
+
 function adjTarget() {
-  const i = editSession.activeMask;
-  return i >= 0 && editSession.edit.masks[i] ? editSession.edit.masks[i].adj : editSession.edit;
+  const m = editingLayer();
+  return m ? m.adj : editSession.edit;
 }
 
 function bindEditControls() {
@@ -3505,6 +3513,8 @@ function setEditDirty() {
   // undo history can see every change for the same reason.
   recordEditHistory();
   markSlot();
+  syncTabBadges();
+  renderLivePreset();
   const dirty = !editsEqual(editSession.edit, editSession.baseline)
     || (editSession.edit.pv || 1) !== (editSession.baseline.pv || 1);
   syncProcessBadge();
@@ -3819,7 +3829,7 @@ function refreshEditUi() {
 }
 
 function resetEdit() {
-  const m = activeMask();
+  const m = editingLayer();
   if (m) {
     m.adj = neutralAdj();
     renderMaskList();
@@ -3827,9 +3837,7 @@ function resetEdit() {
     editSession.edit = mergeNeutralEdit(null);
     selectMask(-1, { silent: true });
     setEditTool(null);
-    // Nothing from the preset is left applied, so the picker shouldn't keep
-    // claiming one is active.
-    $("#edit-preset-select").value = "";
+    editSession.livePreset = null;
     renderWatermarkPanel();
     renderFilmPanel();
     renderHslPanel();
@@ -4475,7 +4483,7 @@ function selectPortraitFace(i) {
 // overlap rarely; the smallest box under the click wins.
 function portraitFaceAt(f) {
   // A box that is not drawn is not a target either: clicks go to the photo.
-  if (!$("#edit-portrait-group").open || !portraitState.faces || !editSession.showFaces) return -1;
+  if (!portraitShown() || !portraitState.faces || !editSession.showFaces) return -1;
   let hit = -1, area = Infinity;
   portraitState.faces.forEach((face, i) => {
     const [x, y, w, h] = face.box;
@@ -4540,7 +4548,7 @@ async function removeBlemishes() {
 }
 
 function drawPortraitFaces(ctx, mr) {
-  if (!$("#edit-portrait-group").open || !portraitState.faces || !editSession.showFaces) return;
+  if (!portraitShown() || !portraitState.faces || !editSession.showFaces) return;
   const many = portraitState.faces.length > 1;
   ctx.save();
   ctx.font = "600 12px system-ui, sans-serif";
@@ -4567,7 +4575,7 @@ function drawPortraitFaces(ctx, mr) {
 
 function bindPortraitPanel() {
   $("#edit-portrait-group").addEventListener("toggle", () => {
-    if ($("#edit-portrait-group").open && editSession.relPath) loadPortraitFaces();
+    if (portraitShown() && editSession.relPath) loadPortraitFaces();
     drawOverlay();
   });
   $("#portrait-blemishes").addEventListener("click", removeBlemishes);
@@ -4973,8 +4981,14 @@ function setHealOps(ops) { editSession.edit.healing = ops.length ? { ops } : nul
 function setEyeFixes(list) {
   editSession.edit.redeye = list.length ? { enabled: true, corrections: list } : null;
 }
+// The face boxes are up while Portrait is open on the tab showing it.
+function portraitShown() {
+  return editSession.tab === "retouch" && $("#edit-portrait-group").open;
+}
+
 function repairsShown() {
-  return isRepairTool(editSession.tool) || $("#edit-repair-group").open;
+  return isRepairTool(editSession.tool)
+    || (editSession.tab === "retouch" && $("#edit-repair-group").open);
 }
 
 function repairChanged() {
@@ -5822,7 +5836,7 @@ function setEditTool(tool) {
 }
 
 function addLayer() {
-  $("#edit-mask-group").open = true;
+  if (editSession.tab !== "adjust") setEditTab("adjust");
   if (!editSession.relPath) return null;
   if (editSession.edit.masks.length >= MASK_MAX) {
     $("#edit-status").textContent = `layer limit reached (${MASK_MAX})`;
@@ -6031,12 +6045,74 @@ function duplicateActiveMask() {
   fetchEditPreview(true);
 }
 
-// The Masks section shows how many masks there are when folded. It opens by
-// itself for a photo that has masks and when one is added, and otherwise stays
-// as it was left: the sliders act on the whole photo when there are none.
+// ---------- editor tabs ----------
+// Six, one open at a time. Which one was last open is a per-viewer convenience
+// and kept in the browser; what each tab holds is in index.html.
+const EDIT_TABS = ["adjust", "retouch", "geometry", "output"];
+const EDIT_TAB_KEY = "pcls.editTab";
+// The tools each tab arms. Leaving a tab puts its tool down: a brush still
+// armed on Adjust would paint a layer nobody can see.
+const TAB_TOOLS = {
+  adjust: ["wb", "radial", "linear", "brush"],
+  retouch: [...REPAIR_TOOLS], geometry: ["crop"], output: [],
+};
+
+function savedEditTab() {
+  let t = null;   // a tab this version no longer has (layers, looks) falls back to Adjust
+  try { t = localStorage.getItem(EDIT_TAB_KEY); } catch { t = null; }
+  return EDIT_TABS.includes(t) ? t : "adjust";
+}
+
+function setEditTab(tab) {
+  if (!EDIT_TABS.includes(tab)) throw new Error(`unknown editor tab ${tab}`);
+  const was = editSession.tab;
+  editSession.tab = tab;
+  for (const k of EDIT_TABS) {
+    $(`#edit-tab-${k}`).hidden = k !== tab;
+    const b = $(`#edit-tabbtn-${k}`);
+    b.classList.toggle("active", k === tab);
+    b.setAttribute("aria-selected", String(k === tab));
+  }
+  try { localStorage.setItem(EDIT_TAB_KEY, tab); } catch { /* private */ }
+  if (editSession.tool && !TAB_TOOLS[tab].includes(editSession.tool)) setEditTool(null);
+  if (tab === "adjust") armForShape();
+  syncSliderTarget();
+  if (was !== tab) {
+    syncEditSliders();
+    $(".edit-controls").scrollTop = 0;
+  }
+  if (portraitShown() && editSession.relPath) loadPortraitFaces();
+  drawOverlay();
+}
+
+// A tab says when it holds something, so a crop or a heal is not forgotten
+// behind a tab nobody opened: the number of layers, or a dot.
+function syncTabBadges() {
+  const e = editSession.edit;
+  if (!e) return;
+  const n = (e.masks || []).length;
+  const held = {
+    adjust: n > 0 || !isNeutralEdit({ ...e, masks: [], crop: null, tilt: 0, lens: null,
+                                      transform: null, healing: null, redeye: null,
+                                      portrait: null, watermark: null }),
+    retouch: !!(e.healing || e.redeye || portraitSet(e.portrait)),
+    geometry: !!(e.crop || Math.abs(e.tilt || 0) > 1e-4
+                 || canonOptic(e.lens, LENS_DEFAULT) || canonOptic(e.transform, TRANSFORM_DEFAULT)),
+    output: !watermarkIsNeutral(e.watermark),
+  };
+  // Adjust counts its layers when it has any, as they are what is easy to lose
+  // sight of with the whole photo picked.
+  for (const k of EDIT_TABS) {
+    const badge = $(`[data-tab-badge="${k}"]`);
+    const count = k === "adjust" && n > 0;
+    badge.textContent = count ? String(n) : "";
+    badge.classList.toggle("dot", held[k] && !count);
+    badge.classList.toggle("count", count);
+  }
+}
+
 function syncMaskGroup() {
-  const n = (editSession.edit?.masks || []).length;
-  $("#mask-summary-state").textContent = n ? `· ${n}` : "";
+  syncTabBadges();
 }
 
 // Which editor sections were left open, kept across photos and sessions.
@@ -6064,7 +6140,8 @@ function renderMaskList() {
   const rows = [
     `<div class="mask-row${editSession.activeMask < 0 ? " active" : ""}" data-mask="-1">` +
     `<span class="mask-eye-spacer"></span>` +
-    `<span class="mask-name">Global — whole photo</span></div>`,
+    `<span class="mask-icon">${icon("sliders")}</span>` +
+    `<span class="mask-name">Whole photo</span></div>`,
   ];
   masks.forEach((m, i) => {
     const n = (m.parts || []).length;
@@ -6086,28 +6163,39 @@ function renderMaskList() {
   list.innerHTML = rows.join("");
 }
 
-function renderMaskDetail() {
-  const m = activeMask();
-  const detail = $("#mask-detail");
-  detail.classList.toggle("hidden", !m);
-  $("#mask-context").textContent = m
-    ? `Local — ${maskLabel(m, editSession.activeMask)}`
-    : "Global adjustments";
-  $("#mask-context").classList.toggle("local", !!m);
-  // Auto-tone and the master curve stay global-only.
+// The sections only the whole photo has: a layer carries the sliders in
+// MASK_LOCAL_KEYS, which live in Light, Color, Detail and Creative.
+const PHOTO_ONLY_GROUPS = ["#edit-curve-group", "#edit-hsl-group", "#edit-grade-group",
+                           "#edit-look-group", "#edit-film-group"];
+
+// Everything that says whose sliders they are: which sections and rows show,
+// the heading over them, and what Auto, the white-balance picker and Reset act
+// on.
+function syncSliderTarget() {
+  const m = editingLayer();
+  for (const sel of PHOTO_ONLY_GROUPS) $(sel).classList.toggle("hidden", !!m);
+  $("#mask-context").textContent = m ? `${maskLabel(m, editSession.activeMask)} sliders` : "";
+  $("#mask-context").classList.toggle("hidden", !m);
+  // Auto-tone and the white-balance picker write the whole photo's values.
   $("#edit-auto").disabled = !!m;
-  $("#wb-pick").disabled = !!m;   // it writes the global pair
-  $("#edit-curve-group").classList.toggle("hidden", !!m);
+  $("#wb-pick").disabled = !!m;
   // "Reset mask" read as if it might delete the mask or undo its shape. Say
   // exactly what it zeroes.
   const reset = $("#edit-reset");
   reset.textContent = m ? "Reset sliders" : "Reset all";
   reset.dataset.tip = m
-    ? "Zero this mask's adjustments — its shape and position stay"
-    : "Clear every adjustment, mask and watermark on this photo";
+    ? "Zero this layer's sliders; its shapes stay"
+    : "Clear every adjustment, layer and watermark on this photo";
   $$("#edit-modal .look-row[data-field]").forEach((row) => {
     row.classList.toggle("hidden", !!m && !MASK_LOCAL_KEYS.has(row.dataset.field));
   });
+}
+
+function renderMaskDetail() {
+  const m = activeMask();
+  const detail = $("#mask-detail");
+  detail.classList.toggle("hidden", !m);
+  syncSliderTarget();
   if (!m) return;
   const nameEl = $("#mask-name");
   // Don't fight the user mid-word if the panel re-renders while typing.
@@ -6470,7 +6558,10 @@ function drawOverlay() {
   // Cropping shows the frame uncropped, so mask guides drawn against it would
   // sit in the wrong place. One job at a time.
   if (editSession.tool === "crop") { drawCropOverlay(ctx, r, W, H); return; }
-  const m = activeMask();
+  // Layers are drawn on Adjust only; elsewhere the photo is for the tool of
+  // the tab showing.
+  const onLayers = editSession.tab === "adjust";
+  const m = onLayers ? activeMask() : null;
 
   // "show mask" with no mask selected used to do nothing at all, which read as
   // a broken checkbox. With Global selected it now tints every enabled mask, so
@@ -6488,7 +6579,7 @@ function drawOverlay() {
   if (turned) { ctx.save(); applyMaskXform(ctx, r, mr); }
   drawPortraitFaces(ctx, mr);
   if (turned) ctx.restore();
-  if (editSession.showMask && !m) {
+  if (onLayers && editSession.showMask && !m) {
     for (const other of (editSession.edit.masks || [])) {
       if (!other.enabled) continue;
       drawMaskTint(ctx, other, r, W, H);
@@ -7054,7 +7145,7 @@ function overlayDown(e) {
   if (!editSession.relPath) return;
   const panButton = e.button === 1 || editSession.spaceHeld;   // middle / space-drag
   if (e.button !== 0 && !panButton) return;
-  const m = activeMask();
+  const m = editingLayer();
   const r0 = overlayRect(), f0 = evFrac(e);
   if (editSession.tool === "wb" && !panButton) {
     // One click, no drag: sample and disarm. The coordinates are already
@@ -7148,7 +7239,7 @@ function overlayMove(e) {
   if (!editSession.relPath) return;
   const r = overlayRect(), f = evFrac(e);
   editSession.hover = f;
-  const d = editSession.drag, m = activeMask();
+  const d = editSession.drag, m = editingLayer();
   if (editSession.tool === "crop") {
     const cv = $("#edit-overlay");
     const f = evFracView(e);          // view space, as in overlayDown
@@ -7722,19 +7813,40 @@ function bindSlots() {
 }
 
 // ---------- presets (app-global) ----------
+// ---------- presets ----------
+// What a preset is, and what applying one does, is the server's (presets.py):
+// it carries the parts ticked when it was saved, and applying it sets those,
+// a zero included, and leaves the rest of the photo's edit as it was. The
+// editor asks the server for the result rather than repeating the rules, so
+// the panel, the hover preview, the thumbnails and Apply to more all agree.
+
+const PRESET_PART_LABELS = {
+  light: "Light", color: "Color", detail: "Detail & effects", creative: "Creative",
+  curve: "Tone curve", mixer: "Color mixer", grading: "Color grading", look: "Look",
+  film: "Film", layers: "Layers", portrait: "Portrait (all faces)", crop: "Crop & straighten",
+  lens: "Lens & perspective", watermark: "Watermark", auto_light: "Auto light",
+};
+// The save dialog's sections, in the editor's own order.
+const PRESET_PART_GROUPS = [
+  ["Adjust", ["light", "color", "curve", "mixer", "grading", "detail", "creative", "look", "film", "layers"]],
+  ["Retouch", ["portrait"]],
+  ["Geometry", ["crop", "lens"]],
+  ["Output", ["watermark"]],
+  ["From each photo", ["auto_light"]],
+];
+const PRESET_THUMB_EDGE = 160;
+const PRESET_HOVER_MS = 220;
+
 async function loadPresets() {
-  try {
-    const res = await fetch("/api/presets", { cache: "no-store" });
-    if (res.ok) state.presets = (await res.json()).presets || [];
-  } catch { /* keep whatever we have */ }
+  const res = await fetch("/api/presets", { cache: "no-store" });
+  if (!res.ok) throw new Error(`presets load failed: ${res.status}`);
+  state.presets = (await res.json()).presets || [];
   renderPresetOptions();
+  renderPresetList();
 }
 
 function renderPresetOptions(selectId) {
-  // Built-ins and the user's own presets are separated so a long personal list
-  // never buries the shipped starting points.
-  const builtin = state.presets.filter((p) => p.builtin);
-  const mine = state.presets.filter((p) => !p.builtin);
+  const mine = state.presets;
   const opts = (list) => list.map((p) => {
     // Flag the ones that carry local adjustments — those are the presets the
     // add/replace choice actually matters for.
@@ -7743,152 +7855,355 @@ function renderPresetOptions(selectId) {
     return `<option value="${p.id}"${p.hint ? ` title="${escapeHtml(p.hint)}"` : ""}>` +
       `${escapeHtml(p.name)}${suffix}</option>`;
   }).join("");
-  // Built-ins carry a group — Portrait, Look, Mono and the rest — and the
-  // library is long enough that one flat list buried whichever set you were
-  // after. Built in the order the server sends so the file stays the running
-  // order. The user's own presets stay in one group: those are theirs to name.
-  const groups = [];
-  for (const p of builtin) {
-    const label = p.group || "Built-in";
-    const g = groups.find((x) => x.label === label);
-    if (g) g.items.push(p); else groups.push({ label, items: [p] });
-  }
-  for (const sel of [$("#edit-preset-select"), $("#bulk-preset-select")]) {
+  for (const sel of [$("#bulk-preset-select")]) {
     if (!sel) continue;
     const keep = selectId != null ? selectId : sel.value;
     const placeholder = sel.id === "bulk-preset-select" ? "Choose a preset…" : "Presets…";
-    sel.innerHTML = `<option value="">${placeholder}</option>`
-      + groups.map((g) =>
-          `<optgroup label="${escapeHtml(g.label)}">${opts(g.items)}</optgroup>`).join("")
-      + (mine.length ? `<optgroup label="My presets">${opts(mine)}</optgroup>` : "");
+    sel.innerHTML = `<option value="">${placeholder}</option>` + opts(mine);
     if (keep && state.presets.some((p) => p.id === keep)) sel.value = keep;
   }
 }
 
-const curveIsIdentity = (c) =>
-  !c || c.every(([x, y]) => Math.abs(y - x) < 1e-4);
+// An edit as a request carries it: {} when neutral, and without what the
+// server would drop anyway (see editPayload).
+function editBody(edit) {
+  return isNeutralEdit(edit) ? {} : { ...edit, masks: persistableMasks(edit.masks) };
+}
 
-// Mirrors editing.merge_additive: lay a preset over the current edit so local
-// presets compose instead of wiping the work already on the photo.
-function mergeAdditive(base, overlay) {
-  const out = mergeNeutralEdit(base);
-  const over = mergeNeutralEdit(overlay);
-  for (const f of EDIT_FIELDS) {
-    if (Math.abs(over[f.k] || 0) > 1e-4) out[f.k] = over[f.k];
-  }
-  if (!curveIsIdentity(over.curve)) out.curve = over.curve.map((p) => p.slice());
-  if (over.watermark) out.watermark = cloneWatermark(over.watermark);
-  // The rest mirrors editing.merge_additive, which the bulk apply uses: this
-  // used to stop at the watermark, so a preset added here lost its film, its
-  // colour mixer, its grading, its crop and its look, which a bulk apply kept.
-  if (over.crop) out.crop = { ...over.crop };
-  if (over.film) out.film = { ...over.film };
-  if (over.lut) out.lut = { ...over.lut };
-  if (over.lens) out.lens = { ...over.lens };
-  if (over.portrait) out.portrait = { ...over.portrait };
-  if (over.transform) out.transform = { ...over.transform };
-  // Appended, as editing.merge_additive does: dust sits in the same place on
-  // every frame a body shoots, so a preset of spots is meant to add to a photo.
-  if (over.healing) out.healing = { ops: [...(out.healing ? out.healing.ops : []), ...over.healing.ops] };
-  if (over.redeye) {
-    out.redeye = { enabled: true,
-                   corrections: [...(out.redeye ? out.redeye.corrections : []), ...over.redeye.corrections] };
-  }
-  if (over.hsl) {
-    const merged = cloneHsl(out.hsl) || {};
-    for (const [band, vals] of Object.entries(over.hsl)) merged[band] = { ...(merged[band] || {}), ...vals };
-    out.hsl = merged;
-  }
-  if (over.grading) {
-    const merged = cloneGrading(out.grading) || {};
-    for (const [k, v] of Object.entries(over.grading)) {
-      merged[k] = (v && typeof v === "object") ? { ...(merged[k] || {}), ...v } : v;
+function presetHasAuto(p) {
+  return ((p.edit && p.edit.masks) || []).some((m) => maskShapes(m).some((s) => s.type === "auto"));
+}
+
+// What a preset holds, for its row: one chip per part, saying a little more
+// where a name alone would not.
+function presetChips(p) {
+  const e = p.edit || {};
+  return (p.parts || []).map((k) => {
+    if (k === "layers") { const n = (e.masks || []).length; return `${n} layer${n === 1 ? "" : "s"}`; }
+    if (k === "mixer") {
+      const n = Object.keys(e.hsl || {}).length;
+      return n ? `Mixer · ${n} band${n === 1 ? "" : "s"}` : "Mixer";
     }
-    out.grading = merged;
-  }
-  out.masks = out.masks.concat(over.masks).slice(0, MASK_MAX);
-  // Mirrors editing.merge_additive: the maths is the photo's, unless there is
-  // nothing on it yet, and then the preset's (no `pv`: process 1).
-  if (isNeutralEdit(base)) out.pv = overlay ? overlay.pv : out.pv;
-  return out;
-}
-
-async function applyPreset(id) {
-  const preset = state.presets.find((p) => p.id === id);
-  if (!preset) return;
-  // A preset can carry an automatic mask, and the render would otherwise pull
-  // the segmentation model down inside the request — a preview that hangs for
-  // however long the download takes, with nothing on screen saying why.
-  const needsModel = ((preset.edit && preset.edit.masks) || [])
-    .some((m) => m.type === "auto");
-  if (needsModel && !(await ensureSegmentModel())) return;
-  const additive = state.presetMode === "add";
-  const before = editSession.edit.masks.length;
-  editSession.edit = additive
-    ? mergeAdditive(editSession.edit, preset.edit)
-    : mergeNeutralEdit(preset.edit);
-  const added = editSession.edit.masks.length - before;
-  // No status line here: the render that follows overwrites it within a frame.
-  // Selecting the new mask below is the feedback, and the mask list shows it.
-  // Land on the first mask the preset brought in, so it can be moved at once.
-  const focus = additive && added > 0 ? before : -1;
-  selectMask(focus, { silent: true });
-  setEditTool(null);
-  renderWatermarkPanel();
-  renderFilmPanel();
-  renderHslPanel();
-  renderGradePanel();
-  renderCurveChannels();
-  renderLookPanel();
-  renderRepairPanel();
-  renderOpticsPanel();
-  renderPortraitPanel();
-  syncEditSliders();
-  drawCurve();
-  drawOverlay();
-  setEditDirty();
-  fetchEditPreview(true);
-}
-
-function setPresetMode(mode) {
-  state.presetMode = mode;
-  try { localStorage.setItem("pcls.presetMode", mode); } catch { /* private */ }
-  $$("#preset-mode [data-preset-mode]").forEach((b) =>
-    b.classList.toggle("active", b.dataset.presetMode === mode));
-}
-
-async function saveCurrentAsPreset() {
-  const name = (prompt("Preset name:") || "").trim();
-  if (!name) return;
-  const res = await fetch("/api/presets", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, edit: editSession.edit }),
+    if (k === "look" && e.lut) return `Look · ${e.lut.name || "custom"}`;
+    if (k === "film" && e.film && e.film.stock) return `Film · ${e.film.stock}`;
+    return PRESET_PART_LABELS[k];
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    alert("Save preset failed: " + (err.detail || res.status));
-    return;
-  }
-  const result = await res.json();
-  state.presets = result.presets || [];
-  renderPresetOptions(result.preset ? result.preset.id : null);
 }
 
-async function deleteSelectedPreset() {
-  const id = $("#edit-preset-select").value;
-  if (!id) { alert("Pick a preset to delete first."); return; }
+async function presetApplied(id, base, amount) {
+  const res = await fetch("/api/presets/apply", {
+    ...JSON_POST, body: JSON.stringify({ rel_path: editSession.relPath, edit: editBody(base),
+                                         preset_id: id, amount }),
+  });
+  if (!res.ok) throw new Error(`preset apply failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+// ----- the preset just applied -----
+// While the edit is exactly as the preset left it, the preset is "live": its
+// chip takes an Amount and a Remove, and clicking another preset replaces it
+// (Capture One's default). Any other change makes it part of the edit, and
+// the chip goes. Undo back to it makes it live again, as the edit is equal.
+function livePreset() {
+  const l = editSession.livePreset;
+  return l && JSON.stringify(editSession.edit) === l.after ? l : null;
+}
+
+function renderLivePreset() {
+  const l = editSession.livePreset ? livePreset() : null;
+  $("#preset-live").classList.toggle("hidden", !l);
+  $("#preset-note").classList.toggle("hidden", !(l && l.skipped.length));
+  if (!l) return;
+  $("#preset-live-name").textContent = l.name;
+  $("#preset-amount").value = l.amount;
+  $("#preset-amount-val").textContent = l.amount;
+  $("#preset-note").textContent = l.skipped.length
+    ? `Nothing in this photo for ${l.skipped.join(", ")}, so ${l.skipped.length === 1 ? "that layer was" : "those layers were"} left out.`
+    : "";
+}
+
+function setLivePreset(preset, before, result, amount) {
+  editSession.edit = mergeNeutralEdit(result.edit);
+  editSession.livePreset = { id: preset.id, name: preset.name, amount, before,
+                             skipped: result.skipped, after: JSON.stringify(editSession.edit) };
+  refreshEditUi();
+  renderPresetList();
+}
+
+async function applyPreset(id, { stack = false } = {}) {
   const preset = state.presets.find((p) => p.id === id);
-  if (preset && preset.builtin) {
-    alert(`"${preset.name}" is a built-in preset and can't be deleted.\n\n` +
-          `Tweak it and use “Save preset…” to keep your own version.`);
+  if (!preset) throw new Error(`no preset ${id}`);
+  // A preset can carry an automatic layer, and the server checks what it
+  // selects on this photo: the model has to be here first.
+  if (presetHasAuto(preset) && !(await ensureSegmentModel())) return;
+  const live = livePreset();
+  const before = mergeNeutralEdit(!stack && live ? live.before : editSession.edit);
+  setLivePreset(preset, before, await presetApplied(id, before, 100), 100);
+}
+
+// Dragging Amount asks for the preset again at each value, laid on the edit
+// from before it; one request at a time, the newest value next.
+const presetAmount = { busy: false, want: null };
+
+async function setPresetAmount(v) {
+  presetAmount.want = v;
+  $("#preset-amount-val").textContent = v;
+  if (presetAmount.busy) return;
+  presetAmount.busy = true;
+  while (presetAmount.want !== null) {
+    const want = presetAmount.want;
+    presetAmount.want = null;
+    const l = livePreset();
+    if (!l) break;               // something else changed the edit meanwhile
+    const result = await presetApplied(l.id, l.before, want);
+    if (livePreset() !== l) break;
+    editSession.edit = mergeNeutralEdit(result.edit);
+    Object.assign(l, { amount: want, skipped: result.skipped, after: JSON.stringify(editSession.edit) });
+    syncEditSliders();
+    drawCurve();
+    renderHslPanel();
+    renderGradePanel();
+    renderLookPanel();
+    renderFilmPanel();
+    renderMaskList();
+    setEditDirty();
+    previewDuringDrag();
+  }
+  presetAmount.busy = false;
+}
+
+function removeLivePreset() {
+  const l = livePreset();
+  if (!l) return;
+  editSession.edit = mergeNeutralEdit(l.before);
+  editSession.livePreset = null;
+  refreshEditUi();
+  renderPresetList();
+}
+
+// ----- the list: thumbnails, hover preview -----
+function presetPanelOpen() { return !$("#preset-panel").classList.contains("hidden"); }
+
+function openPresetPanel(open) {
+  $("#preset-panel").classList.toggle("hidden", !open);
+  $("#preset-open").setAttribute("aria-expanded", String(open));
+  $("#preset-open").classList.toggle("active", open);
+  if (open) renderPresetList(); else presetHoverEnd();
+}
+
+function renderPresetList() {
+  const list = $("#preset-list");
+  if (!list) return;
+  if (!state.presets.length) {
+    list.innerHTML = `<div class="mask-parts-empty">No presets yet. Save one from an edit you like.</div>`;
     return;
   }
-  if (!confirm(`Delete preset "${preset ? preset.name : id}"?`)) return;
+  const live = editSession.livePreset ? livePreset() : null;
+  list.innerHTML = state.presets.map((p) =>
+    `<div class="preset-item${live && live.id === p.id ? " active" : ""}" data-preset="${p.id}" ` +
+    `role="button" tabindex="0">` +
+    `<img class="preset-thumb" data-preset-thumb="${p.id}" alt="" />` +
+    `<div class="preset-text"><span class="preset-name">${escapeHtml(p.name)}</span>` +
+    `<span class="preset-chips">${presetChips(p).map((c) =>
+      `<span class="preset-chip">${escapeHtml(c)}</span>`).join("")}</span></div>` +
+    `<button class="mask-del" data-preset-del="${p.id}" title="Delete this preset">×</button></div>`,
+  ).join("");
+  // The rows are new elements; their pictures come back from the cache.
+  if (presetPanelOpen()) renderPresetThumbs();
+}
+
+function hashString(str) {
+  let h = 0x811c9dc5;              // FNV-1a, enough to tell two edits apart in a cache key
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(16);
+}
+
+// Each preset as it would land on this photo, small. Rendered one at a time,
+// and kept for as long as the edit underneath is the same.
+const presetThumbs = new Map();     // `${rel}|${preset id}|${base}` -> object URL
+let presetThumbGen = 0;             // a newer pass stops an older one
+
+async function renderPresetThumbs() {
+  const gen = ++presetThumbGen;
+  const rel = editSession.relPath;
+  if (!rel || !state.presets.length) return;
+  const live = livePreset();
+  const base = mergeNeutralEdit(live ? live.before : editSession.edit);
+  const baseKey = hashString(JSON.stringify(editBody(base)));
+  for (const [key, url] of presetThumbs) {
+    if (!key.endsWith(`|${baseKey}`) || !key.startsWith(`${rel}|`)) {
+      URL.revokeObjectURL(url);
+      presetThumbs.delete(key);
+    }
+  }
+  const segReady = state.presets.some(presetHasAuto) ? await segmentModelReady() : true;
+  for (const p of state.presets) {
+    if (gen !== presetThumbGen || !presetPanelOpen() || editSession.relPath !== rel) return;
+    // Not drawn without the segmentation model: only applying asks for it.
+    if (presetHasAuto(p) && !segReady) continue;
+    const key = `${rel}|${p.id}|${baseKey}`;
+    let url = presetThumbs.get(key);
+    if (!url) {
+      const { edit } = await presetApplied(p.id, base, 100);
+      const res = await fetch("/api/edit/preview", {
+        ...JSON_POST, body: JSON.stringify({ rel_path: rel, edit, max_edge: PRESET_THUMB_EDGE }),
+      });
+      if (!res.ok) throw new Error(`preset thumbnail failed: ${res.status}`);
+      url = URL.createObjectURL(await res.blob());
+      presetThumbs.set(key, url);
+    }
+    const img = $(`#preset-list [data-preset-thumb="${p.id}"]`);
+    if (img) img.src = url;
+  }
+}
+
+async function segmentModelReady() {
+  const res = await fetch("/api/segment/status", { cache: "no-store" });
+  return !!(await res.json()).model_ready;
+}
+
+// Hovering a row shows the photo as clicking it would leave it, until the
+// pointer moves off. The saved preview comes back as it was.
+const presetHover = { timer: null, token: 0, url: null };
+
+function presetHoverStart(id) {
+  clearTimeout(presetHover.timer);
+  presetHover.timer = setTimeout(async () => {
+    const token = ++presetHover.token;
+    const preset = state.presets.find((p) => p.id === id);
+    if (!preset || (presetHasAuto(preset) && !(await segmentModelReady()))) return;
+    const live = livePreset();
+    const base = mergeNeutralEdit(live ? live.before : editSession.edit);
+    const { edit } = await presetApplied(id, base, 100);
+    if (token !== presetHover.token) return;
+    const res = await fetch("/api/edit/preview", { ...JSON_POST, body: JSON.stringify(previewBody(edit, true)) });
+    if (!res.ok) throw new Error(`preset preview failed: ${res.status}`);
+    const url = URL.createObjectURL(await res.blob());
+    if (token !== presetHover.token) { URL.revokeObjectURL(url); return; }
+    if (presetHover.url) URL.revokeObjectURL(presetHover.url);
+    presetHover.url = url;
+    $("#edit-img").src = url;
+  }, PRESET_HOVER_MS);
+}
+
+function presetHoverEnd() {
+  clearTimeout(presetHover.timer);
+  presetHover.token++;
+  if (!presetHover.url) return;
+  URL.revokeObjectURL(presetHover.url);
+  presetHover.url = null;
+  if (editSession.objUrl) $("#edit-img").src = editSession.objUrl;
+}
+
+async function deletePreset(id) {
+  const preset = state.presets.find((p) => p.id === id);
+  if (!preset || !confirm(`Delete the preset "${preset.name}"?`)) return;
   const res = await fetch(`/api/presets/${encodeURIComponent(id)}`, { method: "DELETE" });
-  if (!res.ok) { alert("Delete failed"); return; }
+  if (!res.ok) throw new Error(`preset delete failed: ${res.status}`);
   state.presets = (await res.json()).presets || [];
-  renderPresetOptions("");
+  renderPresetOptions();
+  renderPresetList();
+}
+
+// ----- saving one -----
+const presetSave = { modified: [], parts: new Set() };
+
+async function openPresetSave() {
+  const res = await fetch("/api/presets/inspect", {
+    ...JSON_POST, body: JSON.stringify({ edit: editBody(editSession.edit) }),
+  });
+  if (!res.ok) throw new Error(`preset inspect failed: ${res.status}`);
+  const info = await res.json();
+  presetSave.modified = info.modified;
+  presetSave.photoOwn = info.photo_own;
+  presetSave.parts = new Set(info.modified);
+  $("#preset-save-name").value = "";
+  $("#preset-save-status").textContent = "";
+  renderPresetSaveParts();
+  $("#preset-save-modal").classList.remove("hidden");
+  $("#preset-save-name").focus();
+}
+
+function renderPresetSaveParts() {
+  const modified = new Set(presetSave.modified);
+  $("#preset-parts-grid").innerHTML = PRESET_PART_GROUPS.map(([title, parts]) =>
+    `<div class="preset-parts-group"><span class="mask-add-label">${title}</span>` +
+    parts.map((k) =>
+      `<label class="preset-part${modified.has(k) ? " set" : ""}">` +
+      `<input type="checkbox" data-part="${k}"${presetSave.parts.has(k) ? " checked" : ""} />` +
+      `<span>${PRESET_PART_LABELS[k]}</span>` +
+      (modified.has(k) && presetSave.photoOwn.includes(k)
+        ? `<span class="preset-part-hint">set · often photo-specific</span>`
+        : modified.has(k) ? `<span class="preset-part-hint">set</span>`
+        : k === "auto_light" ? `<span class="preset-part-hint">each photo's own tone</span>` : "") +
+      `</label>`).join("") + `</div>`).join("");
+  const n = presetSave.parts.size;
+  $("#preset-save-summary").textContent = n ? `${n} part${n === 1 ? "" : "s"}` : "nothing ticked";
+  $("#preset-save-confirm").disabled = !n;
+  for (const b of $$("[data-parts-quick]")) {
+    const all = PRESET_PART_GROUPS.flatMap(([, ps]) => ps).filter((k) => k !== "auto_light");
+    const sets = { modified: presetSave.modified, all, none: [] };
+    const want = new Set(sets[b.dataset.partsQuick]);
+    b.classList.toggle("active", want.size === presetSave.parts.size
+      && [...want].every((k) => presetSave.parts.has(k)));
+  }
+}
+
+async function confirmPresetSave() {
+  const name = $("#preset-save-name").value.trim();
+  if (!name) { $("#preset-save-status").textContent = "Give it a name."; $("#preset-save-name").focus(); return; }
+  if (state.presets.some((p) => p.name === name)
+      && !confirm(`There is a preset called "${name}" already. Replace it?`)) return;
+  const res = await fetch("/api/presets", {
+    ...JSON_POST, body: JSON.stringify({ name, edit: editBody(editSession.edit), parts: [...presetSave.parts] }),
+  });
+  if (!res.ok) { $("#preset-save-status").textContent = `Save failed: ${res.status} ${await res.text()}`; return; }
+  state.presets = (await res.json()).presets || [];
+  renderPresetOptions();
+  $("#preset-save-modal").classList.add("hidden");
+  renderPresetList();
+}
+
+function bindPresets() {
+  $("#preset-open").addEventListener("click", () => openPresetPanel(!presetPanelOpen()));
+  document.addEventListener("pointerdown", (e) => {
+    if (presetPanelOpen() && !e.target.closest("#preset-panel, #preset-open")) openPresetPanel(false);
+  });
+  const list = $("#preset-list");
+  list.addEventListener("click", (e) => {
+    const del = e.target.closest("[data-preset-del]");
+    if (del) { deletePreset(del.dataset.presetDel); return; }
+    const row = e.target.closest("[data-preset]");
+    if (!row) return;
+    presetHoverEnd();
+    applyPreset(row.dataset.preset, { stack: e.shiftKey });
+  });
+  list.addEventListener("pointerover", (e) => {
+    const row = e.target.closest("[data-preset]");
+    if (row && !row.contains(e.relatedTarget)) presetHoverStart(row.dataset.preset);
+  });
+  list.addEventListener("pointerout", (e) => {
+    const row = e.target.closest("[data-preset]");
+    if (row && !row.contains(e.relatedTarget)) presetHoverEnd();
+  });
+  $("#preset-new").addEventListener("click", () => { openPresetPanel(false); openPresetSave(); });
+  $("#preset-amount").addEventListener("input", (e) => setPresetAmount(Number(e.target.value)));
+  $("#preset-remove").addEventListener("click", removeLivePreset);
+  $("#preset-save-cancel").addEventListener("click", () => $("#preset-save-modal").classList.add("hidden"));
+  $("#preset-save-close").addEventListener("click", () => $("#preset-save-modal").classList.add("hidden"));
+  $("#preset-save-confirm").addEventListener("click", confirmPresetSave);
+  $("#preset-save-name").addEventListener("keydown", (e) => { if (e.key === "Enter") confirmPresetSave(); });
+  $("#preset-parts-grid").addEventListener("change", (e) => {
+    const cb = e.target.closest("[data-part]");
+    if (!cb) return;
+    if (cb.checked) presetSave.parts.add(cb.dataset.part); else presetSave.parts.delete(cb.dataset.part);
+    renderPresetSaveParts();
+  });
+  $$("[data-parts-quick]").forEach((b) => b.addEventListener("click", () => {
+    const all = PRESET_PART_GROUPS.flatMap(([, ps]) => ps).filter((k) => k !== "auto_light");
+    presetSave.parts = new Set({ modified: presetSave.modified, all, none: [] }[b.dataset.partsQuick]);
+    renderPresetSaveParts();
+  }));
 }
 
 // ---------- download the selection ----------
@@ -8003,8 +8318,9 @@ function closeBulkModal() { $("#bulk-modal").classList.add("hidden"); }
 function updateBulkUi() {
   const source = getOptionCardValue("#bulk-source-cards");
   $("#bulk-preset-row").style.display = source === "preset" ? "" : "none";
-  // Clearing edits can only mean replace, so the choice is meaningless there.
-  $("#bulk-mode-row").style.display = source === "clear" ? "none" : "";
+  // Clearing edits can only mean replace, and a preset has no modes: it sets
+  // the parts it carries and leaves each photo's others alone.
+  $("#bulk-mode-row").style.display = source === "clear" || source === "preset" ? "none" : "";
   $("#bulk-mode-note").textContent = bulkMode() === "add"
     ? "keeps each photo's own adjustments; masks are added to them"
     : "discards each photo's current adjustments";
@@ -8023,11 +8339,7 @@ function bulkScopeRelPaths(scope) {
 function bulkSourceEdit(source) {
   if (source === "current") return bulkState.currentEdit || {};
   if (source === "clear") return {};
-  if (source === "preset") {
-    const preset = state.presets.find((p) => p.id === $("#bulk-preset-select").value);
-    return preset ? preset.edit : null;
-  }
-  return null;
+  throw new Error(`no edit for bulk source ${source}`);
 }
 
 // "Clear edits" is inherently a replace; anything else respects the toggle.
@@ -8042,33 +8354,36 @@ async function confirmBulkApply() {
   const source = getOptionCardValue("#bulk-source-cards");
   const rels = bulkScopeRelPaths(scope);
   if (!rels.length) return;
-  const edit = bulkSourceEdit(source);
-  if (edit == null) { $("#bulk-status").textContent = "Pick a preset first."; return; }
+  let body;
+  if (source === "preset") {
+    const preset = state.presets.find((p) => p.id === $("#bulk-preset-select").value);
+    if (!preset) { $("#bulk-status").textContent = "Pick a preset first."; return; }
+    if (presetHasAuto(preset) && !(await ensureSegmentModel())) return;
+    body = { rel_paths: rels, preset_id: preset.id, amount: 100 };
+  } else {
+    body = { rel_paths: rels, edit: bulkSourceEdit(source), mode: bulkMode() };
+  }
   $("#bulk-confirm").disabled = true;
   $("#bulk-status").textContent = "Applying…";
-  const res = await fetch("/api/edit/bulk", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rel_paths: rels, edit, mode: bulkMode() }),
-  });
+  const res = await fetch("/api/edit/bulk", { ...JSON_POST, body: JSON.stringify(body) });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     $("#bulk-status").textContent = "Failed: " + (err.detail || res.status);
     $("#bulk-confirm").disabled = false;
     return;
   }
-  // Reflect locally (edited_at bumps the thumb cache-buster). In add mode the
-  // result differs per photo, so merge against each one the same way the
-  // server just did.
-  const additive = bulkMode() === "add";
-  const now = new Date().toISOString();
+  // Each photo as the server left it (edited_at bumps the thumb cache-buster).
+  const result = await res.json();
   for (const rel of rels) {
     const ph = state.photos.find((p) => p.rel_path === rel);
+    const now = result.photos[rel];
     if (!ph) continue;
-    const merged = additive ? mergeAdditive(ph.edit, edit) : mergeNeutralEdit(edit);
-    if (isNeutralEdit(merged)) { delete ph.edit; delete ph.edited_at; }
-    else { ph.edit = merged; ph.edited_at = now; }
+    if (now.edit) { ph.edit = now.edit; ph.edited_at = now.edited_at; }
+    else { delete ph.edit; delete ph.edited_at; }
   }
+  const left = Object.keys(result.skipped || {}).length;
+  if (left) alert(`${left} photo${left === 1 ? " had" : "s had"} nothing for some of the preset's `
+                  + "automatic layers, so those layers were left out there.");
   closeBulkModal();
   clearSelection();
   renderMain();
@@ -8315,6 +8630,13 @@ function bindKeys() {
       e.preventDefault();
       return;
     }
+    // Saving a preset: Esc backs out; typing its name must not reach the editor.
+    if (!$("#preset-save-modal").classList.contains("hidden")) {
+      if (e.key === "Escape") { $("#preset-save-modal").classList.add("hidden"); e.preventDefault(); }
+      return;
+    }
+    // The preset list closes on Esc before anything behind it backs out.
+    if (e.key === "Escape" && presetPanelOpen()) { openPresetPanel(false); e.preventDefault(); return; }
     // A model's download dialog: Esc backs out (and stops a download).
     if (!$("#model-modal").classList.contains("hidden")) {
       if (e.key === "Escape") { modelCancel(); e.preventDefault(); }
@@ -8439,8 +8761,8 @@ function bindKeys() {
         // Esc backs out one level: armed tool, then a part back to its mask's
         // own shape, then mask selection, then modal.
         if (editSession.tool) setEditTool(null);
-        else if (editSession.activePart >= 0) selectPart(-1, { backOut: true });
-        else if (editSession.activeMask >= 0) selectMask(-1);
+        else if (editingLayer() && editSession.activePart >= 0) selectPart(-1, { backOut: true });
+        else if (editingLayer()) selectMask(-1);
         else leaveEditor("close");
         e.preventDefault(); return;
       }
@@ -8453,7 +8775,11 @@ function bindKeys() {
       // (and to a new layer while the whole photo is selected).
       if (k === "n" || k === "N") { addLayer(); e.preventDefault(); return; }
       const kind = { r: "radial", g: "linear", b: "brush" }[k.toLowerCase()];
-      if (kind) { addShape(kind, $("#mask-part-op").value); e.preventDefault(); return; }
+      if (kind) {
+        if (editSession.tab !== "adjust") setEditTab("adjust");
+        addShape(kind, $("#mask-part-op").value);
+        e.preventDefault(); return;
+      }
       if (k === "\\") {
         $("#mask-show").checked = editSession.showMask = !editSession.showMask;
         drawOverlay(); e.preventDefault(); return;
@@ -8465,7 +8791,7 @@ function bindKeys() {
         $("#portrait-show").checked = editSession.showFaces = show;
         drawOverlay(); e.preventDefault(); return;
       }
-      if ((k === "Delete" || k === "Backspace") && editSession.activeMask >= 0) {
+      if ((k === "Delete" || k === "Backspace") && editingLayer()) {
         // The selected shape; the layer goes with its last one.
         deleteShape(editSession.activePart);
         e.preventDefault(); return;
@@ -9268,6 +9594,9 @@ function bindUi() {
   $$("#pref-project-location button").forEach((b) =>
     b.addEventListener("click", () => setProjectLocation(b.dataset.loc)));
   restoreEditGroups();
+  editSession.tab = savedEditTab();
+  $$("#edit-modal [data-edit-tab]").forEach((b) =>
+    b.addEventListener("click", () => setEditTab(b.dataset.editTab)));
   bindSliderLooks();
   bindMenu("#more-btn", "#more-menu");
   bindGridHover();
@@ -9403,17 +9732,7 @@ function bindUi() {
   editCmp.addEventListener("pointerdown", (e) => { e.preventDefault(); editCompareOn(); });
   editCmp.addEventListener("pointerup", editCompareOff);
   editCmp.addEventListener("pointerleave", editCompareOff);
-  $("#edit-preset-select").addEventListener("change", (e) => {
-    if (e.target.value) applyPreset(e.target.value);
-  });
-  $("#preset-mode").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-preset-mode]");
-    if (b) setPresetMode(b.dataset.presetMode);
-  });
-  try { setPresetMode(localStorage.getItem("pcls.presetMode") || "add"); }
-  catch { setPresetMode("add"); }
-  $("#edit-preset-save").addEventListener("click", saveCurrentAsPreset);
-  $("#edit-preset-delete").addEventListener("click", deleteSelectedPreset);
+  bindPresets();
   $("#edit-apply-more").addEventListener("click", () => openBulkModal({ fromEditor: true }));
   // Batch apply
   $("#selection-apply").addEventListener("click", () => openBulkModal({ scope: "selected" }));
@@ -11502,16 +11821,18 @@ const TOURS = {
       body: "Everything here is non-destructive: your original file is never changed. A short tour of what is where." },
     { target: ".edit-canvas-wrap", title: "The photo",
       body: "Shown as it will export. Scroll to zoom, drag to pan, hold <kbd>C</kbd> to see the original, and <kbd>F</kbd> switches between fit and 100%." },
-    { target: ".edit-actionbar", title: "Auto, undo and presets",
-      body: "<b>Auto</b> sets a starting tone. <kbd>⌘Z</kbd> / <kbd>Ctrl+Z</kbd> undoes and <kbd>⇧⌘Z</kbd> / <kbd>Ctrl+Y</kbd> redoes. Presets save a look to reuse." },
-    { target: "#edit-mask-group", title: "Adjust the whole photo or part of it",
-      body: "The sliders change the whole photo. Open <b>Layers</b>, make a new layer and add shapes to it, a radial, gradient, brush, tonal range or an automatic Subject, Background or Skin selection, each added or taken out, and the same sliders change only that part." },
-    { target: "#edit-optics-group", title: "Lens & perspective",
-      body: "Straighten leaning buildings with <b>Upright</b>, and correct distortion, colour fringes and dark corners." },
-    { target: "#edit-portrait-group", title: "Portrait",
-      body: "Smooth skin, soften wrinkles and neck lines, lift dark circles, whiten teeth and eyes, remove blemishes, and reshape the eyes, face, jaw, chin, nose and mouth, sized to each face it finds." },
-    { target: "#edit-repair-group", title: "Heal & red eye",
-      body: "Remove dust and small things by hand, and fix red eyes." },
+    { target: ".edit-actionbar", title: "Auto and undo",
+      body: "<b>Auto</b> sets a starting tone. <kbd>⌘Z</kbd> / <kbd>Ctrl+Z</kbd> undoes and <kbd>⇧⌘Z</kbd> / <kbd>Ctrl+Y</kbd> redoes. <b>Reset</b> clears what the tab below is working on." },
+    { target: "#preset-open", title: "Presets",
+      body: "A preset carries the parts you ticked when you saved it, and applying one sets those and leaves the rest of the edit alone. Hover one to see it on the photo; once applied, <b>Amount</b> sets how much of it." },
+    { target: "#edit-tabbtn-adjust", title: "Adjust",
+      body: "Pick what the sliders act on first: the whole photo, or a layer, which is part of it made of shapes (a radial, gradient, brush, tonal range or an automatic Subject, Background or Skin selection, each added or taken out). The sliders below are then that one's." },
+    { target: "#edit-tabbtn-retouch", title: "Retouch",
+      body: "Heal dust and small things, fix red eyes, and the portrait tools: smooth skin, soften lines, whiten teeth and eyes, reshape a face." },
+    { target: "#edit-tabbtn-geometry", title: "Geometry",
+      body: "Crop and straighten, correct the lens, and stand leaning buildings up with <b>Upright</b>." },
+    { target: "#edit-tabbtn-output", title: "Output",
+      body: "The watermark, and saved versions of this photo's edit. A dot on a tab says it holds something; Adjust counts its layers." },
     { target: "#edit-save", title: "Save",
       body: "Keeps the edit on this photo. <b>Cancel</b> throws the changes away. <b>Apply to more…</b> copies this edit to other photos." },
   ],

@@ -583,6 +583,12 @@ def normalize_mask(raw: Any) -> dict[str, Any] | None:
     m = _default_mask(kind)
     name = raw.get("name")
     m["name"] = str(name)[:40] if isinstance(name, str) else ""
+    # Which preset put the layer here (see presets.apply), so applying that
+    # preset again replaces it. Present only when set: an untagged mask
+    # normalizes, and hashes, as it did before tags existed.
+    tag = raw.get("preset")
+    if isinstance(tag, str) and 0 < len(tag) <= 32 and tag.replace("-", "").replace("_", "").isalnum():
+        m["preset"] = tag
     m["enabled"] = bool(raw.get("enabled", True))
     m["invert"] = bool(raw.get("invert", False))
     m["feather"] = _tenth(_fnum(raw.get("feather"), 0, 100, m["feather"]))
