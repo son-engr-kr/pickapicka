@@ -15,6 +15,12 @@ whole job: decide, filter, move on.
   an unsaved edit.
 - **The sidebar** lists the scenes first, each with how much is left and how
   many picks, and below them the grouping, People and Subjects.
+- **Scene previews**: up to four small photos under each scene, so a scene is
+  known by what is in it rather than by its number. Its picks come first
+  (outlined); until there are four, the rest are the best-looking photo
+  (lowest badness) of each stretch of the scene's time, leaving out rejects.
+  Clicking one opens the scene with the cursor on it. Preferences → General
+  turns them off.
 - **The filter bar** above the grid shows each filter with how many photos it
   would show in this scene.
 - **The grid scrolls.** 1, 2, 4 or 8 per screen sets the tile size; the arrow

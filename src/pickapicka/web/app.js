@@ -1800,7 +1800,10 @@ function bindChanges() {
 
 function renderSidebar() {
   const list = $("#scene-list");
+  // Emptying the list scrolls it to the top; it is put back where it was.
+  const scrolled = list.scrollTop;
   list.innerHTML = "";
+  const previews = scenePreviewsOn();
   let totalPick = 0, totalReview = 0, totalReject = 0, totalUndecided = 0;
   for (const scene of state.sceneOrder) {
     const photos = state.byScene.get(scene);
@@ -1822,14 +1825,89 @@ function renderSidebar() {
         <span class="b-review" style="width:${100*counts.review/n}%"></span>
         <span class="b-reject" style="width:${100*counts.reject/n}%"></span>
       </span>`;
+    if (previews) li.querySelector(".stats").after(scenePreviewEl(scene, photos));
     li.addEventListener("click", () => selectScene(scene));
     list.appendChild(li);
   }
+  list.scrollTop = scrolled;
   const total = state.photos.length;
   const decided = total - totalUndecided;
   $("#overall-progress").textContent =
     `${decided} of ${plural(total, "photo")} decided (${total ? Math.round(100 * decided / total) : 0}%)`
     + (totalPick ? ` · ${plural(totalPick, "pick")}` : "");
+}
+
+// ---------- scene previews ----------
+// A few small photos under each scene in the list, so a scene is known by what
+// is in it rather than by its number: its picks, and until there are enough,
+// the best-looking photo of each stretch of its time.
+const SCENE_PREVIEWS = 4;
+// scene -> { key, el }. The list is rebuilt on every decision; a scene whose
+// previews did not change keeps its element, so its images are not reloaded.
+const scenePreviewCache = new Map();
+
+function scenePreviewsOn() {
+  try { return localStorage.getItem("pcls.scenePreviews") !== "0"; } catch { return true; }
+}
+
+// `n` of `pool` (in shooting order), one from each stretch of the time it
+// covers: the one with the lowest badness. A scene that is a few bursts has
+// fewer stretches with photos in them than `n`; it is then cut into `n` runs
+// of equal length instead.
+function spreadOverTime(pool, n) {
+  if (pool.length <= n) return pool;
+  const t = pool.map((p) => (p.captured_at ? Date.parse(p.captured_at) : NaN));
+  let parts = [];
+  if (t.every(Number.isFinite) && t[t.length - 1] > t[0]) {
+    const lo = t[0], span = t[t.length - 1] - lo;
+    parts = Array.from({ length: n }, () => []);
+    pool.forEach((p, i) => parts[Math.min(n - 1, Math.floor((t[i] - lo) / span * n))].push(p));
+    parts = parts.filter((part) => part.length);
+  }
+  if (parts.length < n) {
+    parts = Array.from({ length: n }, (_, k) =>
+      pool.slice(Math.floor(k * pool.length / n), Math.floor((k + 1) * pool.length / n)));
+  }
+  const bad = (p) => p.scores?.badness ?? Infinity;
+  return parts.map((part) => part.reduce((best, p) => (bad(p) < bad(best) ? p : best)));
+}
+
+// Its picks first; while there are fewer than fit, the rest of the row is
+// filled from what is not rejected, as before there were any. Shown in
+// shooting order.
+function scenePreviewPhotos(photos) {
+  const ordered = photos.slice().sort(byCaptureTime);
+  const picks = ordered.filter((p) => p.decision === "pick");
+  if (picks.length >= SCENE_PREVIEWS) return spreadOverTime(picks, SCENE_PREVIEWS);
+  const rest = ordered.filter((p) => p.decision !== "pick" && p.decision !== "reject");
+  const fill = rest.length ? rest : ordered.filter((p) => p.decision !== "pick");
+  return picks.concat(spreadOverTime(fill, SCENE_PREVIEWS - picks.length)).sort(byCaptureTime);
+}
+
+function scenePreviewEl(scene, photos) {
+  const shown = scenePreviewPhotos(photos);
+  const key = shown.map((p) => `${thumbUrl(p)}|${p.decision}|${state.missing.has(p.rel_path)}`).join("\n");
+  const cached = scenePreviewCache.get(scene);
+  if (cached && cached.key === key) return cached.el;
+  const el = document.createElement("span");
+  el.className = "scene-previews";
+  el.innerHTML = shown.map((p) => `<img loading="lazy" alt="" src="${thumbUrl(p)}"
+      data-rel="${escapeAttr(p.rel_path)}" title="${escapeAttr(basename(p.rel_path))}"
+      class="${p.decision === "pick" ? "pick" : ""}${state.missing.has(p.rel_path) ? " missing" : ""}" />`).join("");
+  // A preview opens its scene with the cursor on that photo.
+  el.addEventListener("click", (e) => {
+    const rel = e.target.dataset && e.target.dataset.rel;
+    if (!rel) return;
+    e.stopPropagation();
+    selectScene(scene);
+    const i = state.filteredPhotos.findIndex((p) => p.rel_path === rel);
+    if (i >= 0) {
+      state.cursorIdx = i;
+      showCursor();
+    }
+  });
+  scenePreviewCache.set(scene, { key, el });
+  return el;
 }
 
 // ---------- rendering: main ----------
@@ -1853,6 +1931,13 @@ function setFilter(f) {
   showCursor();
 }
 
+// Shooting order: by capture time, those without one last, by name.
+function byCaptureTime(a, b) {
+  const ta = a.captured_at || "\uffff", tb = b.captured_at || "\uffff";
+  if (ta !== tb) return ta < tb ? -1 : 1;
+  return a.rel_path < b.rel_path ? -1 : a.rel_path > b.rel_path ? 1 : 0;
+}
+
 function recomputeFilter() {
   if (!state.selectedScene) { state.filteredPhotos = []; return; }
   const photos = state.byScene.get(state.selectedScene) || [];
@@ -1866,9 +1951,7 @@ function recomputeFilter() {
       const pa = bestPriority(a), pb = bestPriority(b);
       if (pa !== pb) return pa - pb;
     }
-    const ta = a.captured_at || "\uffff", tb = b.captured_at || "\uffff";
-    if (ta !== tb) return ta < tb ? -1 : 1;
-    return a.rel_path < b.rel_path ? -1 : a.rel_path > b.rel_path ? 1 : 0;
+    return byCaptureTime(a, b);
   });
   state.filteredPhotos = arr;
   if (state.cursorIdx >= state.filteredPhotos.length) {
@@ -9520,6 +9603,7 @@ async function openPrefs(pane = "general") {
   }
   $("#pref-keybar").checked = !keybarCollapsed();
   $("#pref-filmstrip").checked = filmstripOn();
+  $("#pref-scene-previews").checked = scenePreviewsOn();
   $("#pref-inspector").checked = inspectorOn();
   $("#pref-loupe").checked = loupe.on;
   $("#pref-launch-sound").checked = launchSoundOn();
@@ -9653,6 +9737,10 @@ function bindPrefs() {
     applyFilmstrip(e.target.checked);
     // The editor's render is sized to the photo, which just changed height.
     if (editSession.relPath) fetchEditPreview(true);
+  });
+  $("#pref-scene-previews").addEventListener("change", (e) => {
+    try { localStorage.setItem("pcls.scenePreviews", e.target.checked ? "1" : "0"); } catch { /* private */ }
+    renderSidebar();
   });
   $("#pref-inspector").addEventListener("change", (e) => { if (e.target.checked !== inspectorOn()) toggleInspector(); });
   $("#pref-loupe").addEventListener("change", (e) => { if (e.target.checked !== loupe.on) toggleLoupe(); });

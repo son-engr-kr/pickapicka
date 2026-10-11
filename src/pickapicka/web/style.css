@@ -240,6 +240,12 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
 .scene-item.active { background: #1f3252; }
 .scene-item .name { display: block; font-weight: 600; }
 .scene-item .stats { display: block; font-size: 10px; color: var(--fg-dim); margin-top: 2px; }
+/* A scene's previews: up to four, each a quarter of the row whatever their number. */
+.scene-previews { display: flex; gap: 3px; margin-top: 6px; }
+.scene-previews img { flex: 0 0 calc((100% - 9px) / 4); min-width: 0; aspect-ratio: 3 / 2; object-fit: cover;
+  border-radius: 3px; background: var(--sunken); cursor: pointer; }
+.scene-previews img.pick { box-shadow: inset 0 0 0 1px var(--pick); outline: 1px solid var(--pick); outline-offset: -1px; }
+.scene-previews img.missing { opacity: 0.45; filter: grayscale(0.6); }
 .bar { display: flex; height: 3px; margin-top: 4px; border-radius: 2px;
   overflow: hidden; background: var(--border); }
 .bar > span { display: block; height: 100%; }
