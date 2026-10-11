@@ -67,12 +67,16 @@ whole job: decide, filter, move on.
 
 ## Scenes
 
-- **Scene grouping**: by folder structure, or by EXIF capture-time gaps
-  (configurable in minutes). Switch any time without re-scoring. The
-  new-project wizard previews both on the chosen folder before anything is
-  scored: the scenes each subfolder would make, or a timeline of the shoot that
-  re-splits as you drag the gap slider, with the longest pause marked so you can
-  see which gap would separate what. The grouping survives a re-score: a
+- **Scene grouping**: by folder structure, by EXIF capture-time gaps
+  (configurable in minutes), or **folder, then time**: each subfolder split
+  wherever you paused for longer than the gap, as `reception · 1`,
+  `reception · 2` (a folder that stays one scene keeps its plain name), for
+  folders that still run for hours. Switch any time without re-scoring, from
+  the *Group scenes* panel in the sidebar. The new-project wizard previews each
+  on the chosen folder before anything is scored: the scenes each subfolder
+  would make, a timeline of the shoot that re-splits as you drag the gap
+  slider, or each folder cut into its scenes; it suggests folder, then time
+  when a subfolder has long pauses in it. The grouping survives a re-score: a
   time-gap project used to come back from one grouped by folder.
 - **Folders left out**: *More → Folders…* lists the top-level folders under
   the photo folder, and any of them can be left out of the project: a folder

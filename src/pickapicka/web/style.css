@@ -242,6 +242,9 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
 .scene-item .stats { display: block; font-size: 10px; color: var(--fg-dim); margin-top: 2px; }
 /* A scene's previews: up to four, each a quarter of the row whatever their number. */
 .scene-previews { display: flex; gap: 3px; margin-top: 6px; }
+/* A folder cut into its scenes, in the new-project preview. */
+.sp-bar.sp-runs { display: flex; gap: 2px; }
+.sp-bar.sp-runs i { min-width: 3px; }
 .scene-previews img { flex: 0 0 calc((100% - 9px) / 4); min-width: 0; aspect-ratio: 3 / 2; object-fit: cover;
   border-radius: 3px; background: var(--sunken); cursor: pointer; }
 .scene-previews img.pick { box-shadow: inset 0 0 0 1px var(--pick); outline: 1px solid var(--pick); outline-offset: -1px; }

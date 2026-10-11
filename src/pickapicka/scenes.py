@@ -33,6 +33,13 @@ def _scene_ref(photo: dict[str, Any]) -> str:
     return photo["rel_path"]
 
 
+def _folder_of(photo: dict[str, Any]) -> str:
+    """The top-level folder a photo is in, '(none)' for one directly in the
+    photo folder. Either separator, for the reason group_by_folder gives."""
+    parts = re.split(r"[\\/]", _scene_ref(photo), maxsplit=1)
+    return parts[0] if len(parts) > 1 else "(none)"
+
+
 def group_by_folder(photos: list[dict[str, Any]]) -> None:
     """Set photo['scene'] from the first directory component of rel_path.
     Loose files (no subdir) become '(none)'.
@@ -42,8 +49,7 @@ def group_by_folder(photos: list[dict[str, Any]]) -> None:
     a project into '(none)' the moment grouping was switched back to by folder.
     """
     for p in photos:
-        parts = re.split(r"[\\/]", _scene_ref(p), maxsplit=1)
-        p["scene"] = parts[0] if len(parts) > 1 else "(none)"
+        p["scene"] = _folder_of(p)
 
 
 def _photo_time(photo: dict[str, Any], jpeg_root: Path) -> datetime | None:
@@ -85,6 +91,44 @@ def group_by_time_gap(
             photos[i]["scene"] = "(no_time)"
 
 
+def group_by_folder_time(
+    photos: list[dict[str, Any]],
+    jpeg_root: Path,
+    gap_minutes: int = 30,
+) -> None:
+    """By folder, then by time gap inside each folder: a folder per part of a
+    shoot (ceremony/, reception/) that still runs for hours. A folder that
+    stays one scene keeps its plain name; one that splits is 'day1 · 1',
+    'day1 · 2', … in shooting order. Its photos with no capture time go to
+    'day1 · no time' (or the plain name, if none of it has one)."""
+    by_folder: dict[str, list[int]] = {}
+    for i, p in enumerate(photos):
+        by_folder.setdefault(_folder_of(p), []).append(i)
+    gap = timedelta(minutes=gap_minutes)
+    for folder, idxs in by_folder.items():
+        times = {i: _photo_time(photos[i], jpeg_root) for i in idxs}
+        timed = sorted((i for i in idxs if times[i] is not None), key=lambda i: times[i])
+        runs: list[list[int]] = []
+        last: datetime | None = None
+        for i in timed:
+            if last is None or times[i] - last > gap:
+                runs.append([])
+            runs[-1].append(i)
+            last = times[i]
+        untimed = [i for i in idxs if times[i] is None]
+        split = len(runs) + bool(untimed) > 1
+        for k, run in enumerate(runs, 1):
+            for i in run:
+                photos[i]["scene"] = f"{folder} · {k}" if split else folder
+        for i in untimed:
+            photos[i]["scene"] = f"{folder} · no time" if split else folder
+
+
+# Every mode but by folder reads capture times; by folder is what scoring
+# assigns as it scans, so only these need a regroup after scoring.
+TIMED_MODES = ("time_gap", "folder_time")
+
+
 def regroup(
     photos: list[dict[str, Any]],
     jpeg_root: Path,
@@ -92,8 +136,10 @@ def regroup(
     gap_minutes: int = 30,
 ) -> None:
     """Apply the chosen mode in-place."""
-    assert mode in ("folder", "time_gap"), f"unknown scene mode: {mode}"
+    assert mode in ("folder", *TIMED_MODES), f"unknown scene mode: {mode}"
     if mode == "folder":
         group_by_folder(photos)
-    else:
+    elif mode == "time_gap":
         group_by_time_gap(photos, jpeg_root, gap_minutes)
+    else:
+        group_by_folder_time(photos, jpeg_root, gap_minutes)

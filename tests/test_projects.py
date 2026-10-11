@@ -151,8 +151,9 @@ def test_merge_settings(tmp_path) -> None:
     assert st["subject_classes"] == ["car", "dog"]   # what either detected
     assert st["detect_faces"] is False
     assert "hdr_look" not in st                      # they disagree: the default
-    # By folder would make each project one scene under the merged root.
-    assert st["scene_grouping"] == {"mode": "time_gap", "gap_minutes": 30}
+    # By folder would make each project one scene under the merged root: each
+    # is split by time inside it, and its scenes keep its folder's name.
+    assert st["scene_grouping"] == {"mode": "folder_time", "gap_minutes": 30}
     assert len(plan["notes"]) == 2
 
 

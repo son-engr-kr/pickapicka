@@ -255,7 +255,9 @@ def _settings(datas: list[dict[str, Any]], *, whole: bool) -> tuple[dict[str, An
     a source found goes missing. A setting the sources disagree on falls back
     to its default. Scenes by folder take each scene from a top-level folder,
     which under the merged root is a whole source project, so unless one
-    source already covered the merged root, scenes go by time gap instead."""
+    source already covered the merged root, each is split by time gap inside
+    it (folder_time): the scenes still say which project they came from.
+    Projects that all went by time gap alone keep that."""
     out: dict[str, Any] = {}
     notes: list[str] = []
     for key in SHARED_SETTINGS:
@@ -271,16 +273,19 @@ def _settings(datas: list[dict[str, Any]], *, whole: bool) -> tuple[dict[str, An
     out["detect_faces"] = any(d.get("detect_faces") is not False for d in datas)
 
     groupings = [d.get("scene_grouping") or {"mode": "folder"} for d in datas]
-    gaps = {g.get("gap_minutes", DEFAULT_GAP_MINUTES) for g in groupings if g.get("mode") == "time_gap"}
+    gaps = {g.get("gap_minutes", DEFAULT_GAP_MINUTES) for g in groupings
+            if g.get("mode") in ("time_gap", "folder_time")}
     gap = gaps.pop() if len(gaps) == 1 else DEFAULT_GAP_MINUTES
-    if all(g.get("mode") != "time_gap" for g in groupings) and whole:
+    if all(g.get("mode") == "time_gap" for g in groupings):
+        out["scene_grouping"] = {"mode": "time_gap", "gap_minutes": gap}
+    elif whole and all(g.get("mode", "folder") == "folder" for g in groupings):
         out["scene_grouping"] = {"mode": "folder"}
     else:
-        out["scene_grouping"] = {"mode": "time_gap", "gap_minutes": gap}
-        if any(g.get("mode") != "time_gap" for g in groupings):
+        out["scene_grouping"] = {"mode": "folder_time", "gap_minutes": gap}
+        if not whole:
             notes.append(
-                f"scenes are grouped by time gap ({gap} min): by folder, each project "
-                "would become one scene. Preferences → This project changes it")
+                f"scenes go by folder and then by {gap}-minute gaps inside each: by folder alone, "
+                "each project would become one scene. The Group scenes panel changes it")
     return out, notes
 
 

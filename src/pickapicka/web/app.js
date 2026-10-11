@@ -9597,9 +9597,7 @@ async function openPrefs(pane = "general") {
   $("#pref-project-none").classList.toggle("hidden", open);
   if (open) {
     const sg = state.sceneGrouping || { mode: "folder", gap_minutes: 30 };
-    $("#pref-grouping-now").textContent = sg.mode === "time_gap"
-      ? `By time gap: a new scene after ${sg.gap_minutes} minutes without a photo.`
-      : "By folder: each subfolder is a scene.";
+    $("#pref-grouping-now").textContent = sceneGroupingLabel(sg, true);
   }
   $("#pref-keybar").checked = !keybarCollapsed();
   $("#pref-filmstrip").checked = filmstripOn();
@@ -9983,7 +9981,7 @@ function bindUi() {
   $$("#scene-mode-cards .option-card").forEach((card) => {
     card.addEventListener("click", () => {
       setOptionCardValue("#scene-mode-cards", card.dataset.value);
-      $("#scene-gap-row").classList.toggle("hidden", card.dataset.value !== "time_gap");
+      $("#scene-gap-row").classList.toggle("hidden", !sceneModeTimed(card.dataset.value));
       applySceneGrouping();
     });
   });
@@ -11533,6 +11531,9 @@ const HELP_CONTENT = {
     becomes one scene. Use this if you organized shots into folders.</p>
     <p><b>By time gap</b> — reads EXIF capture time and starts a new scene
     after a configurable gap. Good for an unsorted dump.</p>
+    <p><b>Folder, then time</b> — each subfolder, split wherever you paused
+    for longer than the gap: <i>reception · 1</i>, <i>reception · 2</i>. For
+    folders that still run for hours.</p>
     <p>You can switch any time without re-scoring; only auto-suggestions are
     recomputed within each new scene.</p>`,
   "people": `
@@ -12251,7 +12252,7 @@ function examplePhotoDir() {
 function setWizardSceneMode(mode) {
   wizardState.sceneMode = mode;
   setOptionCardValue("#wiz-scene-cards", mode);
-  $("#wiz-gap-row").style.display = mode === "time_gap" ? "" : "none";
+  $("#wiz-gap-row").style.display = sceneModeTimed(mode) ? "" : "none";
   renderScenePreview();
 }
 
@@ -12311,7 +12312,8 @@ function renderScenePreview() {
   const shots = wizardState.shots;
   if (!shots) { box.innerHTML = `<p class="sp-wait">Looking at your photos…</p>`; return; }
   if (shots.error) { box.innerHTML = `<p class="sp-wait">${escapeHtml(shots.error)}</p>`; return; }
-  box.innerHTML = (wizardState.sceneMode === "folder" ? folderPreview(shots) : timeGapPreview(shots))
+  const preview = { folder: folderPreview, time_gap: timeGapPreview, folder_time: folderTimePreview };
+  box.innerHTML = preview[wizardState.sceneMode](shots)
     + (shots.truncated ? `<p class="sp-note">Only the first ${shots.shots.toLocaleString()} photos were read.</p>` : "");
 }
 
@@ -12330,6 +12332,29 @@ function folderPreview(shots) {
   const more = folders.length > 10 ? `<p class="sp-note">and ${folders.length - 10} more</p>` : "";
   return `<p class="sp-head">Your photos would make <b>${plural(folders.length, "scene")}</b>, one per folder:</p>`
     + rows + more;
+}
+
+// Each folder as a row, cut into its scenes at the gap: a segment per scene,
+// as wide as its share of the folder's photos.
+function folderTimePreview(shots) {
+  const gap = parseInt($("#wiz-gap").value, 10) || 30;
+  const folders = shots.by_folder || [];
+  const rows = folders.map((f) => {
+    const runs = timeGapScenes(f.times, gap).map((g) => g.times.length);
+    if (f.untimed) runs.push(f.untimed);
+    return { name: f.name, runs, total: f.times.length + f.untimed };
+  });
+  const total = rows.reduce((n, r) => n + r.runs.length, 0);
+  const split = rows.filter((r) => r.runs.length > 1).length;
+  const list = rows.slice(0, 10).map((r, i) =>
+    `<div class="sp-row"><span class="sp-name">${escapeHtml(r.name === "(none)" ? "(loose photos)" : r.name)}</span>`
+    + `<span class="sp-bar sp-runs">${r.runs.map((n) =>
+      `<i style="flex:${n} 1 0;background:${SCENE_COLOURS[i % SCENE_COLOURS.length]}"></i>`).join("")}</span>`
+    + `<span class="sp-count" title="${plural(r.runs.length, "scene")}">${r.total}</span></div>`).join("");
+  const more = rows.length > 10 ? `<p class="sp-note">and ${rows.length - 10} more folders</p>` : "";
+  return `<p class="sp-head">At a ${gap}-minute gap your photos make <b>${plural(total, "scene")}</b>`
+    + (split ? `: ${plural(split, "folder")} split where you paused.` : `, one per folder: none of them has a pause that long.`)
+    + `</p>${list}${more}`;
 }
 
 function timeGapPreview(shots) {
@@ -12443,9 +12468,17 @@ function suggestSceneMode(shots) {
     note.textContent = "Suggested for this folder: By time gap. The photos are not in "
       + "subfolders, so By folder would put them all in one scene.";
   } else if (!loose) {
-    if (!wizardState.sceneTouched) setWizardSceneMode("folder");
-    note.textContent = "Suggested for this folder: By folder. The photos are already "
-      + "sorted into subfolders.";
+    const long = (shots.by_folder || []).filter((f) => timeGapScenes(f.times, 30).length > 1);
+    if (long.length) {
+      if (!wizardState.sceneTouched) setWizardSceneMode("folder_time");
+      note.textContent = "Suggested for this folder: Folder, then time. The photos are in "
+        + `subfolders, but ${long.length === 1 ? `${long[0].name} has` : `${long.length} of them have`} `
+        + "long pauses in them.";
+    } else {
+      if (!wizardState.sceneTouched) setWizardSceneMode("folder");
+      note.textContent = "Suggested for this folder: By folder. The photos are already "
+        + "sorted into subfolders.";
+    }
   } else {
     note.textContent = "";
   }
@@ -12458,10 +12491,8 @@ function renderWizardSummary() {
     ["Photos", $("#wiz-photo-dir").value],
     ["JPEG subfolder", $("#wiz-jpeg-subdir").value || "(none)"],
     ["RAW subfolder", $("#wiz-raw-subdir").value || "(none)"],
-    ["Scene grouping",
-      wizardState.sceneMode === "time_gap"
-        ? `By time gap (${$("#wiz-gap").value || 30} min)`
-        : "By folder"],
+    ["Scene grouping", sceneGroupingLabel(
+      { mode: wizardState.sceneMode, gap_minutes: parseInt($("#wiz-gap").value, 10) || 30 }, true)],
     ["Subject detection", wizardState.subjectPreset || "off"],
   ];
   $("#wiz-summary").innerHTML = items
@@ -12626,12 +12657,27 @@ function getOptionCardValue(containerSelector) {
   return active ? active.dataset.value : null;
 }
 
+// Every mode but by folder splits at pauses, and has a gap to set.
+const sceneModeTimed = (mode) => mode === "time_gap" || mode === "folder_time";
+
+function sceneGroupingLabel(sg, long = false) {
+  if (sg.mode === "time_gap") {
+    return long ? `By time gap: a new scene after ${sg.gap_minutes} minutes without a photo.`
+      : `by ${sg.gap_minutes}-min gaps`;
+  }
+  if (sg.mode === "folder_time") {
+    return long ? `By folder, then time: each subfolder split after ${sg.gap_minutes} minutes without a photo.`
+      : `by folder + ${sg.gap_minutes}-min gaps`;
+  }
+  return long ? "By folder: each subfolder is a scene." : "by folder";
+}
+
 function syncSceneGroupingControls() {
   const sg = state.sceneGrouping || { mode: "folder", gap_minutes: 30 };
-  $("#scene-grouping-now").textContent = sg.mode === "time_gap" ? `by ${sg.gap_minutes}-min gaps` : "by folder";
+  $("#scene-grouping-now").textContent = sceneGroupingLabel(sg);
   setOptionCardValue("#scene-mode-cards", sg.mode);
   $("#scene-gap").value = sg.gap_minutes;
-  $("#scene-gap-row").classList.toggle("hidden", sg.mode !== "time_gap");
+  $("#scene-gap-row").classList.toggle("hidden", !sceneModeTimed(sg.mode));
 }
 
 async function applySceneGrouping() {
@@ -12640,7 +12686,7 @@ async function applySceneGrouping() {
   $("#score-title").textContent = "Regrouping scenes…";
   $("#score-progress").classList.remove("hidden");
   $("#score-bar-fill").style.width = "60%";
-  $("#score-progress-text").textContent = mode === "folder" ? "by folder" : `${gap} min gap`;
+  $("#score-progress-text").textContent = sceneGroupingLabel({ mode, gap_minutes: gap });
   $("#score-current").textContent = "";
   const res = await fetch("/api/scene-grouping", {
     method: "POST",

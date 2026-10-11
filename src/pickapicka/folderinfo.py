@@ -148,9 +148,10 @@ def shots(
     HDR brackets are merged later, at scoring, and are counted here as their
     separate frames.
 
-    Returns {shots, times, untimed, folders, truncated}: `times` are the known
-    capture times as sorted epoch seconds, `folders` the shot count per
-    first-level folder ("(none)" for loose files), both as scoring would see
+    Returns {shots, times, untimed, folders, by_folder, truncated}: `times`
+    are the known capture times as sorted epoch seconds, `folders` the shot
+    count per first-level folder ("(none)" for loose files), `by_folder` each
+    folder's own sorted times and untimed count, all as scoring would see
     them.
     """
     root = root.expanduser().resolve()
@@ -197,7 +198,18 @@ def shots(
         times = list(pool.map(lambda f: when(f[1]), found))
     timed = sorted(t for t in times if t is not None)
     counts = Counter(scene for scene, _ in found)
+    # Each folder's own times too, for grouping by folder and then by time.
+    per_folder: dict[str, dict[str, Any]] = {}
+    for (scene, _), t in zip(found, times):
+        f = per_folder.setdefault(scene, {"name": scene, "times": [], "untimed": 0})
+        if t is None:
+            f["untimed"] += 1
+        else:
+            f["times"].append(t)
+    for f in per_folder.values():
+        f["times"].sort()
     return {
+        "by_folder": [per_folder[n] for n in sorted(per_folder)],
         "shots": len(found),
         "times": timed,
         "untimed": len(found) - len(timed),

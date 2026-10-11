@@ -854,8 +854,8 @@ def run_scoring(
     # Scored into folder scenes; regrouped before the per-scene suggestions,
     # which are relative to whatever a scene turns out to hold.
     grouping = scene_grouping if scene_grouping is not None else (existing or {}).get("scene_grouping")
-    if grouping and grouping.get("mode") == "time_gap":
-        scenes.regroup(scored, jpeg_root, "time_gap", grouping.get("gap_minutes", 30))
+    if grouping and grouping.get("mode") in scenes.TIMED_MODES:
+        scenes.regroup(scored, jpeg_root, grouping["mode"], grouping.get("gap_minutes", 30))
     _suggest_by_scene(scored)
     # Tag each merged result with its 0-EV source frame (for the HDR/original
     # compare toggle in the viewer).
@@ -1044,8 +1044,8 @@ def fold_in(data: dict[str, Any], new: dict[str, Any], db_path: Path) -> dict[st
     data.setdefault("brackets", []).extend(new["brackets"])
 
     grouping = data.get("scene_grouping") or {}
-    if grouping.get("mode") == "time_gap":
-        scenes.regroup(data["photos"], _roots(data)[1], "time_gap", grouping.get("gap_minutes", 30))
+    if grouping.get("mode") in scenes.TIMED_MODES:
+        scenes.regroup(data["photos"], _roots(data)[1], grouping["mode"], grouping.get("gap_minutes", 30))
     _suggest_by_scene(data["photos"])
     faces = [(pi, fi) for pi in range(start, len(data["photos"]))
              for fi, f in enumerate(data["photos"][pi]["faces"]) if f.get("embedding_idx") is not None]

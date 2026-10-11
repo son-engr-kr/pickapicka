@@ -364,7 +364,7 @@ class CreateProjectPayload(BaseModel):
     photo_dir: str
     jpeg_subdir: str = ""
     raw_subdir: str = ""
-    scene_grouping_mode: Literal["folder", "time_gap"] = "folder"
+    scene_grouping_mode: Literal["folder", "time_gap", "folder_time"] = "folder"
     scene_grouping_gap_minutes: int = 30
     subject_classes: list[str] = []
     # None: wherever Preferences says new projects go.
@@ -455,7 +455,7 @@ class FoldersPayload(BaseModel):
 
 
 class SceneGroupingPayload(BaseModel):
-    mode: Literal["folder", "time_gap"]
+    mode: Literal["folder", "time_gap", "folder_time"]
     gap_minutes: int = 30
 
 
