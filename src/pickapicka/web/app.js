@@ -6594,6 +6594,43 @@ function maskChanged(immediate) {
 // ---------- local adjustments: overlay canvas ----------
 const OVERLAY_HIT = 11;              // px grab radius for a handle
 const ZOOM_STEPS = [0, 0.5, 1, 2];   // 0 = fit; the rest are CSS px per image px
+
+// The editor zooms in steps, each a fresh render of the window, and a trackpad
+// sends a pinch or a two-finger scroll as dozens of tiny wheel events: one
+// step each went from fit to 200% in a flick. Small deltas now add up to a
+// step: a pinch about as far as the steps are apart (they double; a pinch's
+// ctrl+wheel delta is a log scale at PINCH_ZOOM_RATE), or EDIT_SCROLL_STEP of
+// two-finger scroll. A mouse notch is still a step. After a step the rest of
+// the burst (momentum, the end of the pinch) is let go, not carried on.
+const EDIT_PINCH_STEP = Math.log(2) * 0.7;
+const EDIT_SCROLL_STEP = 120;      // px
+const EDIT_WHEEL_REST_MS = 150;
+const editWheel = { acc: 0, at: 0, stepped: 0 };
+
+// +1 to zoom in, -1 out, 0 for not yet.
+function editWheelStep(e) {
+  const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+  const now = performance.now();
+  if (now - editWheel.stepped < EDIT_WHEEL_REST_MS) { editWheel.acc = 0; return 0; }
+  if (now - editWheel.at > 300 || Math.sign(px) !== Math.sign(editWheel.acc)) editWheel.acc = 0;
+  editWheel.at = now;
+  let enough;
+  if (e.ctrlKey) {
+    editWheel.acc += px * PINCH_ZOOM_RATE;
+    enough = Math.abs(editWheel.acc) >= EDIT_PINCH_STEP;
+  } else if (e.deltaMode === 1 || Math.abs(px) >= 40) {
+    editWheel.acc = px;            // a mouse wheel's notch
+    enough = true;
+  } else {
+    editWheel.acc += px;
+    enough = Math.abs(editWheel.acc) >= EDIT_SCROLL_STEP;
+  }
+  if (!enough || !px) return 0;
+  const dir = editWheel.acc < 0 ? 1 : -1;
+  editWheel.acc = 0;
+  editWheel.stepped = now;
+  return dir;
+}
 const MASK_TINT = "#ff4d4f";
 const MIN_RADIUS = 0.005;
 let tintCanvas = null;
@@ -7875,10 +7912,12 @@ function bindMaskUi() {
   cv.addEventListener("wheel", (e) => {
     if (!editSession.relPath) return;
     e.preventDefault();
+    const dir = editWheelStep(e);
+    if (!dir) return;
     const steps = ZOOM_STEPS;
     const cur = steps.indexOf(editSession.view.zoom);
     const at = cur >= 0 ? cur : 0;
-    const next = steps[Math.min(steps.length - 1, Math.max(0, at + (e.deltaY < 0 ? 1 : -1)))];
+    const next = steps[Math.min(steps.length - 1, Math.max(0, at + dir))];
     if (next === editSession.view.zoom) return;
     // Zoom toward the pointer so the detail under it stays under it.
     setZoom(next, next > 0 ? evFrac(e) : null);
