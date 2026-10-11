@@ -251,3 +251,27 @@ def test_the_list_reads_an_old_preset_in_todays_shape(tmp_path) -> None:
         server.PresetApplyPayload(rel_path="a.jpg", edit={"temp": 5}, preset_id="73b4fc81"))
     assert got["edit"]["exposure"] == 0.4 and got["edit"]["temp"] == 5
     assert "parts" not in userstate.list_presets()[0], "the file is left as it was"
+
+
+def test_a_layers_whole_grade_scales_with_the_amount() -> None:
+    """A layer's curves, mixer, wheels, look and film scale as the photo's own
+    do: halfway from neutral at 50, the look and film strength capped at 100."""
+    layer = {"type": "radial", "cx": 0.5, "cy": 0.5, "rx": 0.3, "ry": 0.3, "adj": {
+        "curve": [[0.0, 0.0], [0.5, 0.9], [1.0, 1.0]],
+        "hsl": {"red": {"sat": -60}},
+        "grading": {"shadows": {"hue": 200, "sat": 40}},
+        "lut": {"key": "0123456789abcdef", "name": "x", "amount": 80},
+        "film": {"enabled": True, "strength": 100, "grain": 40}}}
+    p = presets.make({"masks": [layer]}, ["layers"])
+    p["id"] = "p1"
+    half = presets.apply(None, p, 50)["masks"][0]["adj"]
+    # The curve halfway between the diagonal and the layer's, as curves (the
+    # blend resamples them, so its points are not the layer's).
+    mid = editing._curve_lut(half["curve"])[128]
+    full = editing._curve_lut(layer["adj"]["curve"])[128]
+    assert mid == pytest.approx((128 / 255 + full) / 2, abs=0.01)
+    assert half["hsl"] == {"red": {"sat": -30}}
+    assert half["grading"]["shadows"]["sat"] == 20
+    assert half["lut"]["amount"] == 40 and half["film"]["strength"] == 50
+    double = presets.apply(None, p, 200)["masks"][0]["adj"]
+    assert double["lut"]["amount"] == 80 and double["film"]["strength"] == 100

@@ -156,9 +156,10 @@ const EDIT_NEUTRAL = (() => {
   for (const f of EDIT_FIELDS) e[f.k] = NEUTRAL_OVERRIDES[f.k] ?? 0;
   return e;
 })();
-// Sliders a local mask may carry — mirrors editing.LOCAL_KEYS (no vignette, no
-// curve: those stay frame-wide). Rows outside this set hide in mask mode.
-const MASK_LOCAL_KEYS = new Set(EDIT_FIELDS.map((f) => f.k).filter((k) => k !== "vignette"));
+// What a layer carries: every slider (mirrors editing.LOCAL_KEYS), and the
+// curves, mixer, wheels, look and film (editing.LOCAL_STRUCT_KEYS). The
+// geometry, repairs, portrait and watermark stay with the photo.
+const MASK_LOCAL_KEYS = new Set(EDIT_FIELDS.map((f) => f.k));
 const MASK_MAX = 16;
 
 function fieldByKey(k) { return EDIT_FIELDS.find((f) => f.k === k); }
@@ -334,7 +335,38 @@ function neutralAdj() {
   // assuming zero, so a slider whose neutral is its midpoint does not make every
   // new mask look active.
   for (const k of MASK_LOCAL_KEYS) a[k] = EDIT_NEUTRAL[k] ?? 0;
+  for (const c of CURVE_CHANNELS) a[c.k] = CURVE_IDENTITY.map((p) => p.slice());
+  a.hsl = null;
+  a.grading = null;
+  a.lut = null;
+  a.film = null;
   return a;
+}
+
+// A layer's adjustments, copied deep enough that editing the copy leaves the
+// original alone (the curves and the mixer are nested).
+function cloneAdj(adj) {
+  const a = { ...neutralAdj(), ...(adj || {}) };
+  for (const c of CURVE_CHANNELS) {
+    a[c.k] = (Array.isArray(a[c.k]) && a[c.k].length)
+      ? a[c.k].map((p) => p.slice()) : CURVE_IDENTITY.map((p) => p.slice());
+  }
+  a.hsl = cloneHsl(a.hsl);
+  a.grading = cloneGrading(a.grading);
+  a.lut = a.lut ? { ...a.lut } : null;
+  a.film = a.film ? { ...a.film } : null;
+  return a;
+}
+
+const canonCurve = (pts) => JSON.stringify((pts || CURVE_IDENTITY).map(([x, y]) => [rnd4(x), rnd4(y)]));
+function curveIsIdentity(pts) {
+  return !pts || pts.every(([x, y]) => Math.abs(y - x) < 1e-4);
+}
+
+// A layer's curves, mixer, wheels, look and film, compared as the photo's are.
+function canonAdjStruct(adj) {
+  return [...CURVE_CHANNELS.map((c) => (curveIsIdentity(adj[c.k]) ? "" : canonCurve(adj[c.k]))),
+          canonHsl(adj.hsl), canonGrading(adj.grading), canonLut(adj.lut), canonFilm(adj.film)];
 }
 
 // Mirrors editing.PART_OPS / PART_TYPES / PART_MAX. A mask stacks more shapes
@@ -388,7 +420,7 @@ function cloneShape(s) {
 }
 
 function cloneMask(m) {
-  const c = { ...cloneShape(m), adj: { ...neutralAdj(), ...(m.adj || {}) } };
+  const c = { ...cloneShape(m), adj: cloneAdj(m.adj) };
   cloneRange(m, c);
   c.parts = (m.parts || []).map(cloneShape);
   // An edit from before shapes could stack narrows a layer to some tones with
@@ -422,7 +454,8 @@ function canonMasks(masks) {
   return JSON.stringify(list.map((m) => {
     const o = { t: m.type, e: !!m.enabled, i: !!m.invert, f: r1(m.feather),
                 a: r1(m.amount), n: m.name || "",
-                adj: [...MASK_LOCAL_KEYS].sort().map((k) => rnd4(m.adj && m.adj[k])) };
+                adj: [...MASK_LOCAL_KEYS].sort().map((k) => rnd4(m.adj && m.adj[k])),
+                st: canonAdjStruct(m.adj || {}) };
     // Without this, narrowing a mask's tonal range would not register as a
     // change and Save would stay disabled.
     o.rl = m.range_luma
@@ -459,7 +492,8 @@ function maskAdjNeutral(m) {
   // Against EDIT_NEUTRAL, not against zero — mirrors editing._adj_is_neutral,
   // and the reason is the same: sharpen_radius is neutral at its midpoint.
   return [...MASK_LOCAL_KEYS].every(
-    (k) => Math.abs((Number(m.adj[k]) || 0) - (EDIT_NEUTRAL[k] ?? 0)) < 1e-4);
+    (k) => Math.abs((Number(m.adj[k]) || 0) - (EDIT_NEUTRAL[k] ?? 0)) < 1e-4)
+    && canonAdjStruct(m.adj).every((v) => !v);
 }
 
 // A layer is named for its place, not for its first shape: with shapes stacked
@@ -3101,10 +3135,10 @@ const curveState = { cssW: 240, cssH: 240, drag: -1, accent: "#4a90e2",
 function curveChannel() {
   return CURVE_CHANNELS.find((c) => c.k === curveState.channel) || CURVE_CHANNELS[0];
 }
-function curvePoints() { return editSession.edit[curveState.channel]; }
+function curvePoints() { return adjTarget()[curveState.channel]; }
 function curveTint(c) { return c.tint || curveState.accent; }
 function curveTouched(key) {
-  const pts = editSession.edit[key];
+  const pts = adjTarget()[key];
   return !!pts && pts.some(([x, y]) => Math.abs(y - x) > 1e-4);
 }
 function renderCurveChannels() {
@@ -3268,7 +3302,7 @@ function curveDoubleClick(e) {
 function resetCurve() {
   // The active channel only: wiping a red curve nobody asked about because they
   // clicked reset while looking at RGB would be a surprise.
-  editSession.edit[curveState.channel] = CURVE_IDENTITY.map((p) => p.slice());
+  adjTarget()[curveState.channel] = CURVE_IDENTITY.map((p) => p.slice());
   renderCurveChannels();
   drawCurve(); setEditDirty(); fetchEditPreview(true);
 }
@@ -4086,6 +4120,7 @@ function resetEdit() {
   if (m) {
     m.adj = neutralAdj();
     renderMaskList();
+    renderTargetPanels();
   } else {
     editSession.edit = mergeNeutralEdit(null);
     selectMask(-1, { silent: true });
@@ -4383,7 +4418,7 @@ const GRADE_GLOBALS = [
 ];
 const gradeState = { zone: "shadows", built: false };
 
-function currentGrading() { return editSession.edit.grading || {}; }
+function currentGrading() { return adjTarget().grading || {}; }
 function gradeZoneVals(zone) { return currentGrading()[zone] || {}; }
 function gradeZoneTouched(zone) {
   const v = gradeZoneVals(zone);
@@ -4454,7 +4489,7 @@ function renderGradePanel() {
 
 function updateGrading(patch) {
   const next = { ...currentGrading(), ...patch };
-  editSession.edit.grading = canonGrading(next) ? next : null;
+  adjTarget().grading = canonGrading(next) ? next : null;
   renderGradePanel();
   setEditDirty();
   previewDuringDrag();
@@ -4463,7 +4498,7 @@ function updateGrading(patch) {
 function updateGradeZone(patch) {
   const next = cloneGrading(currentGrading()) || {};
   next[gradeState.zone] = { ...gradeZoneVals(gradeState.zone), ...patch };
-  editSession.edit.grading = canonGrading(next) ? next : null;
+  adjTarget().grading = canonGrading(next) ? next : null;
   renderGradePanel();
   setEditDirty();
   previewDuringDrag();
@@ -4493,7 +4528,7 @@ const HSL_FIELDS = [
 ];
 const hslState = { band: "red", built: false };
 
-function currentHsl() { return editSession.edit.hsl || {}; }
+function currentHsl() { return adjTarget().hsl || {}; }
 function hslBandVals(band) { return currentHsl()[band] || {}; }
 function hslBandTouched(band) {
   const v = hslBandVals(band);
@@ -4551,7 +4586,7 @@ function updateHsl(patch) {
   for (const f of HSL_FIELDS) if (!Math.round(band[f.k] || 0)) delete band[f.k];
   if (Object.keys(band).length) next[hslState.band] = band;
   else delete next[hslState.band];
-  editSession.edit.hsl = Object.keys(next).length ? next : null;
+  adjTarget().hsl = Object.keys(next).length ? next : null;
   renderHslPanel();
   setEditDirty();
   previewDuringDrag();
@@ -4598,7 +4633,7 @@ async function loadFilmStocks() {
 function currentFilm() {
   // The stock list loads at boot, before any photo is open, so this has to cope
   // with there being no edit yet.
-  const e = editSession.edit;
+  const e = adjTarget();
   return { ...FILM_DEFAULT, ...((e && e.film) || {}) };
 }
 
@@ -5701,7 +5736,7 @@ async function loadLooks() {
 function renderLookPanel() {
   const sel = $("#look-select");
   if (!sel || !editSession.edit) return;
-  const cur = editSession.edit.lut;
+  const cur = adjTarget().lut;
   const known = lookState.luts.some((l) => cur && l.key === cur.key);
   // A look the edit uses but the library no longer has (deleted, or another
   // machine) still renders from the project's copy, so it stays selectable.
@@ -5718,8 +5753,8 @@ function renderLookPanel() {
 }
 
 function setLook(entry, amount) {
-  editSession.edit.lut = entry
-    ? { key: entry.key, name: entry.name || "", amount: amount ?? (editSession.edit.lut?.amount || 100) }
+  adjTarget().lut = entry
+    ? { key: entry.key, name: entry.name || "", amount: amount ?? (adjTarget().lut?.amount || 100) }
     : null;
   renderLookPanel();
   setEditDirty();
@@ -5770,7 +5805,7 @@ async function matchLookTo(reference) {
 }
 
 async function deleteLook() {
-  const cur = editSession.edit.lut;
+  const cur = adjTarget().lut;
   if (!cur || !confirm(`Remove "${cur.name}" from the look library?\n\n`
       + "Photos already using it keep it; it just stops being offered.")) return;
   await fetch("/api/luts/delete", {
@@ -5784,12 +5819,12 @@ function bindLookPanel() {
   $("#look-select").addEventListener("change", (e) => {
     const key = e.target.value;
     const entry = lookState.luts.find((l) => l.key === key)
-      || (editSession.edit.lut && editSession.edit.lut.key === key ? editSession.edit.lut : null);
+      || (adjTarget().lut && adjTarget().lut.key === key ? adjTarget().lut : null);
     setLook(key ? entry : null);
   });
   $("#look-amount").addEventListener("input", (e) => {
-    if (!editSession.edit.lut) return;
-    editSession.edit.lut.amount = parseFloat(e.target.value);
+    if (!adjTarget().lut) return;
+    adjTarget().lut.amount = parseFloat(e.target.value);
     $("#look-amount-val").textContent = fmtSlider(e.target, e.target.value);
     setEditDirty();
     previewDuringDrag();
@@ -5846,7 +5881,7 @@ function renderFilmPanel() {
 }
 
 function updateFilm(patch) {
-  editSession.edit.film = { ...currentFilm(), ...patch };
+  adjTarget().film = { ...currentFilm(), ...patch };
   renderFilmPanel();
   setEditDirty();
   previewDuringDrag();
@@ -6416,17 +6451,26 @@ function renderMaskList() {
   list.innerHTML = rows.join("");
 }
 
-// The sections only the whole photo has: a layer carries the sliders in
-// MASK_LOCAL_KEYS, which live in Light, Color, Detail and Creative.
-const PHOTO_ONLY_GROUPS = ["#edit-curve-group", "#edit-hsl-group", "#edit-grade-group",
-                           "#edit-look-group", "#edit-film-group"];
+// The panels whose values are not plain sliders, redrawn when the target
+// changes: a layer carries all of them, as the photo does.
+function renderTargetPanels() {
+  renderCurveChannels();
+  drawCurve();
+  renderHslPanel();
+  renderGradePanel();
+  renderLookPanel();
+  renderFilmPanel();
+}
 
 // Everything that says whose sliders they are: which sections and rows show,
 // the heading over them, and what Auto, the white-balance picker and Reset act
 // on.
 function syncSliderTarget() {
   const m = editingLayer();
-  for (const sel of PHOTO_ONLY_GROUPS) $(sel).classList.toggle("hidden", !!m);
+  if (editSession.edit && syncSliderTarget.last !== m) {
+    syncSliderTarget.last = m;
+    renderTargetPanels();
+  }
   $("#mask-context").textContent = m ? `${maskLabel(m, editSession.activeMask)} sliders` : "";
   $("#mask-context").classList.toggle("hidden", !m);
   // Auto-tone and the white-balance picker write the whole photo's values.

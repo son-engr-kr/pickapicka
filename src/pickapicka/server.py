@@ -1487,17 +1487,23 @@ def _photo_wire(photo: dict[str, Any]) -> dict[str, Any]:
 
 
 def _lut_tables(ctx: "AppContext", edit: dict[str, Any] | None) -> dict[str, Any] | None:
-    """The table an edit's look names, for `editing.render`: the project's own
-    copy first, then the look library. None when the edit has no look."""
-    ref = editing.normalize_lut_ref((edit or {}).get("lut"))
-    if ref is None:
-        return None
-    table = (ctx.data.get("luts") or {}).get(ref["key"]) or userstate.load_lut(ref["key"])
-    if table is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"the look '{ref['name'] or ref['key']}' is in neither this project nor the look library")
-    return {ref["key"]: table}
+    """The tables an edit's looks name, the photo's and its layers', for
+    `editing.render`: the project's own copy first, then the look library.
+    None when the edit has no look."""
+    e = edit or {}
+    refs = [editing.normalize_lut_ref(e.get("lut"))]
+    refs += [editing.normalize_lut_ref((m.get("adj") or {}).get("lut")) for m in e.get("masks") or []]
+    out: dict[str, Any] = {}
+    for ref in refs:
+        if ref is None or ref["key"] in out:
+            continue
+        table = (ctx.data.get("luts") or {}).get(ref["key"]) or userstate.load_lut(ref["key"])
+        if table is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"the look '{ref['name'] or ref['key']}' is in neither this project nor the look library")
+        out[ref["key"]] = table
+    return out or None
 
 
 def _keep_lut(ctx: "AppContext", edit: dict[str, Any] | None) -> None:

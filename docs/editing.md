@@ -292,6 +292,16 @@ Two stages that fix the captured image rather than interpret it, and they run
 
 ## Layers and their shapes
 
+- **A layer carries the whole grade**: every slider, the vignette, the tone
+  curves (master and red, green, blue), the colour mixer, the colour-grading
+  wheels, a look and film, all in its place. With a layer selected the panels
+  edit it, the same panels as for the photo. So "turn the oranges redder, on
+  the face only" is a Skin layer and the mixer's orange band, and "a film look
+  on the background" a Background layer and the Film panel. A layer's part is
+  what the same part does to the whole photo, only where the layer is. What
+  stays with the photo has a reason to: the geometry (straighten, crop, lens,
+  perspective) moves the whole frame, the repairs and portrait retouching are
+  already placed where they act, and the watermark is a stamp on the frame.
 - **A layer is a set of shapes with one set of sliders.** **New layer** (`N`)
   makes an empty one; **Add shape** puts things in it: a radial, a gradient, a
   brush, a tonal range, or an automatic Subject, Background, Skin, Face, Hair
@@ -375,7 +385,8 @@ Two stages that fix the captured image rather than interpret it, and they run
   which fits a table that moves this frame's colours towards that one's. The
   match is for a moment shot on two bodies: same subject, same light. It
   matches distributions, not content, so a grey street matched to a red sunset
-  comes out red. **Amount** dials either kind back. Whole photo only.
+  comes out red. **Amount** dials either kind back. A layer can carry its own
+  look, applied before the rest of its grade as the photo's is.
 - **Parsed strictly.** A file that is not a LUT (a wrong entry count, no
   declared size, a video-range flag) is refused with the line that is wrong,
   rather than guessed at.
@@ -428,9 +439,9 @@ Two stages that fix the captured image rather than interpret it, and they run
   dark blue-grey shadow three times as far as the sky. Now Blue +10 moves that
   shadow by about a twentieth of what it did (CIELAB difference 5.9 to 0.3), and a mid sky about 0.9 stops either
   way at +-100 (what process 1's +100 did to it).
-- The mixer is **global**, with no per-mask version, and deliberately so: it is a
-  statement about a colour wherever it appears in the frame, and a mask already
-  answers "only here" better than eight bands could.
+- A **layer has its own mixer** (see Layers): the colour mixer is a statement
+  about a colour, and a layer says where. It used to be the photo's alone, which
+  left no way to turn one colour in one place.
 
 ## Colour grading
 
@@ -722,7 +733,8 @@ knowing because they decide what a slider means:
    clarity, then the colour mixer, then vibrance and saturation, then the
    optical effects (defocus, smear, bloom), then
    sharpen, then the vignette. Masks run after the global pass, each blending a
-   locally graded copy through its own alpha. The middle three are in that order
+   locally graded copy through its own alpha: its look first, then this same
+   grade on its own values. The middle three are in that order
    for a reason: haze is a property of the light, so it goes before anything
    reads detail out of the frame, and detail is amplified only *after* the noise
    under it has been dealt with. The mixer comes before vibrance and saturation

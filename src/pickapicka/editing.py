@@ -32,6 +32,7 @@ import json
 import math
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -427,15 +428,23 @@ PART_MAX = 8               # parts stacked onto one mask
 # than the fit preview did, because the window's own histogram is not the
 # frame's — and the slider was tuned against the preview.
 
-# The sliders a mask may carry — everything except vignette (a frame-wide effect)
-# and the master curve (kept global so the histogram stays readable).
+# What a mask (a layer) may carry: every part of the grade, so a layer can do
+# anything the whole photo can, only in its place. The sliders here; the
+# curves, the colour mixer, the wheels, a look and film in LOCAL_STRUCT_KEYS.
+# What stays with the photo has a reason to: the geometry (straighten, crop,
+# lens, perspective) moves the whole frame, the repairs and the portrait
+# retouching are already placed where they act, and the watermark is a stamp
+# on the frame. The mixer and the curves used to be the photo's alone, as
+# statements about a colour or a tone everywhere; that left no way to turn one
+# colour or reshape one tonal range in one place.
 LOCAL_KEYS: tuple[str, ...] = (
     "exposure", "contrast", "highlights", "shadows", "whites", "blacks",
     "temp", "tint", "vibrance", "saturation", "clarity", "texture",
     "dehaze", "denoise", "sharpen", "sharpen_radius", "sharpen_detail",
     "sharpen_masking",
-    "blur", "motion", "motion_angle", "glow", "pixelate",
+    "blur", "motion", "motion_angle", "glow", "pixelate", "vignette",
 )
+LOCAL_STRUCT_KEYS: tuple[str, ...] = CURVE_KEYS + ("hsl", "grading", "lut", "film")
 
 # Keys that describe *how* an effect looks rather than how much of it there is —
 # on their own they change nothing, so they do not make a mask "active".
@@ -501,14 +510,28 @@ def _fnum(raw: Any, lo: float, hi: float, fallback: float) -> float:
 
 
 def _neutral_adj() -> dict[str, Any]:
-    """A mask's sliders at their neutral values. Not all of those are zero —
-    `sharpen_radius` is neutral at its midpoint — so this reads them off
-    DEFAULT_EDIT rather than assuming."""
-    return {k: DEFAULT_EDIT[k] for k in LOCAL_KEYS}
+    """A mask's adjustments at their neutral values. Not all of those are zero
+    — `sharpen_radius` is neutral at its midpoint, a curve is the diagonal — so
+    this reads them off DEFAULT_EDIT rather than assuming."""
+    out = {k: DEFAULT_EDIT[k] for k in LOCAL_KEYS}
+    for key in LOCAL_STRUCT_KEYS:
+        out[key] = [list(p) for p in DEFAULT_EDIT[key]] if key in CURVE_KEYS else None
+    return out
+
+
+# How each of a layer's structured adjustments is cleaned: as the photo's own.
+_STRUCT_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
+    **{k: (lambda raw: _clean_curve(raw)) for k in CURVE_KEYS},
+    "hsl": lambda raw: normalize_hsl(raw),
+    "grading": lambda raw: grading_mod.normalize(raw),
+    "lut": lambda raw: normalize_lut_ref(raw),
+    "film": lambda raw: film_mod.normalize(raw),
+}
 
 
 def _normalize_adj(raw: Any) -> dict[str, Any]:
-    """Clamp a mask's slider dict to the local subset (missing keys stay neutral)."""
+    """Clamp a mask's adjustments, the sliders to their ranges and the rest as
+    the photo's are (missing keys stay neutral)."""
     out: dict[str, Any] = _neutral_adj()
     if not isinstance(raw, dict):
         return out
@@ -518,6 +541,9 @@ def _normalize_adj(raw: Any) -> dict[str, Any]:
         lo, hi = _RANGES[key]
         val = _fnum(raw[key], lo, hi, 0.0)
         out[key] = val if key == "exposure" else _tenth(val)
+    for key in LOCAL_STRUCT_KEYS:
+        if raw.get(key) is not None:
+            out[key] = _STRUCT_NORMALIZERS[key](raw[key])
     return out
 
 
@@ -687,6 +713,10 @@ def _adj_is_neutral(adj: dict[str, Any]) -> bool:
     reading the neutral off DEFAULT_EDIT is what keeps this correct the next time
     a slider arrives whose neutral is not zero.
     """
+    if any(adj.get(k) is not None for k in ("hsl", "grading", "lut", "film")):
+        return False    # each is None when it would change nothing
+    if not all(_curve_is_identity(adj.get(k) or DEFAULT_EDIT[k]) for k in CURVE_KEYS):
+        return False
     return all(abs(float(adj.get(k, DEFAULT_EDIT[k]) or 0)
                    - float(DEFAULT_EDIT[k])) < _EPS
                for k in LOCAL_KEYS if k not in _MODIFIER_KEYS)
@@ -1935,9 +1965,13 @@ def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
                  auto: dict[str, np.ndarray] | None = None,
                  src: np.ndarray | None = None,
                  frame_size: tuple[int, int] | None = None,
-                 pv: int = 1) -> np.ndarray:
+                 pv: int = 1,
+                 luts: dict[str, dict[str, Any]] | None = None,
+                 seed: int = 0) -> np.ndarray:
     """Blend a locally graded copy through each mask, in order. `img` is float32
-    RGB clipped to [0,1] and is modified in place.
+    RGB clipped to [0,1] and is modified in place. A layer's look goes on its
+    crop before the rest of its grade, as the photo's look does before the
+    photo's (`luts` holds its table); its film grain is the photo's `seed`.
 
     `frame_size` (w, h) is the photo's own size, for a render of the whole
     frame at any scale: the mask grid is then the photo's, not this array's.
@@ -1983,11 +2017,13 @@ def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
         # result anyway. Only worth the conversion when there is a tone stage
         # to accelerate. Not named `src`: that is the whole ungraded frame every
         # later mask's range refinement selects from.
-        if _wb_tone_lut(adj) is not None:
+        if adj["lut"] is not None:
+            crop = _apply_look(cv2.convertScaleAbs(sub, alpha=255.0), adj["lut"], luts)
+        elif _wb_tone_lut(adj) is not None:
             crop = cv2.convertScaleAbs(sub, alpha=255.0)
         else:
             crop = sub.copy()
-        graded = np.clip(_grade(crop, adj, sub_roi), 0.0, 1.0)
+        graded = np.clip(_grade(crop, adj, sub_roi, seed), 0.0, 1.0)
         img[y0:y1, x0:x1] = sub + (graded - sub) * alpha[..., None]
     return img
 
@@ -2330,7 +2366,7 @@ def effect_padding(edit: dict[str, Any] | None, frame_long: float,
     pad = max(for_adj(e), film_need, repair_need, portrait_need)
     for m in e["masks"]:
         if mask_is_active(m):
-            pad = max(pad, for_adj(m["adj"]))
+            pad = max(pad, for_adj(m["adj"]), film_mod.padding(m["adj"]["film"], frame_long))
     # The warp reads pixels that every stage before it has finished, so its
     # reach adds to theirs rather than standing beside it.
     pad += reshape_mod.padding(e["portrait"], faces, frame_long)
@@ -2467,7 +2503,8 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         img = _grade(img, e, roi, seed)
         img = np.clip(img, 0.0, 1.0)
         if e["masks"]:
-            img = _apply_masks(img, e["masks"], roi, auto, src, frame_size, process_version(e))
+            img = _apply_masks(img, e["masks"], roi, auto, src, frame_size, process_version(e),
+                               luts, seed)
         # The face's shape last, so that everything placed on the face (its
         # retouching, heals and masks) moves with it; see the reshape module.
         if reshape_mod.is_active(e["portrait"]):

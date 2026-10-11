@@ -661,3 +661,21 @@ def _main() -> None:
 
 if __name__ == "__main__":
     _main()
+
+
+def test_the_tables_of_a_photos_and_its_layers_looks_are_all_handed_over() -> None:
+    from types import SimpleNamespace
+
+    import pytest
+    from fastapi import HTTPException
+
+    from pickapicka.server import _lut_tables
+    a, b = {"name": "a", "size": 2}, {"name": "b", "size": 2}
+    ctx = SimpleNamespace(data={"luts": {"a" * 16: a, "b" * 16: b}})
+    edit = {"lut": {"key": "a" * 16, "amount": 100},
+            "masks": [{"adj": {"lut": {"key": "b" * 16, "amount": 50}}},
+                      {"adj": {"lut": {"key": "a" * 16, "amount": 30}}}, {"adj": {}}]}
+    assert _lut_tables(ctx, edit) == {"a" * 16: a, "b" * 16: b}
+    assert _lut_tables(ctx, {"masks": [{"adj": {}}]}) is None
+    with pytest.raises(HTTPException):
+        _lut_tables(ctx, {"masks": [{"adj": {"lut": {"key": "c" * 16, "amount": 100}}}]})

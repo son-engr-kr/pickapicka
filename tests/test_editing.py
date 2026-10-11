@@ -183,8 +183,9 @@ def test_mask_normalize_clamps() -> None:
     assert -180 <= m["angle"] <= 180
     assert len(m["name"]) == 40
     assert m["adj"]["exposure"] == 5.0
-    # Only local keys survive: vignette and the curve stay global.
-    assert set(m["adj"]) == set(editing.LOCAL_KEYS)
+    # Every part of the grade survives, vignette now too; anything else is dropped.
+    assert set(m["adj"]) == set(editing.LOCAL_KEYS) | set(editing.LOCAL_STRUCT_KEYS)
+    assert m["adj"]["vignette"] == 50 and "bogus" not in m["adj"]
 
 
 def test_normalize_is_idempotent_for_masks() -> None:
@@ -207,6 +208,62 @@ def test_mask_is_local() -> None:
     out = editing.render(img, {"masks": [_radial()]})
     assert out[100, 75].mean() > 140, "inside the ellipse should be brightened"
     assert np.array_equal(out[100, 280], img[100, 280]), "far outside must be untouched"
+
+
+# ----- a layer carries the whole grade --------------------------------------
+
+# Each part of the grade a layer may carry, at a value that changes a red.
+LAYER_PARTS = {
+    "hsl": {"red": {"hue": 40, "sat": -60, "lum": 30}},
+    "grading": {"shadows": {"hue": 220, "sat": 70}, "midtones": {"hue": 200, "sat": 60, "lum": -20}},
+    "curve": [[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]],
+    "curve_g": [[0.0, 0.0], [0.5, 0.15], [1.0, 1.0]],
+    "film": {"enabled": True, "strength": 100, "contrast": 80, "warmth": 60, "crosstalk": 70},
+    "vignette": -90,
+}
+
+
+def _left_half(adj: dict) -> dict:
+    """A gradient over the left half: fully on up to a third of the width."""
+    return {"type": "linear", "x1": 0.34, "y1": 0.5, "x2": 0.5, "y2": 0.5, "feather": 0, "adj": adj}
+
+
+@pytest.mark.parametrize("part", sorted(LAYER_PARTS))
+def test_a_layer_carries_every_part_of_the_grade(part: str) -> None:
+    """The mixer, the curves, the wheels, film and the vignette, in one place:
+    they used to be the photo's alone. Inside the layer the part does what it
+    does to the whole photo; outside, nothing."""
+    img = np.zeros((200, 300, 3), dtype=np.uint8)
+    img[:] = (190, 70, 50)                       # a red, mid-light
+    img[:, :, 0] = np.linspace(120, 230, 300).astype(np.uint8)
+    layer = editing.render(img, {"masks": [_left_half({part: LAYER_PARTS[part]})]})
+    whole = editing.render(img, {part: LAYER_PARTS[part]})
+    assert editing.mask_is_active(editing.normalize_mask(_left_half({part: LAYER_PARTS[part]})))
+    inside, outside = (100, 20), (100, 290)
+    assert np.abs(layer[inside].astype(int) - img[inside].astype(int)).max() > 6, \
+        f"{part} in a layer changed nothing inside it"
+    assert np.array_equal(layer[outside], img[outside]), f"{part} in a layer reached outside it"
+    assert np.abs(layer[inside].astype(int) - whole[inside].astype(int)).max() <= 3, \
+        f"{part} in a layer is not what it is on the whole photo"
+
+
+def test_a_layer_carries_a_look(tmp_path) -> None:
+    from pickapicka import lut
+    text = "\n".join(["LUT_3D_SIZE 2"] + [f"{b} {g} {r}" for b in (0, 1) for g in (0, 1) for r in (0, 1)])
+    params = lut.params_from_cube(lut.parse_cube(text))        # swaps red and blue
+    key = lut.table_key(params)
+    ref = {"key": key, "name": "swap", "amount": 100}
+    img = np.zeros((200, 300, 3), dtype=np.uint8)
+    img[:] = (200, 80, 30)
+    out = editing.render(img, {"masks": [_left_half({"lut": ref})]}, luts={key: params})
+    assert out[100, 20, 2] > 150 and out[100, 20, 0] < 80, "the look did not swap red and blue inside"
+    assert np.array_equal(out[100, 290], img[100, 290])
+
+
+def test_neutral_parts_do_not_make_a_layer_active() -> None:
+    for adj in ({"hsl": {"red": {"hue": 0}}}, {"curve": [[0, 0], [1, 1]]}, {"grading": {"shadows": {"hue": 90}}},
+                {"film": {"enabled": False, "grain": 50}}, {"lut": {"key": "0" * 16, "amount": 0}}):
+        assert not editing.mask_is_active(editing.normalize_mask(_left_half(adj))), adj
 
 
 def test_mask_invert_flips_the_area() -> None:

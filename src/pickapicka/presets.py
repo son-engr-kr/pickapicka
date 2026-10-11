@@ -195,6 +195,14 @@ def _scaled_layer(m: dict[str, Any], preset_id: str, a: float) -> dict[str, Any]
         if k in _UNSCALED:
             continue
         adj[k] = _lerp(editing.DEFAULT_EDIT[k], adj[k], a)
+    # The rest as the photo's own parts scale (see `apply`), from neutral.
+    for k in editing.CURVE_KEYS:
+        adj[k] = _blend_curve(editing.DEFAULT_EDIT[k], adj[k], a)
+    adj["hsl"] = _blend_hsl(None, adj["hsl"], a)
+    adj["grading"] = _blend_grading(None, adj["grading"], a)
+    for k, strength in (("lut", "amount"), ("film", "strength")):
+        if adj[k] is not None:
+            adj[k][strength] = adj[k][strength] * min(a, 1.0)
     return out
 
 
