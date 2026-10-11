@@ -674,6 +674,21 @@ function initTooltips() {
 }
 
 // ---------- helpers ----------
+// Why a request failed, from its JSON body. The app's own errors carry a
+// string; FastAPI's validation errors a list of {loc, msg}, which read as
+// "[object Object]" when shown as they were. One of those after an update
+// usually means the page is newer than the server still running.
+function errText(err, res) {
+  const d = err && err.detail;
+  if (typeof d === "string") return d;
+  if (Array.isArray(d)) {
+    return d.map((e) => `${(e.loc || []).slice(1).join(".")}: ${e.msg}`).join("; ")
+      + (res.status === 422 ? ". If the app was updated while running, restart it." : "");
+  }
+  if (d && typeof d === "object") return d.message || JSON.stringify(d);
+  return String(res.status);
+}
+
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 const enc = (p) => p.split("/").map(encodeURIComponent).join("/");
@@ -1505,7 +1520,7 @@ async function saveSubjectGroups() {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    $("#subject-status").textContent = "group save failed: " + (err.detail || res.status);
+    $("#subject-status").textContent = "group save failed: " + errText(err, res);
     return false;
   }
   state.subjects.vehicles = (await res.json()).vehicles || [];
@@ -1534,7 +1549,7 @@ async function runRescore() {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    $("#rescore-status").textContent = "re-score failed: " + (err.detail || res.status);
+    $("#rescore-status").textContent = "re-score failed: " + errText(err, res);
     return;
   }
   closeRescoreModal();
@@ -1640,7 +1655,7 @@ async function foldersGo() {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      $("#folders-status").textContent = "Failed: " + (err.detail || res.status);
+      $("#folders-status").textContent = "Failed: " + errText(err, res);
       return;
     }
     showFolders(await res.json());
@@ -1682,7 +1697,7 @@ async function rescoreAsIs() {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    alert("Re-score failed: " + (err.detail || res.status));
+    alert("Re-score failed: " + errText(err, res));
     return;
   }
   startScoreProgress("rescore");
@@ -1788,7 +1803,7 @@ async function addNewPhotos() {
   const res = await fetch("/api/photos/add", { method: "POST" });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    alert("Could not add the new photos: " + (err.detail || res.status));
+    alert("Could not add the new photos: " + errText(err, res));
     return;
   }
   startScoreProgress("rescore");
@@ -2602,7 +2617,7 @@ async function confirmExport() {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    $("#export-status").textContent = "Failed: " + (err.detail || res.status);
+    $("#export-status").textContent = "Failed: " + errText(err, res);
     $("#export-confirm").disabled = false;
     return;
   }
@@ -2684,7 +2699,7 @@ async function rejectUndecidedInScene() {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    alert("Bulk reject failed: " + (err.detail || res.status));
+    alert("Bulk reject failed: " + errText(err, res));
     return;
   }
   const now = new Date().toISOString();
@@ -2732,7 +2747,7 @@ async function performUndo() {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    alert("Undo failed: " + (err.detail || res.status));
+    alert("Undo failed: " + errText(err, res));
     return;
   }
   for (const rp of paths) {
@@ -2936,7 +2951,7 @@ async function applyHdr() {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    $("#hdr-status").textContent = "Failed: " + (err.detail || res.status);
+    $("#hdr-status").textContent = "Failed: " + errText(err, res);
     return;
   }
   closeHdrModal();
@@ -3032,7 +3047,7 @@ async function applyLook() {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    $("#hdr-look-status").textContent = "Failed: " + (err.detail || res.status);
+    $("#hdr-look-status").textContent = "Failed: " + errText(err, res);
     return;
   }
   closeLookModal();
@@ -4206,7 +4221,7 @@ async function persistEdit() {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    $("#edit-status").textContent = "save failed: " + (err.detail || res.status);
+    $("#edit-status").textContent = "save failed: " + errText(err, res);
     return false;
   }
   const updated = await res.json();
@@ -7993,7 +8008,7 @@ async function slotWrite(i, edit) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    $("#edit-status").textContent = "slot failed: " + (err.detail || res.status);
+    $("#edit-status").textContent = "slot failed: " + errText(err, res);
     return;
   }
   const { slots } = await res.json();
@@ -8461,7 +8476,7 @@ async function downloadSelection() {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      alert("Download failed: " + (err.detail || res.status));
+      alert("Download failed: " + errText(err, res));
       return;
     }
     const info = await res.json();
@@ -8606,7 +8621,7 @@ async function confirmBulkApply() {
   const res = await fetch("/api/edit/bulk", { ...JSON_POST, body: JSON.stringify(body) });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    $("#bulk-status").textContent = "Failed: " + (err.detail || res.status);
+    $("#bulk-status").textContent = "Failed: " + errText(err, res);
     $("#bulk-confirm").disabled = false;
     return;
   }
@@ -10250,7 +10265,7 @@ async function savePeople() {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    alert("Save failed: " + (err.detail || res.status));
+    alert("Save failed: " + errText(err, res));
     return;
   }
   const result = await res.json();
@@ -10347,7 +10362,7 @@ async function startCluster(settings) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    alert("Grouping failed: " + (err.detail || res.status));
+    alert("Grouping failed: " + errText(err, res));
     return;
   }
   $("#score-title").textContent = "Grouping…";
@@ -10841,7 +10856,7 @@ async function commitOnboardWorkspace(dir, existingProjects = 0) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    status.textContent = "Could not use that folder: " + (err.detail || res.status);
+    status.textContent = "Could not use that folder: " + errText(err, res);
     return;
   }
   onboardState.pending = null;
@@ -11074,7 +11089,7 @@ async function postJSON(url, body) {
     body: JSON.stringify(body),
   });
   const d = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(typeof d.detail === "string" ? d.detail : `${url}: ${res.status}`);
+  if (!res.ok) throw new Error(errText(d, res));
   return d;
 }
 
@@ -11205,7 +11220,7 @@ async function deleteProject(p) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    alert("Delete failed: " + (err.detail || res.status));
+    alert("Delete failed: " + errText(err, res));
     return;
   }
   const { name } = await res.json();
@@ -11262,7 +11277,7 @@ async function confirmRelink() {
   $("#relink-confirm").disabled = false;
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    $("#relink-status").textContent = "Failed: " + (err.detail || res.status);
+    $("#relink-status").textContent = "Failed: " + errText(err, res);
     return;
   }
   const rep = await res.json();
@@ -11520,7 +11535,7 @@ async function openProjectByDir(projectDir) {
       openRelinkModal(err.detail);
       return;
     }
-    $("#landing-status").textContent = "Failed: " + (err.detail || res.status);
+    $("#landing-status").textContent = "Failed: " + errText(err, res);
     return;
   }
   showOpenProgress("Opening project…");
@@ -11539,7 +11554,7 @@ async function openLegacyDb(entry) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    $("#landing-status").textContent = "Failed: " + (err.detail || res.status);
+    $("#landing-status").textContent = "Failed: " + errText(err, res);
     return;
   }
   showOpenProgress("Opening project…");
@@ -11753,7 +11768,7 @@ async function installUpdate() {
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    alert("Could not start the update: " + (err.detail || res.status));
+    alert("Could not start the update: " + errText(err, res));
     return;
   }
   // Back into this project afterwards, the way switching projects comes back.
@@ -12556,7 +12571,7 @@ async function createProject() {
   $("#wizard-create").textContent = "Create project";
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    alert("Could not create project: " + (err.detail || res.status));
+    alert("Could not create project: " + errText(err, res));
     return;
   }
   showOpenProgress("Creating project…");
@@ -12718,7 +12733,7 @@ async function applySceneGrouping() {
   $("#score-progress").classList.add("hidden");
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    alert("Scene grouping failed: " + (err.detail || res.status));
+    alert("Scene grouping failed: " + errText(err, res));
     return;
   }
   await bootMain();
