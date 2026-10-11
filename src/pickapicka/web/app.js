@@ -2519,20 +2519,73 @@ const EXPORT_TOKENS = [
 const EXPORT_EXT = { jpeg: ".jpg", tiff: ".tif" };
 const exportUi = { pollTimer: null, nameTimer: null };
 
-async function openExportModal() {
-  const res = await fetch("/api/export/picks/preview");
-  if (!res.ok) {
-    alert("Could not load export info: " + res.status);
-    return;
+// What goes out: from which scenes (all, the one open, or those ticked), and
+// which of their photos. The target folder follows the choice until it is
+// typed into or browsed to, then it is left alone.
+const exportPick = { scope: "all", which: "picks", chosen: new Set(), targetTouched: false };
+
+function exportScenes() {
+  if (exportPick.scope === "this") return state.selectedScene ? [state.selectedScene] : [];
+  if (exportPick.scope === "pick") return state.sceneOrder.filter((s) => exportPick.chosen.has(s));
+  return null;
+}
+
+const exportKeeps = {
+  picks: (p) => p.decision === "pick",
+  kept: (p) => p.decision !== "reject",
+  all: () => true,
+};
+
+function renderExportScope() {
+  $$("#export-scope button").forEach((b) => b.classList.toggle("active", b.dataset.scope === exportPick.scope));
+  $$("#export-which button").forEach((b) => b.classList.toggle("active", b.dataset.which === exportPick.which));
+  $("#export-scope-this").textContent = state.selectedScene ? `This scene · ${state.selectedScene}` : "This scene";
+  $("#export-scope-this").disabled = !state.selectedScene;
+  const box = $("#export-scenes");
+  box.classList.toggle("hidden", exportPick.scope !== "pick");
+  if (exportPick.scope === "pick") {
+    const keep = exportKeeps[exportPick.which];
+    box.innerHTML = state.sceneOrder.map((s) => {
+      const n = (state.byScene.get(s) || []).filter(keep).length;
+      return `<label><input type="checkbox" data-scene="${escapeAttr(s)}"${exportPick.chosen.has(s) ? " checked" : ""} />`
+        + `<span title="${escapeAttr(s)}">${escapeHtml(s)}</span><small>${n}</small></label>`;
+    }).join("");
+    box.querySelectorAll("[data-scene]").forEach((cb) => cb.addEventListener("change", () => {
+      if (cb.checked) exportPick.chosen.add(cb.dataset.scene); else exportPick.chosen.delete(cb.dataset.scene);
+      refreshExportPreview();
+    }));
   }
+}
+
+async function refreshExportPreview() {
+  const q = new URLSearchParams({ which: exportPick.which });
+  const scenes = exportScenes();
+  if (scenes) {
+    if (!scenes.length) {
+      $("#export-count").textContent = "no scenes chosen";
+      $("#export-confirm").disabled = true;
+      return null;
+    }
+    for (const s of scenes) q.append("scenes", s);
+  }
+  const res = await fetch("/api/export/picks/preview?" + q);
+  if (!res.ok) throw new Error(`export preview failed: ${res.status}`);
   const info = await res.json();
-  $("#export-count").textContent = `${info.count} photo${info.count === 1 ? "" : "s"}`;
-  $("#export-target").value = info.default_target;
+  $("#export-count").textContent = plural(info.count, "photo");
+  if (!exportPick.targetTouched) $("#export-target").value = info.default_target;
+  $("#export-confirm").disabled = info.count === 0;
+  return info;
+}
+
+async function openExportModal() {
+  exportPick.targetTouched = false;
+  if (exportPick.scope === "this" && !state.selectedScene) exportPick.scope = "all";
+  renderExportScope();
+  const info = await refreshExportPreview();
   setOptionCardValue("#export-mode-cards", "folder");
-  applyExportSettings(info.settings);
+  if (info) applyExportSettings(info.settings);
   $("#export-status").textContent = "";
   $("#export-progress").classList.add("hidden");
-  $("#export-confirm").disabled = info.count === 0;
   setBtnLabel($("#export-cancel"), "Cancel");
   $("#export-modal").classList.remove("hidden");
   // An export started earlier may still be running, if the dialog was closed
@@ -2647,7 +2700,7 @@ async function confirmExport() {
   const res = await fetch("/api/export/picks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target_dir: target, mode, settings }),
+    body: JSON.stringify({ target_dir: target, mode, settings, scenes: exportScenes(), which: exportPick.which }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -10022,6 +10075,20 @@ function bindUi() {
   window.addEventListener("resize", () => { syncModalBoxes(); syncModalPeak(); });
   $("#reject-undecided-btn").addEventListener("click", rejectUndecidedInScene);
   $("#export-picks-btn").addEventListener("click", openExportModal);
+  $$("#export-scope button").forEach((b) => b.addEventListener("click", () => {
+    exportPick.scope = b.dataset.scope;
+    if (exportPick.scope === "pick" && !exportPick.chosen.size && state.selectedScene) {
+      exportPick.chosen.add(state.selectedScene);
+    }
+    renderExportScope();
+    refreshExportPreview();
+  }));
+  $$("#export-which button").forEach((b) => b.addEventListener("click", () => {
+    exportPick.which = b.dataset.which;
+    renderExportScope();
+    refreshExportPreview();
+  }));
+  $("#export-target").addEventListener("input", () => { exportPick.targetTouched = true; });
   $("#export-modal-close").addEventListener("click", closeExportModal);
   $("#export-cancel").addEventListener("click", exportCancelOrClose);
   $("#export-confirm").addEventListener("click", confirmExport);

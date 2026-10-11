@@ -1796,6 +1796,14 @@ input[type="range"] { accent-color: var(--accent); }
 .export-note { font-size: var(--fs-xs); color: var(--ink-faint); line-height: 1.5; }
 .export-note.error { color: var(--reject); }
 .export-copy-note { margin: 0; }
+/* Choosing scenes to export: one checkbox each, with what it would add. */
+.export-scenes { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 2px 12px;
+  max-height: 150px; overflow-y: auto; margin: -4px 0 8px 110px; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: var(--r2); font-size: var(--fs-sm); }
+.export-scenes.hidden { display: none; }
+.export-scenes label { display: flex; align-items: center; gap: 6px; min-width: 0; cursor: pointer; }
+.export-scenes label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.export-scenes label small { margin-left: auto; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
 .export-seg { display: inline-flex; flex-shrink: 0; background: var(--sunken);
   border: 1px solid var(--line); border-radius: var(--r1); padding: 2px; gap: 2px; }
 .export-seg button { border: 0; background: transparent; padding: 3px 12px;

@@ -22,7 +22,7 @@ from typing import Any, BinaryIO, Callable, Literal
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
@@ -267,10 +267,17 @@ class ExportSettings(BaseModel):
     name_template: str = "{name}"
 
 
+ExportWhich = Literal["picks", "kept", "all"]
+
+
 class ExportPayload(BaseModel):
     target_dir: str | None = None
     mode: Literal["folder", "flat", "by_person"] = "folder"
     settings: ExportSettings = ExportSettings()
+    # What goes out: every scene's photos or these scenes' only, and of them
+    # the picks, everything not rejected, or all.
+    scenes: list[str] | None = None
+    which: ExportWhich = "picks"
 
 
 class NamePreviewPayload(BaseModel):
@@ -4084,13 +4091,29 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
 
     # ----- export ----------------------------------------------------
 
+    def _export_selection(scenes: list[str] | None, which: str) -> list[dict[str, Any]]:
+        """The photos an export writes: of `scenes` (None: all of them), the
+        picks, everything not rejected, or every photo."""
+        keep = {"picks": lambda p: p.get("decision") == "pick",
+                "kept": lambda p: p.get("decision") != "reject",
+                "all": lambda p: True}[which]
+        wanted = None if scenes is None else set(scenes)
+        return [p for p in ctx.data["photos"]
+                if (wanted is None or p.get("scene") in wanted) and keep(p)]
+
+    def _export_folder_name(scenes: list[str] | None) -> Path:
+        """Downloads/<project>[_<scene>]_<stamp>: the scene's name when it is one."""
+        name = ctx.project_dir.name if ctx.project_dir else ctx.db_path.stem
+        if scenes is not None and len(scenes) == 1:
+            name = f"{name}_{scenes[0]}"
+        return _downloads_folder(name)
+
     @app.get("/api/export/picks/preview")
-    def export_picks_preview() -> dict[str, Any]:
+    def export_picks_preview(which: ExportWhich = "picks",
+                             scenes: list[str] | None = Query(None)) -> dict[str, Any]:
         _require_loaded()
-        picks = [p for p in ctx.data["photos"] if p.get("decision") == "pick"]
-        default_target = _downloads_folder(
-            ctx.project_dir.name if ctx.project_dir else ctx.db_path.stem)
-        return {"count": len(picks), "default_target": str(default_target),
+        chosen = _export_selection(scenes, which)
+        return {"count": len(chosen), "default_target": str(_export_folder_name(scenes)),
                 "settings": ExportSettings(**userstate.get_export_settings()).model_dump()}
 
     @app.post("/api/export/name-preview")
@@ -4113,9 +4136,10 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
 
     @app.post("/api/export/picks")
     def export_picks(payload: ExportPayload | None = None) -> dict[str, Any]:
-        """Start writing every PICK to a folder. Rendering a few hundred full-size
-        frames takes minutes, so it runs in the background and reports through
-        /api/export/status."""
+        """Start writing the chosen photos (every pick, unless the payload says
+        which scenes and which photos) to a folder. Rendering a few hundred
+        full-size frames takes minutes, so it runs in the background and
+        reports through /api/export/status."""
         _require_loaded()
         payload = payload or ExportPayload()
         settings = payload.settings
@@ -4123,7 +4147,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         target = (
             Path(payload.target_dir).expanduser()
             if payload.target_dir
-            else _downloads_folder(ctx.project_dir.name if ctx.project_dir else ctx.db_path.stem)
+            else _export_folder_name(payload.scenes)
         )
         if not target.is_absolute():
             raise HTTPException(status_code=400, detail="the target folder must be a full path")
@@ -4139,7 +4163,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             if (ctx.export_state["running"] or ctx.scoring_state["running"]
                     or ctx.cluster_state["running"] or ctx.opening_state["running"]):
                 raise HTTPException(status_code=409, detail="another task is running")
-            picks = [p for p in ctx.data["photos"] if p.get("decision") == "pick"]
+            picks = _export_selection(payload.scenes, payload.which)
             ctx.export_state.update(ctx._fresh_export_state(), running=True,
                                     total=len(picks), started_at=datetime.now().isoformat())
 

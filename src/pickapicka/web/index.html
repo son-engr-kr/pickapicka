@@ -742,16 +742,30 @@
   <div id="export-modal" class="hidden">
     <div class="export-box">
       <header>
-        <h2>Export picks</h2>
+        <h2>Export</h2>
         <button id="export-modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
       <div class="export-body">
         <p class="export-hint">
-          Writes every photo marked <b>PICK</b> to a folder, with its edits
-          applied. Originals are never changed.
+          Writes the photos chosen here to a folder, with their edits applied.
+          Originals are never changed.
         </p>
         <div class="export-row">
-          <label>Picks</label>
+          <label>From</label>
+          <span class="export-seg" id="export-scope">
+            <button type="button" data-scope="all">All scenes</button><button
+                    type="button" data-scope="this" id="export-scope-this">This scene</button><button
+                    type="button" data-scope="pick">Choose…</button>
+          </span>
+        </div>
+        <div class="export-scenes hidden" id="export-scenes"></div>
+        <div class="export-row">
+          <label>Photos</label>
+          <span class="export-seg" id="export-which">
+            <button type="button" data-which="picks">Picks</button><button
+                    type="button" data-which="kept" title="Picks, review and undecided: everything not rejected">Not rejected</button><button
+                    type="button" data-which="all">All</button>
+          </span>
           <span id="export-count">—</span>
         </div>
         <div class="export-row">
@@ -768,7 +782,7 @@
             </button>
             <button class="option-card" type="button" data-value="flat">
               <span class="option-title">Flat</span>
-              <span class="option-sub">All picks go directly into the target folder. Duplicates get _1, _2 suffixes.</span>
+              <span class="option-sub">All photos go directly into the target folder. Duplicates get _1, _2 suffixes.</span>
             </button>
             <button class="option-card" type="button" data-value="by_person">
               <span class="option-title">By people combinations</span>

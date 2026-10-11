@@ -137,9 +137,13 @@ keys for where you are, `?` lists every one (also in the
 The keyboard cursor follows the mouse only when the mouse moves: a pointer
 resting on the grid does not pull the cursor when the page turns under it.
 
-- **Bulk actions**: reject all undecided in a scene; export all picks to a
-  folder (preserving structure, flattened, or one folder per combination of
-  people).
+- **Bulk actions**: reject all undecided in a scene; export to a folder
+  (preserving structure, flattened, or one folder per combination of people).
+- **What an export writes**: from all scenes, the one open, or the scenes you
+  tick (each with how many photos it adds), and of them the picks, everything
+  not rejected, or all. The count follows the choice. The folder is a dated one
+  in `~/Downloads`, named after the scene when it is one
+  (`wedding_reception · 2_20261011-1030`), until you type or browse to another.
 - **Export options**: JPEG at a chosen quality, or uncompressed TIFF for
   print; full size or a long edge (4K, 2048 px, 1080 px or your own); file
   names from a template (`{name}` `{seq}` `{date}` `{time}` `{scene}`
