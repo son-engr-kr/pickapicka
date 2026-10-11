@@ -201,3 +201,48 @@ def _main() -> None:
 
 if __name__ == "__main__":
     _main()
+
+
+# ----- faces into people -----------------------------------------------------
+
+def _face_project(tmp_path: Path, folders: list[str], seed: int = 0) -> Path:
+    """One face a photo; photos in a folder share a person (near-equal embeddings)."""
+    rng = np.random.default_rng(seed)
+    base = {f: rng.normal(size=512) for f in set(folders)}
+    photos, emb = [], []
+    for i, folder in enumerate(folders):
+        emb.append((base[folder] + rng.normal(scale=0.05, size=512)).astype(np.float32))
+        photos.append({"rel_path": f"{folder}/{i}.jpg", "scene": folder,
+                       "faces": [{"embedding_idx": i, "person_id": None}], "objects": [],
+                       "scores": {"blur": 100.0, "brightness": 0.5, "eye_open": None}})
+    data = db.init_db(tmp_path, "")
+    data["photos"] = photos
+    db.save(tmp_path / "picks.json", data)
+    np.save(tmp_path / "picks.json.embeddings.npy", np.stack(emb))
+    return tmp_path / "picks.json"
+
+
+def test_faces_group_after_photos_left_the_project(tmp_path) -> None:
+    """Leaving a folder out takes its photos, and their faces' rows in the
+    embeddings, out of order: grouping assumed the rows ran unbroken from 0 and
+    failed on an assert the next time it was asked."""
+    from pickapicka.scorer import drop_folders
+    db_path = _face_project(tmp_path, ["a"] * 3 + ["b"] * 3)
+    data = db.load(db_path)
+    drop_folders(data, {"a"})
+    db.save(db_path, data)
+    cluster.run_clustering(db_path)
+    data = db.load(db_path)
+    assert [p["count"] for p in data["people"]] == [3]
+    assert {f["person_id"] for p in data["photos"] for f in p["faces"]} == {"p0"}
+
+
+def test_no_faces_left_leaves_no_people(tmp_path) -> None:
+    from pickapicka.scorer import drop_folders
+    db_path = _face_project(tmp_path, ["a"] * 3)
+    cluster.run_clustering(db_path)
+    data = db.load(db_path)
+    drop_folders(data, {"a"})
+    db.save(db_path, data)
+    cluster.run_clustering(db_path)
+    assert db.load(db_path)["people"] == []

@@ -58,40 +58,37 @@ def run_clustering(
     )
     embeddings = np.load(emb_path)
     n = embeddings.shape[0]
-    if n == 0:
-        # A project that does not detect faces has nothing to cluster, and DBSCAN
-        # will not accept an empty array. Leave it with no people rather than
-        # stale ones from when it did.
-        for photo in photos:
-            for face in photo.get("faces", []):
-                face["person_id"] = None
+
+    # Each face with an embedding, as (photo_idx, face_idx), and its row. The
+    # rows are looked up, not assumed to run 0, 1, 2… in photo order: photos
+    # leave a project (a folder left out, an original gone) and take their
+    # rows' place in that order with them.
+    row_to_face: list[tuple[int, int]] = []
+    rows: list[int] = []
+    for pi, photo in enumerate(photos):
+        for fi, face in enumerate(photo.get("faces", [])):
+            face["person_id"] = None  # reset
+            ei = face.get("embedding_idx")
+            if ei is None or ei >= n:
+                continue
+            row_to_face.append((pi, fi))
+            rows.append(ei)
+    if not rows:
+        # No faces to group (a project that does not detect them, or none
+        # left), and DBSCAN will not take an empty array. Leave it with no
+        # people rather than stale ones from before.
         data["people"] = []
         data["clustered_at"] = datetime.now().isoformat()
         db.save(db_path, data)
         return
 
-    # Build a parallel list of (photo_idx, face_idx) rows so we can map cluster
-    # labels back to faces in the db.
-    row_to_face: list[tuple[int, int]] = []
-    for pi, photo in enumerate(photos):
-        for fi, face in enumerate(photo.get("faces", [])):
-            ei = face.get("embedding_idx")
-            if ei is None or ei >= n:
-                continue
-            assert ei == len(row_to_face), (
-                f"embedding_idx mismatch at photo {pi} face {fi}: "
-                f"got {ei}, expected {len(row_to_face)}"
-            )
-            row_to_face.append((pi, fi))
-            face["person_id"] = None  # reset
+    if progress_cb:
+        progress_cb("normalizing", 0, len(rows))
+    picked = embeddings[rows]
+    normalized = picked / (np.linalg.norm(picked, axis=1, keepdims=True) + 1e-9)
 
     if progress_cb:
-        progress_cb("normalizing", 0, n)
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    normalized = embeddings / (norms + 1e-9)
-
-    if progress_cb:
-        progress_cb("clustering", 0, n)
+        progress_cb("clustering", 0, len(rows))
     labels = DBSCAN(eps=eps, min_samples=min_samples, metric="cosine").fit_predict(normalized)
 
     # Group rows by cluster label (ignore -1 noise).
