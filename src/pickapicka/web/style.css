@@ -760,9 +760,8 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
    positioned and sized by JS instead of being letterboxed by object-fit. */
 #edit-img.zoomed { position: absolute; max-height: none; object-fit: fill;
   image-rendering: auto; }
-/* Between asking for a new view and receiving it the element still shows the
-   old frame; letterbox it rather than stretch it out of shape. */
-#edit-img.zoomed.view-pending { object-fit: contain; }
+.edit-zoom-val { min-width: 38px; text-align: left; font-variant-numeric: tabular-nums;
+  color: var(--fg-dim); }
 .edit-zoom-bar { display: flex; align-items: center; justify-content: center;
   gap: 4px; font-size: 11px; color: var(--fg-dim); }
 .edit-zoom-label { text-transform: uppercase; letter-spacing: 0.5px;

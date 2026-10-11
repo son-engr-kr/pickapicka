@@ -582,14 +582,17 @@ licence and whether it is here.
 
 ## Working at full resolution
 
-- **1:1 editing**: the editor previews fitted by default, but fit/50/100/200%
+- **1:1 editing**: the editor previews fitted by default, but zoomed in it
   renders the visible window from the **full-resolution original**, so you can
-  judge real sharpness while grading. Scroll or pinch to zoom, drag to pan
-  (space or middle-drag to pan past a mask). A mouse wheel's notch is a step;
-  a trackpad's pinch moves a step for about a doubling of the finger spread,
-  and its two-finger scroll a step per stretch of scrolling. It used to take a
-  step for every one of the dozens of small events a trackpad sends, and went
-  from fit to 200% in a flick.
+  judge real sharpness while grading. Pinch or scroll to zoom, continuously
+  and about the pointer, up to 800%: a pinch as far as the fingers move, a
+  wheel notch about a fifth; fit/50/100/200/400% jump straight there, and the
+  bar shows the zoom. Drag to pan (space or middle-drag to pan past a mask).
+  Each zoom or pan is a fresh render of the window, so until it arrives the
+  picture already on screen is stretched or moved to where its part of the
+  frame now sits, and the render waits for the gesture to settle: it used to
+  hold the old picture still, letterboxed, and a pinch stepped through the
+  zoom levels one per event, from fit to 200% in a flick.
 - **Typed values**: click a slider's number to type the value instead of
   dragging to it. Enter (or clicking away) sets it, Esc leaves it as it was, and
   the arrow keys step it. It is clamped to the slider's range and rounded to a

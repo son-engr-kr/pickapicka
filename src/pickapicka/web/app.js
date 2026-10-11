@@ -3918,10 +3918,11 @@ function fetchEditPreview(immediate, draft) {
     const rel = editSession.relPath;
     $("#edit-status").textContent = "rendering…";
     try {
+      const body = previewBody(editSession.edit, draft);
       const res = await fetch("/api/edit/preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(previewBody(editSession.edit, draft)),
+        body: JSON.stringify(body),
       });
       if (!res.ok) { $("#edit-status").textContent = "preview failed"; return; }
       const ms = res.headers.get("X-Render-Ms");
@@ -3956,6 +3957,7 @@ function fetchEditPreview(immediate, draft) {
       scheduleOverlay();   // guides move with the frame they are drawn on
       if (editSession.objUrl) URL.revokeObjectURL(editSession.objUrl);
       editSession.objUrl = URL.createObjectURL(blob);
+      rememberRoi(editSession.objUrl, body.roi);
       if (!editSession.comparing) $("#edit-img").src = editSession.objUrl;
       // The render time is for whoever is measuring (the tooltip); on screen
       // it read as a number to worry about. The line is for messages.
@@ -4003,15 +4005,17 @@ async function fetchOriginalPreview() {
   // editor is showing, so comparing works zoomed in too.
   const rel = editSession.relPath;
   try {
+    const body = previewBody(EDIT_NEUTRAL);
     const res = await fetch("/api/edit/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(previewBody(EDIT_NEUTRAL)),
+      body: JSON.stringify(body),
     });
     if (!res.ok || rel !== editSession.relPath) return;
     const blob = await res.blob();
     if (editSession.origUrl) URL.revokeObjectURL(editSession.origUrl);
     editSession.origUrl = URL.createObjectURL(blob);
+    rememberRoi(editSession.origUrl, body.roi);
   } catch { /* compare just won't be available */ }
 }
 
@@ -6593,43 +6597,69 @@ function maskChanged(immediate) {
 
 // ---------- local adjustments: overlay canvas ----------
 const OVERLAY_HIT = 11;              // px grab radius for a handle
-const ZOOM_STEPS = [0, 0.5, 1, 2];   // 0 = fit; the rest are CSS px per image px
 
-// The editor zooms in steps, each a fresh render of the window, and a trackpad
-// sends a pinch or a two-finger scroll as dozens of tiny wheel events: one
-// step each went from fit to 200% in a flick. Small deltas now add up to a
-// step: a pinch about as far as the steps are apart (they double; a pinch's
-// ctrl+wheel delta is a log scale at PINCH_ZOOM_RATE), or EDIT_SCROLL_STEP of
-// two-finger scroll. A mouse notch is still a step. After a step the rest of
-// the burst (momentum, the end of the pinch) is let go, not carried on.
-const EDIT_PINCH_STEP = Math.log(2) * 0.7;
-const EDIT_SCROLL_STEP = 120;      // px
-const EDIT_WHEEL_REST_MS = 150;
-const editWheel = { acc: 0, at: 0, stepped: 0 };
+// The editor zooms continuously, as the viewer does: a pinch as far as the
+// fingers move (its ctrl+wheel delta is a log scale at PINCH_ZOOM_RATE), a
+// wheel notch about a fifth. Each zoom is a fresh render of the window, so
+// while one is under way the picture on screen is stretched to where it
+// belongs (see layoutPreviewImage) and the render waits for it to settle.
+const EDIT_ZOOM_MAX = 8;            // 800%
+const EDIT_ZOOM_SETTLE_MS = 140;
+const FULL_VIEW = { x0: 0, y0: 0, rw: 1, rh: 1 };
+let zoomSettle = null;
 
-// +1 to zoom in, -1 out, 0 for not yet.
-function editWheelStep(e) {
-  const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
-  const now = performance.now();
-  if (now - editWheel.stepped < EDIT_WHEEL_REST_MS) { editWheel.acc = 0; return 0; }
-  if (now - editWheel.at > 300 || Math.sign(px) !== Math.sign(editWheel.acc)) editWheel.acc = 0;
-  editWheel.at = now;
-  let enough;
-  if (e.ctrlKey) {
-    editWheel.acc += px * PINCH_ZOOM_RATE;
-    enough = Math.abs(editWheel.acc) >= EDIT_PINCH_STEP;
-  } else if (e.deltaMode === 1 || Math.abs(px) >= 40) {
-    editWheel.acc = px;            // a mouse wheel's notch
-    enough = true;
-  } else {
-    editWheel.acc += px;
-    enough = Math.abs(editWheel.acc) >= EDIT_SCROLL_STEP;
+// The frame's scale on screen now: its zoom, or at fit what fitting gave it.
+function editScale() {
+  if (isZoomed()) return editSession.view.zoom;
+  return overlayRect().w / (editSession.frame.w || 1);
+}
+
+// Zoom to `z` keeping the point at (sx, sy), in viewport pixels, where it is.
+// At or below the fit scale it is fit; past EDIT_ZOOM_MAX it stops there.
+function zoomViewAt(z, sx, sy) {
+  const r = overlayRect();
+  const f = { x: (sx - r.x) / r.w, y: (sy - r.y) / r.h };   // the displayed frame's fraction there
+  const fit = isZoomed() ? null : r.w / (editSession.frame.w || 1);
+  const fitNow = fit ?? fitScaleAt();
+  z = Math.min(EDIT_ZOOM_MAX, z);
+  if (z <= fitNow * 1.0001) z = 0;
+  if (z === editSession.view.zoom) return;
+  editSession.view.zoom = z;
+  if (z > 0) {
+    const { w: vw, h: vh } = viewportSize();
+    const fullW = (editSession.frame.w || 1) * z, fullH = (editSession.frame.h || 1) * z;
+    const rw = Math.min(1, vw / fullW), rh = Math.min(1, vh / fullH);
+    const padX = rw >= 1 ? (vw - fullW) / 2 : 0, padY = rh >= 1 ? (vh - fullH) / 2 : 0;
+    editSession.view.cx = clamp01(f.x + (padX - sx) / fullW, rw) + rw / 2;
+    editSession.view.cy = clamp01(f.y + (padY - sy) / fullH, rh) + rh / 2;
   }
-  if (!enough || !px) return 0;
-  const dir = editWheel.acc < 0 ? 1 : -1;
-  editWheel.acc = 0;
-  editWheel.stepped = now;
-  return dir;
+  syncZoomUi();
+  layoutPreviewImage();
+  resizeOverlay();
+  clearTimeout(zoomSettle);
+  zoomSettle = setTimeout(() => { fetchEditPreview(true); fetchOriginalPreview(); }, EDIT_ZOOM_SETTLE_MS);
+}
+
+// The scale fit gives the frame in the viewport, without having to be at fit.
+function fitScaleAt() {
+  const { w: vw, h: vh } = viewportSize();
+  return Math.min(vw / (editSession.frame.w || 1), vh / (editSession.frame.h || 1));
+}
+
+function syncZoomUi() {
+  const z = editSession.view.zoom;
+  $$("#edit-modal .edit-zoom").forEach((b) =>
+    b.classList.toggle("active", Math.abs(parseFloat(b.dataset.zoom) - z) < 1e-6));
+  $("#edit-zoom-val").textContent = z ? `${Math.round(z * 100)}%` : "";
+  $("#edit-zoom-hint").classList.toggle("hidden", !isZoomed());
+}
+
+// Which part of the frame each preview shows (object URL -> roi), so whatever
+// is on screen can be laid out where that part sits in the current view.
+const previewRoi = new Map();
+function rememberRoi(url, roi) {
+  previewRoi.set(url, roi ? { x0: roi[0], y0: roi[1], rw: roi[2], rh: roi[3] } : FULL_VIEW);
+  while (previewRoi.size > 32) previewRoi.delete(previewRoi.keys().next().value);
 }
 const MASK_TINT = "#ff4d4f";
 const MIN_RADIUS = 0.005;
@@ -6763,8 +6793,11 @@ function overlayRect() {
   return { x: padX - roi.x0 * fullW, y: padY - roi.y0 * fullH, w: fullW, h: fullH };
 }
 
-// Size the returned crop into place. In fit mode CSS handles it; zoomed, the
-// JPEG is exactly the viewport window so it is stretched to the drawn rect.
+// Size the picture on screen into place. In fit mode CSS handles it; zoomed,
+// it is laid where the part of the frame it shows (editSession.shownRoi) sits
+// in the current view. For a render of this view that is the viewport; while
+// a zoom or a pan waits for its render, it is the last picture stretched or
+// moved to where it now belongs, instead of held still until the pixels come.
 function layoutPreviewImage() {
   const img = $("#edit-img");
   if (!isZoomed()) {
@@ -6774,31 +6807,21 @@ function layoutPreviewImage() {
   }
   // No need to freeze the wrap's height any more: it is a flex child that
   // fills the dialog, so it keeps its size when the image goes absolute.
-  const { w: vw, h: vh } = viewportSize();
-  const roi = viewRoi();
+  const shown = editSession.shownRoi || viewRoi();
   const r = overlayRect();
-  const drawW = Math.min(vw, roi.rw * r.w), drawH = Math.min(vh, roi.rh * r.h);
   img.classList.add("zoomed");
-  img.style.left = `${(vw - drawW) / 2}px`;
-  img.style.top = `${(vh - drawH) / 2}px`;
-  img.style.width = `${drawW}px`;
-  img.style.height = `${drawH}px`;
+  img.style.left = `${r.x + shown.x0 * r.w}px`;
+  img.style.top = `${r.y + shown.y0 * r.h}px`;
+  img.style.width = `${shown.rw * r.w}px`;
+  img.style.height = `${shown.rh * r.h}px`;
 }
 
+// A zoom button or a key: straight to `z`, centred on `focus` when given.
 function setZoom(z, focus) {
-  // Until the matching crop arrives the element still holds the previous
-  // frame, and the zoomed layout would stretch it to fill the viewport — a
-  // visible squash for as long as the render takes. Keep it letterboxed until
-  // the right pixels land.
-  $("#edit-img").classList.add("view-pending");
-  const prev = editSession.view.zoom;
-  // Keep whatever the pointer is over pinned in place while zooming.
-  if (focus && prev > 0) { editSession.view.cx = focus.x; editSession.view.cy = focus.y; }
-  else if (focus) { editSession.view.cx = focus.x; editSession.view.cy = focus.y; }
+  clearTimeout(zoomSettle);
+  if (focus) { editSession.view.cx = focus.x; editSession.view.cy = focus.y; }
   editSession.view.zoom = z;
-  $$("#edit-modal .edit-zoom").forEach((b) =>
-    b.classList.toggle("active", Math.abs(parseFloat(b.dataset.zoom) - z) < 1e-6));
-  $("#edit-zoom-hint").classList.toggle("hidden", !isZoomed());
+  syncZoomUi();
   layoutPreviewImage();
   resizeOverlay();
   fetchEditPreview(true);
@@ -7912,23 +7935,23 @@ function bindMaskUi() {
   cv.addEventListener("wheel", (e) => {
     if (!editSession.relPath) return;
     e.preventDefault();
-    const dir = editWheelStep(e);
-    if (!dir) return;
-    const steps = ZOOM_STEPS;
-    const cur = steps.indexOf(editSession.view.zoom);
-    const at = cur >= 0 ? cur : 0;
-    const next = steps[Math.min(steps.length - 1, Math.max(0, at + dir))];
-    if (next === editSession.view.zoom) return;
-    // Zoom toward the pointer so the detail under it stays under it.
-    setZoom(next, next > 0 ? evFrac(e) : null);
+    const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    const b = cv.getBoundingClientRect();
+    // About the pointer, so the detail under it stays under it.
+    zoomViewAt(editScale() * Math.exp(-px * (e.ctrlKey ? PINCH_ZOOM_RATE : WHEEL_ZOOM_RATE)),
+               e.clientX - b.left, e.clientY - b.top);
   }, { passive: false });
   cv.addEventListener("pointerleave", () => {
     if (!editSession.drag) { editSession.hover = null; drawOverlay(); }
   });
   cv.addEventListener("contextmenu", (e) => e.preventDefault());
   cv.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
+  // Laid out when its pixels are on screen, not when it was asked for: until
+  // then the element still shows the last picture, in its own place.
   $("#edit-img").addEventListener("load", () => {
-    $("#edit-img").classList.remove("view-pending");
+    const img = $("#edit-img");
+    editSession.shownRoi = previewRoi.get(img.src) || (isZoomed() ? viewRoi() : FULL_VIEW);
+    layoutPreviewImage();
     resizeOverlay();
   });
   window.addEventListener("resize", () => { layoutPreviewImage(); resizeOverlay(); });
