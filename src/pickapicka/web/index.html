@@ -468,6 +468,7 @@
         <button data-filter="review" class="filter" role="tab">Review <span class="n"></span></button>
         <button data-filter="reject" class="filter" role="tab">Rejects <span class="n"></span></button>
         <button data-filter="edited" class="filter" role="tab">Edited <span class="n"></span></button>
+        <button data-filter="missing" class="filter hidden" role="tab" title="Photos whose original is gone from disk">Missing <span class="n"></span></button>
       </div>
       <div class="filter-extra">
         <select id="rating-filter" title="Only photos with at least this many stars">
@@ -488,6 +489,8 @@
         </select>
       </div>
     </div>
+    <!-- The folder changed while the project was open (app.js checkChanges). -->
+    <div id="changes-bar" class="hidden" role="status"></div>
     <div class="cull-body">
       <div id="grid"></div>
       <!-- The highlighted photo in detail: what it looks like in numbers, why

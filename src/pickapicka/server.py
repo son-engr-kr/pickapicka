@@ -23,7 +23,7 @@ from typing import Any, BinaryIO, Callable, Literal
 import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
@@ -43,7 +43,11 @@ from .scorer import (
     _is_supported,
     apply_scene_suggestions,
     drop_folders,
+    drop_photos,
+    embeddings_path,
     excluded_scan_dirs,
+    find_changes,
+    fold_in,
     ignored_scan_dirs,
     is_folder_name,
     photo_folder,
@@ -442,6 +446,10 @@ class ForgetPayload(BaseModel):
     project_dir: str | None = None
 
 
+class DropPhotosPayload(BaseModel):
+    rel_paths: list[str]
+
+
 class FoldersPayload(BaseModel):
     ignored: list[str]          # top-level folder names the project leaves out
 
@@ -777,6 +785,8 @@ class AppContext:
         fine detail, where the two resamplings alias differently. The 1:1 view
         and the export still decode in full.
         """
+        if not self.source_path(rel_path).is_file():
+            raise OriginalMissing(str(self.source_path(rel_path)))
         photo = self.photo_index.get(rel_path)
         if photo is not None and photo.get("type") == "raw":
             from . import raw
@@ -1055,6 +1065,12 @@ def _project_cover(project_dir: Path, photos: list[dict[str, Any]]) -> str | Non
         if rel and (thumbs / rel).is_file():
             return rel
     return None
+
+
+class OriginalMissing(FileNotFoundError):
+    """A photo's original is not on disk (deleted, moved, or on a drive not
+    plugged in). Answered as a 404 that says so, not a server error: the
+    project still knows the photo, and the client shows it as missing."""
 
 
 class Stopped(Exception):
@@ -1957,6 +1973,11 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         ctx.load_db(initial_db_path)
 
     app = FastAPI(title="Pickapicka")
+
+    @app.exception_handler(OriginalMissing)
+    def original_missing(_request: Request, exc: OriginalMissing) -> JSONResponse:
+        return JSONResponse(status_code=404, content={
+            "detail": f"the original is not on disk: {exc}", "missing": True})
     # Checks only once serve() starts it, so building an app (the tests) stays offline.
     updater = updater_mod.Updater()
     app.state.updater = updater
@@ -3101,6 +3122,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             if ctx.photo_index.get(rel) is None:
                 raise HTTPException(status_code=404, detail=f"photo not found: {rel}")
         for rel in rels:
+            if not ctx.source_path(rel).is_file():
+                continue    # nothing to decode; opening it says why
             # A decode that fails here is logged with its traceback, then
             # raised again when the photo is opened.
             ctx.prefetch_pool.submit(ctx.get_decoded_base, rel).add_done_callback(
@@ -3904,6 +3927,87 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             "missing": sum(r["missing"] for r in rows.values()),
         }
 
+    @app.get("/api/changes")
+    def get_changes() -> dict[str, Any]:
+        """What changed in the photo folder since the project last looked: new
+        shots it can add on their own, ones only a re-score brings in, and
+        photos whose originals are gone. Asked when the window comes back
+        into focus, so it is a scan of names only."""
+        _require_loaded()
+        ch = find_changes(ctx.data, ctx.db_path, ctx.project_dir)
+        marked = {p["rel_path"] for p in ctx.data["photos"]
+                  if any(p.get(k) for k in ("decision", "rating", "label", "edit"))}
+        return {"added": len(ch["shots"]), "with_existing": ch["with_existing"],
+                "missing": ch["missing"], "missing_marked": len(marked.intersection(ch["missing"]))}
+
+    @app.post("/api/photos/add")
+    def add_new_photos() -> dict[str, Any]:
+        """Score the photos new in the folder and add them to the project, in
+        the background (progress as a re-score's). Faces and subjects join the
+        groups there, so people keep their names; nothing else is re-scored."""
+        _require_loaded()
+        with ctx.score_lock:
+            if ctx.scoring_state["running"] or ctx.cluster_state["running"]:
+                raise HTTPException(status_code=409, detail="another task is running")
+            ctx.scoring_state.update(
+                running=True, phase="adding", idx=0, total=0, current=None,
+                started_at=datetime.now().isoformat(), ended_at=None, error=None,
+                cancel=False, cancelled=False, added=0)
+
+        def progress_cb(i: int, total: int, current: str | None) -> None:
+            _stop_if_asked(ctx.scoring_state)
+            ctx.scoring_state.update(idx=i, total=total, current=current)
+
+        def runner() -> None:
+            from functools import partial
+
+            from . import cluster as cluster_mod
+            from .scorer import pixel_path, score_new
+            try:
+                new = score_new(ctx.data, ctx.db_path, ctx.project_dir, progress_cb)
+                settings = _cluster_settings()
+                # Folded in under the save lock: marks made while it scored
+                # are in ctx.data, and are saved with the new photos.
+                with ctx.save_lock:
+                    refs = fold_in(ctx.data, new, ctx.db_path)
+                    if refs["faces"]:
+                        cluster_mod.add_faces(
+                            ctx.data, np.load(embeddings_path(ctx.db_path)), refs["faces"],
+                            settings["face_eps"], settings["face_min_samples"])
+                    if refs["objects"] and ctx.data.get("subject_classes"):
+                        cluster_mod.add_subjects(
+                            ctx.data, partial(pixel_path, ctx.data, ctx.db_path, ctx.project_dir),
+                            refs["objects"], settings)
+                    db.save(ctx.db_path, ctx.data)
+                    ctx._rebuild_index()
+                ctx.scoring_state["added"] = len(new["photos"])
+            except Stopped:
+                ctx.scoring_state["cancelled"] = True   # nothing was added
+            except Exception as exc:
+                ctx.scoring_state["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                ctx.scoring_state["running"] = False
+                ctx.scoring_state["phase"] = None
+                ctx.scoring_state["ended_at"] = datetime.now().isoformat()
+
+        threading.Thread(target=runner, daemon=True).start()
+        return {"started": True}
+
+    @app.post("/api/photos/drop")
+    def drop_missing_photos(payload: DropPhotosPayload) -> dict[str, Any]:
+        """Take photos whose originals are gone out of the project, with their
+        marks and edits. One whose original is back on disk is kept."""
+        _require_loaded()
+        if ctx.scoring_state["running"] or ctx.cluster_state["running"]:
+            raise HTTPException(status_code=409, detail="another task is running")
+        gone = {r for r in payload.rel_paths
+                if r in ctx.photo_index and not ctx.source_path(r).is_file()}
+        with ctx.save_lock:
+            dropped = drop_photos(ctx.data, gone)
+            db.save(ctx.db_path, ctx.data)
+            ctx._rebuild_index()
+        return {"dropped": dropped, "kept": len(payload.rel_paths) - len(gone)}
+
     @app.get("/api/folders")
     def get_folders() -> dict[str, Any]:
         _require_loaded()
@@ -4158,9 +4262,17 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         src = _lexical(_thumb_source(ctx, rel_path, photo))
         if not _within_roots(ctx, src):
             raise HTTPException(status_code=403, detail="forbidden")
-        if not src.is_file():
-            raise HTTPException(status_code=404, detail="not found")
         edit = photo.get("edit") if photo else None
+        if not src.is_file():
+            # The original is gone: the thumbnail made of it still shows what
+            # the photo was, the edited one if there is one.
+            ehash = editing.edit_hash(edit)
+            kept = ([ctx.thumbs_root / f"{rel_path}.{ehash}.{THUMB_VERSION}.jpg"] if ehash else []) \
+                + [ctx.thumbs_root / rel_path]
+            for k in map(_lexical, kept):
+                if k.is_file() and ctx.thumbs_root in k.parents:
+                    return _cached_image(k, "image/jpeg")
+            raise HTTPException(status_code=404, detail="not found")
         thumb = _ensure_thumb(src, ctx.thumbs_root, rel_path, edit,
                               ctx.photo_meta(rel_path),
                               auto_fields=lambda: ctx.auto_fields(rel_path, edit),
@@ -4293,6 +4405,11 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         # For RAW the bbox is in the cached-preview coordinate space (faces were
         # detected on it), so the crop must come from that same JPEG, not the RAW.
         crop_src = _thumb_source(ctx, rel_path, photo)
+        if not crop_src.is_file():
+            kept = _lexical(ctx.faces_root / f"{rel_path}.f{idx}.jpg")
+            if kept.is_file() and ctx.faces_root in kept.parents:
+                return _cached_image(kept, "image/jpeg")
+            raise HTTPException(status_code=404, detail="the original is not on disk")
         crop_path = _ensure_face_crop(
             crop_src, ctx.faces_root, rel_path, bbox, idx, ctx.db_path)
         return _cached_image(crop_path, "image/jpeg")

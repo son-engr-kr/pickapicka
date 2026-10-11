@@ -73,11 +73,20 @@ whole job: decide, filter, move on.
   of video stills or exports kept inside the shoot, say. Leaving one out takes
   its photos out of the project at once; nothing on disk is touched, and every
   later scan skips it.
-- **Opening a changed folder asks first**: when a project opens on a photo
-  folder whose images no longer match it (new ones added, or some gone), it
-  opens as it was and shows the Folders dialog, with what is new in each folder.
-  From there you leave folders out, re-score to take the changes in, or carry
-  on. It used to re-score on its own, which also regroups faces.
+- **The folder changing under an open project**: on opening, and whenever the
+  app's window comes back into focus, the photo folder is checked against the
+  project, and a bar over the photos says what changed.
+  - **New photos** are added with **Add them**: only they are scored, and their
+    faces and subjects join the groups already there, so people keep their
+    names (a re-score regroups everything and resets them). A RAW arriving for
+    a photo already in as a JPEG would replace it, so only a re-score brings
+    that in.
+  - A photo whose **original is gone** stays, dimmed and marked *Original
+    missing*, shown from its thumbnail; the **Missing** filter lists them. It
+    cannot be edited (the app says so instead of failing), and **Remove from
+    project** takes those photos out, their marks with them, after asking.
+  - **Folders…** opens the Folders dialog, to leave a new folder out before
+    adding its photos. Nothing is re-scored on its own.
 
 ## Deciding
 

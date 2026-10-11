@@ -390,14 +390,27 @@ def apply_scene_suggestions(items: list[dict[str, Any]]) -> None:
 
 def drop_folders(data: dict[str, Any], folders: set[str]) -> int:
     """Take every photo found in `folders` out of the project, with the
-    brackets made of them, and repair what pointed at them: a person's or a
-    subject group's count and representative, and the group itself when none
-    of it is left. Scene suggestions are recomputed for what remains, as they
-    are relative to a scene. Returns how many photos left."""
+    brackets made of them (see `_drop`). Returns how many photos left."""
+    return _drop(data, lambda p: photo_folder(p) in folders,
+                 lambda b: top_folder(b["members"][0]) in folders)
+
+
+def drop_photos(data: dict[str, Any], rel_paths: set[str]) -> int:
+    """Take these photos out of the project (their originals gone from disk),
+    a merged HDR result with its bracket (see `_drop`). Returns how many left."""
+    return _drop(data, lambda p: p["rel_path"] in rel_paths,
+                 lambda b: b["merged"] in rel_paths)
+
+
+def _drop(data: dict[str, Any], photo_leaves, bracket_leaves) -> int:
+    """Take the photos `photo_leaves` picks out of the project, and the
+    brackets `bracket_leaves` picks, and repair what pointed at them: a
+    person's or a subject group's count and representative, and the group
+    itself when none of it is left. Scene suggestions are recomputed for what
+    remains, as they are relative to a scene. Returns how many photos left."""
     before = len(data["photos"])
-    data["photos"] = [p for p in data["photos"] if photo_folder(p) not in folders]
-    data["brackets"] = [b for b in data.get("brackets", [])
-                        if top_folder(b["members"][0]) not in folders]
+    data["photos"] = [p for p in data["photos"] if not photo_leaves(p)]
+    data["brackets"] = [b for b in data.get("brackets", []) if not bracket_leaves(b)]
 
     def repair(groups: list[dict[str, Any]], field: str, items: str, idx: str) -> list[dict[str, Any]]:
         members: dict[str, list[dict[str, Any]]] = {}
@@ -418,11 +431,7 @@ def drop_folders(data: dict[str, Any], folders: set[str]) -> int:
 
     data["people"] = repair(data.get("people", []), "person_id", "faces", "face_idx")
     data["vehicles"] = repair(data.get("vehicles", []), "vehicle_id", "objects", "obj_idx")
-    by_scene: dict[str, list[dict[str, Any]]] = {}
-    for p in data["photos"]:
-        by_scene.setdefault(p["scene"], []).append(p)
-    for items in by_scene.values():
-        apply_scene_suggestions(items)
+    _suggest_by_scene(data["photos"])
     return before - len(data["photos"])
 
 
@@ -547,6 +556,205 @@ def _score_one(
     return photo
 
 
+def embeddings_path(db_path: Path) -> Path:
+    """The face embeddings sidecar: row `embedding_idx` of each face."""
+    return db_path.with_suffix(db_path.suffix + ".embeddings.npy")
+
+
+def _merge_brackets(
+    groups: list[list[str]], scene_of: dict[str, str], jpeg_root: Path, hdr_root: Path,
+    look: dict[str, float], force: bool, progress_cb=None,
+) -> list[dict[str, Any]]:
+    """Merge each bracket (unless its merged JPEG is fresh and `force` is not
+    set) and describe it as the db keeps it."""
+    out: list[dict[str, Any]] = []
+    for i, members in enumerate(groups):
+        merged_name = hdr.merged_filename(members)
+        merged_path = hdr_root / merged_name
+        member_paths = [jpeg_root / m for m in members]
+        if force or not _merged_fresh(merged_path, member_paths):
+            if progress_cb is not None:
+                progress_cb(0, 0, f"Merging HDR brackets… ({i + 1}/{len(groups)})")
+            elif i == 0:
+                click.echo(f"Merging {len(groups)} HDR bracket(s)…")
+            hdr.merge_bracket(member_paths, merged_path, look)
+        out.append({
+            "id": hdr.bracket_id(members),
+            "members": members,
+            "merged": f"{hdr.HDR_PREFIX}/{merged_name}",
+            "scene": scene_of[members[0]],
+            "base": hdr.base_frame(members, jpeg_root),
+        })
+    return out
+
+
+Shot = tuple[str, "Path | None", "Path | None"]
+
+
+def _shots(collected: list[tuple[str, Path]], raw_collected: list[tuple[str, Path]],
+           jpeg_root: Path, bracketed: set[str]) -> list[Shot]:
+    """(scene, raw, jpeg) per shot, paired by `pair_group`; a JPEG merged into
+    an HDR bracket is not a shot of its own."""
+    groups: dict[tuple[str, str], tuple[list[Path], list[Path]]] = {}
+    for scene, abs_raw in raw_collected:
+        groups.setdefault((scene, abs_raw.stem.lower()), ([], []))[1].append(abs_raw)
+    for scene, jpg in collected:
+        if str(jpg.relative_to(jpeg_root)) in bracketed:
+            continue  # consumed by an HDR merge
+        groups.setdefault((scene, jpg.stem.lower()), ([], []))[0].append(jpg)
+    return [(key[0], r, j) for key in sorted(groups) for r, j in pair_group(*groups[key])]
+
+
+def _shot_targets(shots: list[Shot], photo_dir: Path, jpeg_root: Path, raw_root: Path,
+                  raw_cache_root: Path, progress_cb=None) -> list[dict[str, Any]]:
+    """A scoring target per shot, the RAW's when it has one."""
+    raws_to_prepare = [r for _, r, _ in shots if r is not None]
+    # Every RAW gets its preview decoded and cached before anything is scored.
+    # This is the one part of a scan that threads cleanly — libraw releases the
+    # GIL — and on a RAW shoot it is the part that would otherwise dominate:
+    # ~700 ms a frame serially against ~100 ms across eight workers, which is
+    # quicker than pulling the camera's embedded JPEG used to be.
+    prepared: dict[Path, tuple[Path, datetime | None]] = {}
+    if raws_to_prepare:
+        def _prepare(abs_raw: Path) -> tuple[Path, datetime | None]:
+            rel = str(abs_raw.relative_to(raw_root))
+            return (raw.ensure_cache(abs_raw, raw_cache_root, rel),
+                    raw.read_capture_time(abs_raw))
+
+        if progress_cb is None:
+            click.echo(f"Preparing {len(raws_to_prepare)} RAW preview(s)…")
+        pool = ThreadPoolExecutor(max_workers=RAW_PREVIEW_WORKERS)
+        try:
+            for n, (abs_raw, done) in enumerate(
+                    zip(raws_to_prepare, pool.map(_prepare, raws_to_prepare)), 1):
+                prepared[abs_raw] = done
+                if progress_cb is not None:
+                    progress_cb(0, 0, f"Preparing RAW previews… ({n}/{len(raws_to_prepare)})")
+        finally:
+            # A progress callback may raise to stop the run; the previews
+            # still queued are then dropped, not decoded first. Only those
+            # already being decoded are waited for.
+            pool.shutdown(wait=True, cancel_futures=True)
+
+    targets: list[dict[str, Any]] = []
+    for scene, abs_raw, jpg in shots:
+        if abs_raw is not None:  # RAW wins when a shot has both
+            rel = str(abs_raw.relative_to(raw_root))
+            score_path, captured = prepared[abs_raw]
+            targets.append({
+                "scene": scene, "score_path": score_path, "rel": rel,
+                "members": None, "kind": "raw",
+                "src": str(abs_raw.relative_to(photo_dir)),
+                "exif_path": abs_raw,
+                "captured_at": captured.isoformat() if captured else None,
+            })
+        else:
+            assert jpg is not None
+            rel = str(jpg.relative_to(jpeg_root))
+            captured = scenes.read_capture_time(jpg)
+            targets.append({
+                "scene": scene, "score_path": jpg, "rel": rel,
+                "members": None, "kind": "jpeg", "src": None,
+                "exif_path": jpg,
+                "captured_at": captured.isoformat() if captured else None,
+            })
+    return targets
+
+
+def _bracket_targets(brackets_meta: list[dict[str, Any]], jpeg_root: Path,
+                     hdr_root: Path) -> list[dict[str, Any]]:
+    """A scoring target per merged HDR result."""
+    targets = []
+    for b in brackets_meta:
+        captured = scenes.read_capture_time(jpeg_root / b["base"])
+        targets.append({
+            "scene": b["scene"],
+            "score_path": hdr_root / hdr.merged_filename(b["members"]),
+            "rel": b["merged"], "members": b["members"], "kind": "hdr", "src": None,
+            "exif_path": jpeg_root / b["base"],
+            "captured_at": captured.isoformat() if captured else None,
+        })
+    return targets
+
+
+def _detectors(detect_faces: bool, with_faces: bool, subject_classes: list[str] | None,
+               progress_cb=None) -> tuple[Any, Any, list[str]]:
+    """The face and subject detectors a project scores with, and its subject
+    classes. None for a pass the project does not run."""
+    verbose = progress_cb is None
+    if not detect_faces:
+        # A car shoot does not want the bystanders clustered into People, and the
+        # eyes-closed penalty is meaningless on them.
+        if verbose:
+            click.echo("Face detection disabled for this project")
+        face_detect = None
+    elif with_faces:
+        from .scoring import eyes as eyes_mod
+        if verbose:
+            click.echo("Face mesh + eye-open detection enabled (mediapipe)")
+        face_detect = eyes_mod.detect
+    else:
+        if verbose:
+            click.echo("Face detection + embedding enabled (insightface buffalo_l)")
+        face_detect = faces_mod.detect
+
+    # Object detection is opt-in per project: with no target classes nothing is
+    # loaded and the pipeline costs exactly what it did before.
+    object_detect = None
+    classes = [c for c in (subject_classes or []) if c in objects_mod.COCO_CLASSES]
+    if classes:
+        if verbose:
+            click.echo(f"Subject detection enabled (YOLOX-tiny): {', '.join(classes)}")
+        if not objects_mod.is_model_ready():
+            msg = "Downloading the detection model (~20 MB, once)…"
+            if verbose:
+                click.echo(msg)
+            elif progress_cb is not None:
+                progress_cb(0, 0, msg)
+        objects_mod.ensure_model()
+
+        def object_detect(path: str) -> tuple[list[dict[str, Any]], int, int]:
+            return objects_mod.detect(path, classes=classes)
+    return face_detect, object_detect, classes
+
+
+def _score_targets(targets: list[dict[str, Any]], face_detect, existing_dec, existing_edits,
+                   object_detect, progress_cb=None) -> tuple[list[dict[str, Any]], list[np.ndarray]]:
+    """Score every target, and the face embeddings in `embedding_idx` order."""
+    scored: list[dict[str, Any]] = []
+    embedding_sink: list[np.ndarray] = []
+    if progress_cb is None:
+        with click.progressbar(targets, label="Scoring", show_pos=True) as bar:
+            for t in bar:
+                scored.append(_score_one(
+                    t, face_detect, existing_dec, existing_edits, embedding_sink,
+                    object_detect))
+    else:
+        for i, t in enumerate(targets):
+            progress_cb(i, len(targets), t["rel"])
+            scored.append(_score_one(
+                t, face_detect, existing_dec, existing_edits, embedding_sink,
+                object_detect))
+        progress_cb(len(targets), len(targets), None)
+    return scored, embedding_sink
+
+
+def _suggest_by_scene(photos: list[dict[str, Any]]) -> None:
+    """Per-scene suggestions for every scene, as they are relative to it."""
+    by_scene: dict[str, list[dict[str, Any]]] = {}
+    for p in photos:
+        by_scene.setdefault(p["scene"], []).append(p)
+    for items in by_scene.values():
+        apply_scene_suggestions(items)
+
+
+def _tag_bases(photos: list[dict[str, Any]], brackets_meta: list[dict[str, Any]]) -> None:
+    base_by_merged = {b["merged"]: b["base"] for b in brackets_meta}
+    for p in photos:
+        if p.get("type") == "hdr" and p["rel_path"] in base_by_merged:
+            p["base"] = base_by_merged[p["rel_path"]]
+
+
 def run_scoring(
     photo_dir: Path,
     jpeg_subdir: str,
@@ -625,179 +833,41 @@ def run_scoring(
     # ----- resolve & merge HDR brackets -----
     groups = _resolve_bracket_groups(bracket_groups, src_rels, jpeg_root, verbose)
     hdr_root = hdr_dir(db_path, project_dir)
-    brackets_meta: list[dict[str, Any]] = []
-    bracketed: set[str] = set()
-    for i, members in enumerate(groups):
-        merged_name = hdr.merged_filename(members)
-        merged_path = hdr_root / merged_name
-        member_paths = [jpeg_root / m for m in members]
-        if look_changed or not _merged_fresh(merged_path, member_paths):
-            if progress_cb is not None:
-                progress_cb(0, 0, f"Merging HDR brackets… ({i + 1}/{len(groups)})")
-            elif i == 0:
-                click.echo(f"Merging {len(groups)} HDR bracket(s)…")
-            hdr.merge_bracket(member_paths, merged_path, look)
-        brackets_meta.append({
-            "id": hdr.bracket_id(members),
-            "members": members,
-            "merged": f"{hdr.HDR_PREFIX}/{merged_name}",
-            "scene": scene_of[members[0]],
-            "base": hdr.base_frame(members, jpeg_root),
-        })
-        bracketed.update(members)
+    brackets_meta = _merge_brackets(groups, scene_of, jpeg_root, hdr_root, look,
+                                    look_changed, progress_cb)
+    bracketed = {m for b in brackets_meta for m in b["members"]}
     _prune_hdr_dir(hdr_root, {hdr.merged_filename(b["members"]) for b in brackets_meta})
 
     # ----- pair RAW + JPEG (prefer RAW) and assemble scoring targets -----
     raw_cache_root = raw_cache_dir(db_path, project_dir)
-
-    groups: dict[tuple[str, str], tuple[list[Path], list[Path]]] = {}
-    for scene, abs_raw in raw_collected:
-        groups.setdefault((scene, abs_raw.stem.lower()), ([], []))[1].append(abs_raw)
-    for scene, jpg in collected:
-        if str(jpg.relative_to(jpeg_root)) in bracketed:
-            continue  # consumed by an HDR merge
-        groups.setdefault((scene, jpg.stem.lower()), ([], []))[0].append(jpg)
-    # (scene, raw, jpeg) per shot; the RAW wins when a shot has both.
-    shots = [(key[0], r, j) for key in sorted(groups) for r, j in pair_group(*groups[key])]
-    raws_to_prepare = [r for _, r, _ in shots if r is not None]
-
-    # Every RAW gets its preview decoded and cached before anything is scored.
-    # This is the one part of a scan that threads cleanly — libraw releases the
-    # GIL — and on a RAW shoot it is the part that would otherwise dominate:
-    # ~700 ms a frame serially against ~100 ms across eight workers, which is
-    # quicker than pulling the camera's embedded JPEG used to be.
-    prepared: dict[Path, tuple[Path, datetime | None]] = {}
-    if raws_to_prepare:
-        def _prepare(abs_raw: Path) -> tuple[Path, datetime | None]:
-            rel = str(abs_raw.relative_to(raw_root))
-            return (raw.ensure_cache(abs_raw, raw_cache_root, rel),
-                    raw.read_capture_time(abs_raw))
-
-        if verbose:
-            click.echo(f"Preparing {len(raws_to_prepare)} RAW preview(s)…")
-        pool = ThreadPoolExecutor(max_workers=RAW_PREVIEW_WORKERS)
-        try:
-            for n, (abs_raw, done) in enumerate(
-                    zip(raws_to_prepare, pool.map(_prepare, raws_to_prepare)), 1):
-                prepared[abs_raw] = done
-                if progress_cb is not None:
-                    progress_cb(0, 0, f"Preparing RAW previews… ({n}/{len(raws_to_prepare)})")
-        finally:
-            # A progress callback may raise to stop the run; the previews
-            # still queued are then dropped, not decoded first. Only those
-            # already being decoded are waited for.
-            pool.shutdown(wait=True, cancel_futures=True)
-
-    targets: list[dict[str, Any]] = []
-    for scene, abs_raw, jpg in shots:
-        if abs_raw is not None:  # RAW wins when a shot has both
-            rel = str(abs_raw.relative_to(raw_root))
-            score_path, captured = prepared[abs_raw]
-            targets.append({
-                "scene": scene, "score_path": score_path, "rel": rel,
-                "members": None, "kind": "raw",
-                "src": str(abs_raw.relative_to(photo_dir)),
-                "exif_path": abs_raw,
-                "captured_at": captured.isoformat() if captured else None,
-            })
-        else:
-            assert jpg is not None
-            rel = str(jpg.relative_to(jpeg_root))
-            captured = scenes.read_capture_time(jpg)
-            targets.append({
-                "scene": scene, "score_path": jpg, "rel": rel,
-                "members": None, "kind": "jpeg", "src": None,
-                "exif_path": jpg,
-                "captured_at": captured.isoformat() if captured else None,
-            })
-    for b in brackets_meta:
-        captured = scenes.read_capture_time(jpeg_root / b["base"])
-        targets.append({
-            "scene": b["scene"],
-            "score_path": hdr_root / hdr.merged_filename(b["members"]),
-            "rel": b["merged"], "members": b["members"], "kind": "hdr", "src": None,
-            "exif_path": jpeg_root / b["base"],
-            "captured_at": captured.isoformat() if captured else None,
-        })
+    shots = _shots(collected, raw_collected, jpeg_root, bracketed)
+    targets = _shot_targets(shots, photo_dir, jpeg_root, raw_root, raw_cache_root, progress_cb)
+    targets += _bracket_targets(brackets_meta, jpeg_root, hdr_root)
     if limit is not None:
         targets = targets[:limit]
 
-    if not detect_faces:
-        # A car shoot does not want the bystanders clustered into People, and the
-        # eyes-closed penalty is meaningless on them.
-        if verbose:
-            click.echo("Face detection disabled for this project")
-        face_detect = None
-    elif with_faces:
-        from .scoring import eyes as eyes_mod
-        if verbose:
-            click.echo("Face mesh + eye-open detection enabled (mediapipe)")
-        face_detect = eyes_mod.detect
-    else:
-        if verbose:
-            click.echo("Face detection + embedding enabled (insightface buffalo_l)")
-        face_detect = faces_mod.detect
-
-    # Object detection is opt-in per project: with no target classes nothing is
-    # loaded and the pipeline costs exactly what it did before.
-    object_detect = None
-    classes = [c for c in (subject_classes or []) if c in objects_mod.COCO_CLASSES]
-    if classes:
-        if verbose:
-            click.echo(f"Subject detection enabled (YOLOX-tiny): {', '.join(classes)}")
-        if not objects_mod.is_model_ready():
-            msg = "Downloading the detection model (~20 MB, once)…"
-            if verbose:
-                click.echo(msg)
-            elif progress_cb is not None:
-                progress_cb(0, 0, msg)
-        objects_mod.ensure_model()
-
-        def object_detect(path: str) -> tuple[list[dict[str, Any]], int, int]:
-            return objects_mod.detect(path, classes=classes)
-
-    scored: list[dict[str, Any]] = []
-    embedding_sink: list[np.ndarray] = []
-    if verbose:
-        with click.progressbar(targets, label="Scoring", show_pos=True) as bar:
-            for t in bar:
-                scored.append(_score_one(
-                    t, face_detect, existing_dec, existing_edits, embedding_sink,
-                    object_detect))
-    else:
-        for i, t in enumerate(targets):
-            progress_cb(i, len(targets), t["rel"])
-            scored.append(_score_one(
-                t, face_detect, existing_dec, existing_edits, embedding_sink,
-                object_detect))
-        progress_cb(len(targets), len(targets), None)
+    face_detect, object_detect, classes = _detectors(
+        detect_faces, with_faces, subject_classes, progress_cb)
+    scored, embedding_sink = _score_targets(
+        targets, face_detect, existing_dec, existing_edits, object_detect, progress_cb)
 
     # Scored into folder scenes; regrouped before the per-scene suggestions,
     # which are relative to whatever a scene turns out to hold.
     grouping = scene_grouping if scene_grouping is not None else (existing or {}).get("scene_grouping")
     if grouping and grouping.get("mode") == "time_gap":
         scenes.regroup(scored, jpeg_root, "time_gap", grouping.get("gap_minutes", 30))
-    by_scene: dict[str, list[dict[str, Any]]] = {}
-    for p in scored:
-        by_scene.setdefault(p["scene"], []).append(p)
-    for scene, items in by_scene.items():
-        apply_scene_suggestions(items)
-
+    _suggest_by_scene(scored)
     # Tag each merged result with its 0-EV source frame (for the HDR/original
     # compare toggle in the viewer).
-    base_by_merged = {b["merged"]: b["base"] for b in brackets_meta}
-    for p in scored:
-        if p.get("type") == "hdr":
-            p["base"] = base_by_merged.get(p["rel_path"])
+    _tag_bases(scored, brackets_meta)
 
     # Persist embeddings to numpy sidecar; clusters wipe on re-score because
     # face indices may have changed.
-    emb_path = db_path.with_suffix(db_path.suffix + ".embeddings.npy")
     if embedding_sink:
         emb_arr = np.stack(embedding_sink, axis=0).astype(np.float32)
     else:
         emb_arr = np.zeros((0, 512), dtype=np.float32)
-    np.save(emb_path, emb_arr)
+    np.save(embeddings_path(db_path), emb_arr)
 
     data = db.init_db(photo_dir, jpeg_subdir, raw_subdir)
     data["scored_at"] = datetime.now().isoformat()
@@ -858,3 +928,127 @@ def run_scoring(
                 f"Subjects detected — {n_with}/{len(scored)} photos contain "
                 f"{', '.join(classes)} ({n_obj} total)"
             )
+
+
+# ----- what changed on disk while the project was open ----------------------
+# Photos added to the folder are scored and folded in on their own, and photos
+# whose originals are gone are found, without re-scoring the rest: a re-score
+# costs minutes on a big shoot and regroups faces, which resets people's names.
+
+def _roots(data: dict[str, Any]) -> tuple[Path, Path, Path]:
+    photo_dir = Path(data["photo_root"])
+    jpeg_subdir, raw_subdir = data.get("jpeg_subdir") or "", data.get("raw_subdir") or ""
+    jpeg_root = photo_dir / jpeg_subdir if jpeg_subdir else photo_dir
+    return photo_dir, jpeg_root, photo_dir / raw_subdir if raw_subdir else jpeg_root
+
+
+def source_file(data: dict[str, Any], db_path: Path, project_dir: Path | None,
+                photo: dict[str, Any]) -> Path:
+    """The file a photo is read from when it is shown or edited: a RAW's
+    original, the merged JPEG for an HDR result, else its JPEG."""
+    photo_dir, jpeg_root, _ = _roots(data)
+    if photo.get("type") == "hdr" or hdr.is_hdr_rel(photo["rel_path"]):
+        return hdr_dir(db_path, project_dir) / photo["rel_path"][len(hdr.HDR_PREFIX) + 1:]
+    if photo.get("type") == "raw":
+        return photo_dir / photo.get("src", photo["rel_path"])
+    return jpeg_root / photo["rel_path"]
+
+
+def find_changes(data: dict[str, Any], db_path: Path, project_dir: Path | None) -> dict[str, Any]:
+    """The folder against the project: shots on disk that are not in it, ones
+    that pair with a photo already in it (a RAW arriving for a JPEG: only a
+    re-score swaps those), and photos whose originals are gone. Scans the
+    same files, the same way, as scoring does."""
+    photo_dir, jpeg_root, raw_root = _roots(data)
+    if not jpeg_root.is_dir():
+        return {"shots": [], "with_existing": 0, "missing": []}
+    ignored = data.get("ignored_dirs") or []
+    excludes = excluded_scan_dirs(db_path, project_dir) | ignored_scan_dirs(jpeg_root, raw_root, ignored)
+    collected = _collect_jpegs(jpeg_root, excludes)
+    raw_collected = _collect_raws(raw_root, excludes)
+
+    known: set[Path] = set()
+    for p in data["photos"]:
+        if p.get("type") == "hdr":
+            known.update(jpeg_root / m for m in p.get("members") or [])
+        else:
+            known.add(source_file(data, db_path, project_dir, p))
+    for b in data.get("brackets", []):
+        known.update(jpeg_root / m for m in b["members"])
+
+    shots: list[Shot] = []
+    with_existing = 0
+    for scene, raw_f, jpeg_f in _shots(collected, raw_collected, jpeg_root, set()):
+        if raw_f is not None and raw_f in known:
+            continue            # in the project; a JPEG of it is folded in, as scoring does
+        if raw_f is None and jpeg_f in known:
+            continue
+        if raw_f is not None and jpeg_f is not None and jpeg_f in known:
+            with_existing += 1  # a RAW for a JPEG photo: it would take the photo's place
+            continue
+        shots.append((scene, raw_f, jpeg_f))
+    missing = [p["rel_path"] for p in data["photos"]
+               if not source_file(data, db_path, project_dir, p).is_file()]
+    return {"shots": shots, "with_existing": with_existing, "missing": missing}
+
+
+def score_new(data: dict[str, Any], db_path: Path, project_dir: Path | None,
+              progress_cb=None) -> dict[str, Any]:
+    """Score the shots `find_changes` finds new, as the project would score
+    them (its detectors, its HDR look), for `fold_in` to add. HDR brackets are
+    looked for among the new frames only."""
+    photo_dir, jpeg_root, raw_root = _roots(data)
+    changes = find_changes(data, db_path, project_dir)
+    shots = changes["shots"]
+    hdr_root = hdr_dir(db_path, project_dir)
+    new_jpegs = {str(j.relative_to(jpeg_root)): scene for scene, r, j in shots
+                 if r is None and j is not None}
+    groups = _resolve_bracket_groups(None, set(new_jpegs), jpeg_root, verbose=False)
+    look = data.get("hdr_look") or hdr.DEFAULT_LOOK
+    brackets_meta = _merge_brackets(groups, new_jpegs, jpeg_root, hdr_root, look, False, progress_cb)
+    bracketed = {jpeg_root / m for b in brackets_meta for m in b["members"]}
+    shots = [s for s in shots if s[1] is not None or s[2] not in bracketed]
+
+    targets = _shot_targets(shots, photo_dir, jpeg_root, raw_root,
+                            raw_cache_dir(db_path, project_dir), progress_cb)
+    targets += _bracket_targets(brackets_meta, jpeg_root, hdr_root)
+    detect = data.get("detect_faces")
+    face_detect, object_detect, _ = _detectors(
+        True if detect is None else bool(detect), False, data.get("subject_classes"), progress_cb)
+    scored, embeddings = _score_targets(targets, face_detect, {}, {}, object_detect, progress_cb)
+    _tag_bases(scored, brackets_meta)
+    return {"photos": scored, "brackets": brackets_meta,
+            "embeddings": np.stack(embeddings).astype(np.float32) if embeddings
+            else np.zeros((0, 512), dtype=np.float32),
+            "with_existing": changes["with_existing"]}
+
+
+def fold_in(data: dict[str, Any], new: dict[str, Any], db_path: Path) -> dict[str, list[tuple[int, int]]]:
+    """Add what `score_new` scored to the project: the photos, their brackets,
+    their face embeddings (appended to the sidecar, their indices moved past
+    the rows already there). Scenes are regrouped by time if the project groups
+    that way, and every scene's suggestions recomputed, as they are relative
+    to what a scene holds. Returns the new faces and subjects, as (photo_idx,
+    face/object idx), for grouping."""
+    emb_path = embeddings_path(db_path)
+    old = np.load(emb_path) if emb_path.is_file() else np.zeros((0, 512), dtype=np.float32)
+    offset = old.shape[0]
+    start = len(data["photos"])
+    for p in new["photos"]:
+        for f in p["faces"]:
+            if f.get("embedding_idx") is not None:
+                f["embedding_idx"] += offset
+    if len(new["embeddings"]):
+        np.save(emb_path, np.concatenate([old, new["embeddings"]]).astype(np.float32))
+    data["photos"].extend(new["photos"])
+    data.setdefault("brackets", []).extend(new["brackets"])
+
+    grouping = data.get("scene_grouping") or {}
+    if grouping.get("mode") == "time_gap":
+        scenes.regroup(data["photos"], _roots(data)[1], "time_gap", grouping.get("gap_minutes", 30))
+    _suggest_by_scene(data["photos"])
+    faces = [(pi, fi) for pi in range(start, len(data["photos"]))
+             for fi, f in enumerate(data["photos"][pi]["faces"]) if f.get("embedding_idx") is not None]
+    objects = [(pi, oi) for pi in range(start, len(data["photos"]))
+               for oi in range(len(data["photos"][pi].get("objects") or []))]
+    return {"faces": faces, "objects": objects}

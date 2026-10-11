@@ -15,6 +15,8 @@ const state = {
   sceneOrder: [],
   selectedScene: null,
   filter: "all",
+  // Photos whose original is gone from disk, by rel_path (checkChanges).
+  missing: new Set(),
   // Within a scene: "time" is shooting order; "people" puts photos of
   // higher-priority people first, which pulls a burst apart wherever its
   // frames see different people.
@@ -684,6 +686,7 @@ function matchesDecisionFilter(p) {
   // question: which of these still want my attention. A neutral edit is dropped
   // from the db, so the field being there means the photo really was changed.
   if (state.filter === "edited") return !!p.edit;
+  if (state.filter === "missing") return state.missing.has(p.rel_path);
   return p.decision === state.filter;
 }
 function matchesPersonFilter(p) {
@@ -1611,12 +1614,12 @@ function renderFolders() {
       back.length ? "A folder taken back in is added by the next re-score." : "",
     ].filter(Boolean).join(" ");
   } else if (report.added || report.missing) {
-    go.textContent = "Re-score to " + [
-      report.added ? `add ${plural(report.added, "new image")}` : "",
-      report.missing ? `drop ${report.missing} gone from disk` : "",
+    go.textContent = [
+      report.added ? `Add ${plural(report.added, "new image")}` : "",
+      report.missing ? `${report.added ? "remove" : "Remove"} ${report.missing} gone from disk` : "",
     ].filter(Boolean).join(" and ");
-    note.textContent = "Decisions, stars, labels and edits are kept. Faces are grouped "
-      + "again, so people's names and order go back to the defaults.";
+    note.textContent = "Only the new photos are scored; they join the people already "
+      + "here, so names are kept. Photos removed take their marks with them.";
   } else {
     go.textContent = "Done";
     note.textContent = "The project matches the photo folder.";
@@ -1645,7 +1648,12 @@ async function foldersGo() {
     return;
   }
   closeFoldersModal();
-  if (foldersEdit.report.added || foldersEdit.report.missing) await rescoreAsIs();
+  const { added, missing } = foldersEdit.report;
+  if (missing) {
+    await checkChanges({ force: true });
+    if (state.missing.size && !(await dropMissing())) return;
+  }
+  if (added) await addNewPhotos();
 }
 
 // The project's photos changed under the grid: keep the scene if it is still
@@ -1682,6 +1690,112 @@ async function rescoreAsIs() {
   $("#score-progress-text").textContent = "starting…";
   $("#score-current").textContent = "";
   pollScoreStatus();
+}
+
+// ---------- the folder changing under an open project ----------
+// Photos added to the folder, or gone from it, while the project is open. Asked
+// after an open and whenever the window comes back into focus (switching to
+// Finder to copy a card in is when it happens), shown as a bar over the photos.
+// Adding scores only the new ones; the gone ones are marked on their tiles and
+// can be taken out.
+const CHANGES_EVERY_MS = 10000;
+const changes = { added: 0, withExisting: 0, missingMarked: 0, at: 0, dismissed: "" };
+
+async function checkChanges({ force = false } = {}) {
+  if (document.body.classList.contains("landing-mode") || !state.photos.length) return;
+  if (scorePollTimer) return;       // a re-score or an add is under way
+  if (!force && Date.now() - changes.at < CHANGES_EVERY_MS) return;
+  changes.at = Date.now();
+  const res = await fetch("/api/changes", { cache: "no-store" });
+  if (!res.ok) throw new Error(`changes failed: ${res.status}`);
+  const d = await res.json();
+  const before = [...state.missing].sort().join("\n");
+  state.missing = new Set(d.missing);
+  Object.assign(changes, { added: d.added, withExisting: d.with_existing, missingMarked: d.missing_marked });
+  if (state.filter === "missing" && !state.missing.size) setFilter("all");
+  renderChangesBar();
+  if ([...state.missing].sort().join("\n") !== before) {
+    recomputeFilter();
+    renderMain();
+  }
+}
+
+function renderChangesBar() {
+  const bar = $("#changes-bar");
+  const n = state.missing.size;
+  const sig = `${changes.added}/${changes.withExisting}/${n}`;
+  const show = Boolean(changes.added || changes.withExisting || n) && changes.dismissed !== sig;
+  const was = !bar.classList.contains("hidden");
+  bar.classList.toggle("hidden", !show);
+  if (was !== show) window.dispatchEvent(new Event("resize"));   // the grid's height changed
+  if (!show) return;
+  const parts = [];
+  if (changes.added) {
+    parts.push(`<span class="chg">${icon("plus")}${plural(changes.added, "new photo")} in the folder.
+      <button type="button" class="primary" data-act="add">Add ${changes.added === 1 ? "it" : "them"}</button></span>`);
+  }
+  if (changes.withExisting) {
+    parts.push(`<span class="chg">${plural(changes.withExisting, "RAW")} arrived for photos already here; `
+      + `only a re-score brings ${changes.withExisting === 1 ? "it" : "them"} in.</span>`);
+  }
+  if (n) {
+    parts.push(`<span class="chg warn">${icon("warning")}The original${n === 1 ? " of 1 photo is" : `s of ${n} photos are`} gone from disk.
+      <button type="button" data-act="show">Show</button>
+      <button type="button" data-act="drop">Remove from project</button></span>`);
+  }
+  parts.push(`<span class="chg-end"><button type="button" data-act="folders">Folders…</button>
+    <button type="button" data-act="dismiss" title="Hide until something else changes" aria-label="Hide">${icon("close")}</button></span>`);
+  bar.innerHTML = parts.join("");
+  const on = (act, fn) => bar.querySelector(`[data-act="${act}"]`)?.addEventListener("click", fn);
+  on("add", addNewPhotos);
+  on("drop", dropMissing);
+  on("folders", () => openFoldersModal(false));
+  on("dismiss", () => { changes.dismissed = sig; renderChangesBar(); });
+  on("show", () => {
+    // To a scene with some, if this one has none.
+    const has = (sc) => (state.byScene.get(sc) || []).some((p) => state.missing.has(p.rel_path));
+    if (!has(state.selectedScene)) {
+      const scene = state.sceneOrder.find(has);
+      if (scene) selectScene(scene);
+    }
+    setFilter("missing");
+  });
+}
+
+async function addNewPhotos() {
+  const res = await fetch("/api/photos/add", { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert("Could not add the new photos: " + (err.detail || res.status));
+    return;
+  }
+  startScoreProgress("rescore");
+  $("#score-bar-fill").style.width = "0%";
+  $("#score-progress-text").textContent = "starting…";
+  $("#score-current").textContent = "";
+  pollScoreStatus("add");
+}
+
+// True when they were taken out (or there was nothing to take).
+async function dropMissing() {
+  const n = state.missing.size;
+  if (!n) return true;
+  const marked = changes.missingMarked;
+  if (!confirm(`Take ${plural(n, "photo")} whose original${n === 1 ? " is" : "s are"} gone out of the project?`
+      + (marked ? `\n\n${marked} of them ${marked === 1 ? "has" : "have"} marks or edits, which go with ${marked === 1 ? "it" : "them"}.` : "")
+      + "\n\nNothing on disk is touched.")) return false;
+  const out = await postJSON("/api/photos/drop", { rel_paths: [...state.missing] });
+  await reloadAfterFolders();
+  await checkChanges({ force: true });
+  if (out.kept) alert(`${plural(out.kept, "photo")} came back on disk meanwhile and ${out.kept === 1 ? "was" : "were"} kept.`);
+  return true;
+}
+
+function bindChanges() {
+  window.addEventListener("focus", () => checkChanges());
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") checkChanges();
+  });
 }
 
 function renderSidebar() {
@@ -1726,6 +1840,15 @@ function selectScene(scene) {
   lastSelIdx = null;
   recomputeFilter();
   renderSidebar();
+  $("#grid").scrollTop = 0;
+  showCursor();
+}
+
+function setFilter(f) {
+  $$(".filter").forEach((x) => x.classList.toggle("active", x.dataset.filter === f));
+  state.filter = f;
+  state.cursorIdx = 0;
+  recomputeFilter();
   $("#grid").scrollTop = 0;
   showCursor();
 }
@@ -1793,11 +1916,13 @@ function renderHeader() {
     : "—";
   // How many each filter would show in this scene, so an empty one is not a
   // click away from finding out.
-  const n = { all: sceneTotal, undecided: sceneUndecided, pick: 0, review: 0, reject: 0, edited: 0 };
+  const n = { all: sceneTotal, undecided: sceneUndecided, pick: 0, review: 0, reject: 0, edited: 0, missing: 0 };
   for (const p of scenePhotos) {
     if (p.decision) n[p.decision] += 1;
     if (p.edit) n.edited += 1;
+    if (state.missing.has(p.rel_path)) n.missing += 1;
   }
+  $('#filter-row [data-filter="missing"]').classList.toggle("hidden", !state.missing.size);
   $$("#filter-row .filter").forEach((b) => {
     b.querySelector(".n").textContent = state.selectedScene ? n[b.dataset.filter] : "";
   });
@@ -1839,7 +1964,8 @@ function tileSig(p, i) {
     return person && person.excluded ? "x" : (f.person_id || "-");
   }).join(",");
   return [i, p.rel_path, p.decision, p.rating, p.label, p.edited_at, p.auto_suggestion, p.scores?.badness,
-    state.selection.has(p.rel_path), state.showBoxes, state.showPeak, state.peakLevel, faces].join("|");
+    state.selection.has(p.rel_path), state.missing.has(p.rel_path), state.showBoxes, state.showPeak,
+    state.peakLevel, faces].join("|");
 }
 
 // The rows on screen and one either side are built, the rest of the list is
@@ -1910,7 +2036,8 @@ function makeTile(p, absIdx) {
   tile.className = "tile " + orientation
     + (p.decision ? " decision-" + p.decision : "")
     + (absIdx === state.cursorIdx ? " focused" : "")
-    + (state.selection.has(p.rel_path) ? " selected" : "");
+    + (state.selection.has(p.rel_path) ? " selected" : "")
+    + (state.missing.has(p.rel_path) ? " missing" : "");
   const auto = p.auto_suggestion || "";
   const badness = p.scores?.badness != null ? p.scores.badness.toFixed(2) : "—";
   const fname = basename(p.rel_path);
@@ -1950,6 +2077,7 @@ function makeTile(p, absIdx) {
           ${p.type === "hdr" ? `<span class="hdr-tile-badge">HDR · ${(p.members || []).length}</span>` : ""}
           ${facesHtml}
         </span>
+        ${state.missing.has(p.rel_path) ? `<span class="missing-badge" title="Gone from disk: shown from its thumbnail">Original missing</span>` : ""}
         <input type="checkbox" class="tile-select"${state.selection.has(p.rel_path) ? " checked" : ""} title="Select (X)" />
         <button class="tile-edit-btn${p.edit ? " edited" : ""}" data-action="edit" title="Edit (E)" aria-label="Edit">${icon("pencil")}</button>
       </div>
@@ -3028,6 +3156,11 @@ function resetCurve() {
 function openEditModal(absIdx) {
   const photo = state.filteredPhotos[absIdx];
   if (!photo) return;
+  if (state.missing.has(photo.rel_path)) {
+    alert(`The original of ${basename(photo.rel_path)} is gone from disk, so it cannot be edited. `
+      + "Put it back, or take it out of the project from the bar above the photos.");
+    return;
+  }
   renderEditControls();
   editSession.idx = absIdx;
   editSession.relPath = photo.rel_path;
@@ -8575,7 +8708,9 @@ function showModalImage(photo, rel) {
   };
   loader.onerror = () => {
     if (seq !== modalLoadSeq) return;
-    note.textContent = "The full-size photo could not be loaded; this is its thumbnail.";
+    note.textContent = state.missing.has(photo.rel_path)
+      ? "The original is gone from disk; this is its thumbnail."
+      : "The full-size photo could not be loaded; this is its thumbnail.";
     note.classList.add("error");
   };
   loader.src = full;
@@ -9601,16 +9736,8 @@ function bindUi() {
   bindMenu("#more-btn", "#more-menu");
   bindGridHover();
   bindKeysSheet();
-  $$(".filter").forEach((b) => {
-    b.addEventListener("click", () => {
-      $$(".filter").forEach((x) => x.classList.toggle("active", x === b));
-      state.filter = b.dataset.filter;
-      state.cursorIdx = 0;
-      recomputeFilter();
-      $("#grid").scrollTop = 0;
-      showCursor();
-    });
-  });
+  bindChanges();
+  $$(".filter").forEach((b) => b.addEventListener("click", () => setFilter(b.dataset.filter)));
   $$("#sort-toggle .cols").forEach((b) => {
     b.addEventListener("click", () => {
       if (state.sort === b.dataset.sort) return;
@@ -10242,7 +10369,9 @@ function bindScoreProgress() {
 }
 
 
-function pollScoreStatus() {
+// `mode` "add": the new photos being added (/api/photos/add), which shares the
+// re-score's progress and Stop.
+function pollScoreStatus(mode = "rescore") {
   if (scorePollTimer) clearInterval(scorePollTimer);
   let finished = false;
   const tick = async () => {
@@ -10253,7 +10382,9 @@ function pollScoreStatus() {
     const grouping = s.phase === "grouping";
     showScoreProgress({
       step: grouping ? "clustering" : "scoring",
-      title: grouping ? "Grouping faces and subjects…" : `Re-scoring ${plural(state.photos.length, "photo")}…`,
+      title: grouping ? "Grouping faces and subjects…"
+        : mode === "add" ? `Adding ${s.total ? plural(s.total, "new photo") : "new photos"}…`
+        : `Re-scoring ${plural(state.photos.length, "photo")}…`,
       idx: s.idx, total: s.total, current: grouping ? null : s.current,
       message: grouping ? s.current : null,
     });
@@ -10280,7 +10411,8 @@ function pollScoreStatus() {
       await loadDb();
       const totalFaces = state.photos.reduce((s, p) => s + (p.faces?.length || 0), 0);
       const groups = state.subjects.vehicles.length;
-      $("#score-title").textContent = `Scored ${state.photos.length} photos`;
+      $("#score-title").textContent = mode === "add"
+        ? `Added ${plural(s.added || 0, "photo")}` : `Scored ${state.photos.length} photos`;
       $("#score-bar-fill").style.width = "100%";
       // Scoring throws the groups away and rebuilds them in the same run, so the
       // summary reports both rather than telling anyone to press another button.
@@ -10300,6 +10432,7 @@ function pollScoreStatus() {
         if (prevScene && state.byScene.has(prevScene)) selectScene(prevScene);
         else if (state.sceneOrder.length) selectScene(state.sceneOrder[0]);
         else renderMain();
+        checkChanges({ force: true });
       };
       $("#score-progress").addEventListener("click", dismiss);
       setTimeout(dismiss, 4000);
@@ -12351,9 +12484,9 @@ function pollOpenStatus() {
       $("#score-progress").classList.add("hidden");
       $("#score-title").textContent = "Scoring photos…";
       await bootMain();
-      // The folder changed since the last score: say so, rather than the open
-      // re-scoring on its own as it used to.
-      if (s.files_changed) await openFoldersModal(true);
+      // The folder changed since the last score: say so, in the bar over the
+      // photos, rather than the open re-scoring on its own as it used to.
+      await checkChanges({ force: true });
     }
   };
   tick();

@@ -278,3 +278,173 @@ def run_vehicle_clustering(
     data["vehicles_clustered_at"] = datetime.now().isoformat()
     db.save(db_path, data)
     return len(vehicles)
+
+
+# ----- adding photos without regrouping ---------------------------------------
+# Photos added to an open project join the groups already there, so the names,
+# order and exclusions someone gave them stay. A full grouping (the People
+# panel's group) is still there to start over.
+
+def _unit(rows: np.ndarray) -> np.ndarray:
+    return rows / (np.linalg.norm(rows, axis=-1, keepdims=True) + 1e-9)
+
+
+def _next_group(groups: list[dict[str, Any]]) -> tuple[int, int]:
+    """The number for the next group's id, and its priority, after those there."""
+    ids = [int(g["id"][1:]) for g in groups if g["id"][1:].isdigit()]
+    return (max(ids) + 1 if ids else 0), max((g.get("priority", 0) for g in groups), default=0) + 1
+
+
+def add_faces(data: dict[str, Any], embeddings: np.ndarray, new: list[tuple[int, int]],
+              eps: float = DEFAULT_EPS, min_samples: int = DEFAULT_MIN_SAMPLES) -> int:
+    """Put new faces (photo_idx, face_idx) into people. A face within `eps` of
+    a person's centroid joins the nearest; the rest are grouped with the faces
+    no person took before, as DBSCAN would, and a group holding a new face
+    becomes a new person after the others. Returns how many faces found a
+    person. A project never grouped is left for its first grouping."""
+    if data.get("clustered_at") is None or not new:
+        return 0
+    photos, people = data["photos"], data.setdefault("people", [])
+    is_new = set(new)
+    members: dict[str, list[int]] = {}
+    loose: list[tuple[int, int]] = []
+    for pi, p in enumerate(photos):
+        for fi, f in enumerate(p.get("faces") or []):
+            if f.get("embedding_idx") is None or (pi, fi) in is_new:
+                continue
+            if f.get("person_id"):
+                members.setdefault(f["person_id"], []).append(f["embedding_idx"])
+            else:
+                loose.append((pi, fi))
+    ids = [g["id"] for g in people if g["id"] in members]
+    centroids = _unit(np.stack([_unit(embeddings[members[i]]).mean(axis=0) for i in ids])) if ids else None
+
+    joined = 0
+    left: list[tuple[int, int]] = []
+    for pi, fi in new:
+        face = photos[pi]["faces"][fi]
+        if centroids is not None:
+            d = 1.0 - centroids @ _unit(embeddings[face["embedding_idx"]])
+            k = int(np.argmin(d))
+            if d[k] <= eps:
+                face["person_id"] = ids[k]
+                joined += 1
+                continue
+        face["person_id"] = None
+        left.append((pi, fi))
+
+    pool = left + loose
+    if len(pool) >= min_samples:
+        rows = _unit(embeddings[[photos[pi]["faces"][fi]["embedding_idx"] for pi, fi in pool]])
+        labels = DBSCAN(eps=eps, min_samples=min_samples, metric="cosine").fit_predict(rows)
+        fresh = set(left)
+        groups: dict[int, list[tuple[int, int]]] = {}
+        for ref, label in zip(pool, labels):
+            if label >= 0:
+                groups.setdefault(int(label), []).append(ref)
+        num, priority = _next_group(people)
+        for refs in sorted(groups.values(), key=len, reverse=True):
+            if not fresh.intersection(refs):
+                continue        # only ever loose before: not this add's to change
+            pid = f"p{num}"
+            for pi, fi in refs:
+                photos[pi]["faces"][fi]["person_id"] = pid
+            people.append({"id": pid, "label": f"Person {priority}", "priority": priority,
+                           "excluded": False, "count": 0,
+                           "ref": _representative_face(photos, refs, embeddings)})
+            joined += len(fresh.intersection(refs))
+            num, priority = num + 1, priority + 1
+    _recount(people, photos, "faces", "person_id")
+    return joined
+
+
+def _recount(groups: list[dict[str, Any]], photos: list[dict[str, Any]], items: str, field: str) -> None:
+    counts: dict[str, int] = {}
+    for p in photos:
+        for it in p.get(items) or []:
+            if it.get(field):
+                counts[it[field]] = counts.get(it[field], 0) + 1
+    for g in groups:
+        g["count"] = counts.get(g["id"], 0)
+
+
+# A group's look is averaged from at most this many of its members, each read
+# from its photo: enough to place a new subject, without re-reading a shoot.
+SUBJECT_SAMPLE = 8
+
+
+def add_subjects(data: dict[str, Any], resolve_path: Callable[[dict[str, Any]], Path],
+                 new: list[tuple[int, int]], settings: dict[str, Any]) -> int:
+    """Put new subjects (photo_idx, object_idx) into subject groups: the
+    nearest within `subject_eps` of a group's look, else grouped among the
+    new ones, as `run_vehicle_clustering` would, into new groups after the
+    others. Returns how many found a group."""
+    if not settings["group_subjects"] or data.get("vehicles_clustered_at") is None or not new:
+        return 0
+    photos, groups = data["photos"], data.setdefault("vehicles", [])
+    eps = settings["subject_eps"]
+
+    def candidate(pi: int, oi: int) -> bool:
+        p, o = photos[pi], photos[pi]["objects"][oi]
+        x, y, bw, bh = o["bbox_xywh"]
+        return (bw * bh / float(max(1, p["width"] * p["height"])) >= settings["subject_min_area"]
+                and o["score"] >= settings["subject_min_score"])
+
+    def describe(pi: int, oi: int) -> np.ndarray | None:
+        return appearance.describe_box(str(resolve_path(photos[pi])), photos[pi]["objects"][oi]["bbox_xywh"])
+
+    is_new = set(new)
+    by_group: dict[str, list[tuple[int, int]]] = {}
+    for pi, p in enumerate(photos):
+        for oi, o in enumerate(p.get("objects") or []):
+            if o.get("vehicle_id") and (pi, oi) not in is_new:
+                by_group.setdefault(o["vehicle_id"], []).append((pi, oi))
+    ids, looks = [], []
+    for g in groups:
+        refs = by_group.get(g["id"], [])
+        step = max(1, len(refs) // SUBJECT_SAMPLE)
+        descs = [d for d in (describe(*r) for r in refs[::step][:SUBJECT_SAMPLE]) if d is not None]
+        if descs:
+            ids.append(g["id"])
+            looks.append(_unit(np.stack(descs)).mean(axis=0))
+    centroids = _unit(np.stack(looks)) if looks else None
+
+    joined = 0
+    left: list[tuple[tuple[int, int], np.ndarray]] = []
+    for pi, oi in new:
+        photos[pi]["objects"][oi]["vehicle_id"] = None
+        if not candidate(pi, oi):
+            continue
+        desc = describe(pi, oi)
+        if desc is None:
+            continue
+        if centroids is not None:
+            d = 1.0 - centroids @ _unit(desc)
+            k = int(np.argmin(d))
+            if d[k] <= eps:
+                photos[pi]["objects"][oi]["vehicle_id"] = ids[k]
+                joined += 1
+                continue
+        left.append(((pi, oi), desc))
+
+    if len(left) >= settings["subject_min_samples"]:
+        labels = DBSCAN(eps=eps, min_samples=settings["subject_min_samples"], metric="cosine").fit_predict(
+            np.stack([d for _, d in left]))
+        clusters: dict[int, list[int]] = {}
+        for row, label in enumerate(labels):
+            if label >= 0:
+                clusters.setdefault(int(label), []).append(row)
+        num, priority = _next_group(groups)
+        for rows in sorted(clusters.values(), key=len, reverse=True):
+            vid = f"v{num}"
+            for r in rows:
+                pi, oi = left[r][0]
+                photos[pi]["objects"][oi]["vehicle_id"] = vid
+            pi, oi = left[rows[0]][0]
+            groups.append({"id": vid, "label": f"Subject {priority}", "priority": priority,
+                           "excluded": False, "count": 0, "cls": photos[pi]["objects"][oi]["cls"],
+                           "ref": {"rel_path": photos[pi]["rel_path"], "obj_idx": oi}})
+            joined += len(rows)
+            num, priority = num + 1, priority + 1
+    _recount(groups, photos, "objects", "vehicle_id")
+    return joined
