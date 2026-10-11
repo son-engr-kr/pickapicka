@@ -95,6 +95,16 @@ whole job: decide, filter, move on.
     missing*, shown from its thumbnail; the **Missing** filter lists them. It
     cannot be edited (the app says so instead of failing), and **Remove from
     project** takes those photos out, their marks with them, after asking.
+  - **Photos moved within the folder** (a subfolder renamed, files moved
+    between subfolders) are followed on their own, with their marks, edits,
+    scores, faces and cached thumbnails, and the bar says how many. A gone
+    photo and a new file are taken for one photo moved when they have the same
+    file name and the same capture time (a JPEG with none: the same size), and
+    no other new file could be it; otherwise they stay gone and new, so a
+    different card's `IMG_0001` is never given another photo's marks. HDR
+    brackets follow their frames. Scenes are made again, as a folder may be a
+    scene. Not while a photo is open in the viewer or the editor; the next
+    check does it.
   - **Folders…** opens the Folders dialog, to leave a new folder out before
     adding its photos. Nothing is re-scored on its own.
 

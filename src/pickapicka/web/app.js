@@ -1699,16 +1699,31 @@ async function rescoreAsIs() {
 // Adding scores only the new ones; the gone ones are marked on their tiles and
 // can be taken out.
 const CHANGES_EVERY_MS = 10000;
-const changes = { added: 0, withExisting: 0, missingMarked: 0, at: 0, dismissed: "" };
+// followed: photos found moved within the folder and followed, since the bar
+// was last dismissed.
+const changes = { added: 0, withExisting: 0, missingMarked: 0, followed: 0, at: 0, dismissed: "" };
+
+async function fetchOk(url) {
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error(`${url} failed: ${res.status}`);
+  return res;
+}
 
 async function checkChanges({ force = false } = {}) {
   if (document.body.classList.contains("landing-mode") || !state.photos.length) return;
   if (scorePollTimer) return;       // a re-score or an add is under way
   if (!force && Date.now() - changes.at < CHANGES_EVERY_MS) return;
   changes.at = Date.now();
-  const res = await fetch("/api/changes", { cache: "no-store" });
-  if (!res.ok) throw new Error(`changes failed: ${res.status}`);
-  const d = await res.json();
+  let d = await (await fetchOk("/api/changes")).json();
+  // Photos moved within the folder are followed at once: nothing of theirs is
+  // lost, so there is nothing to ask. Not under an open photo, whose path it
+  // would change; the next check does it.
+  if (d.moved && !state.modal.open && !editSession.relPath) {
+    const out = await postJSON("/api/photos/follow", {});
+    changes.followed += out.followed;
+    await reloadAfterFolders();
+    d = await (await fetchOk("/api/changes")).json();
+  }
   const before = [...state.missing].sort().join("\n");
   state.missing = new Set(d.missing);
   Object.assign(changes, { added: d.added, withExisting: d.with_existing, missingMarked: d.missing_marked });
@@ -1723,22 +1738,29 @@ async function checkChanges({ force = false } = {}) {
 function renderChangesBar() {
   const bar = $("#changes-bar");
   const n = state.missing.size;
+  // What needs doing shows until dismissed, and again once it is different;
+  // the note of photos followed shows until dismissed.
   const sig = `${changes.added}/${changes.withExisting}/${n}`;
-  const show = Boolean(changes.added || changes.withExisting || n) && changes.dismissed !== sig;
+  const fresh = Boolean(changes.added || changes.withExisting || n) && changes.dismissed !== sig;
+  const show = fresh || changes.followed > 0;
   const was = !bar.classList.contains("hidden");
   bar.classList.toggle("hidden", !show);
   if (was !== show) window.dispatchEvent(new Event("resize"));   // the grid's height changed
   if (!show) return;
   const parts = [];
-  if (changes.added) {
+  if (changes.followed) {
+    parts.push(`<span class="chg">${icon("check")}${plural(changes.followed, "photo")} moved within the folder; `
+      + `followed, with ${changes.followed === 1 ? "its" : "their"} marks and edits.</span>`);
+  }
+  if (fresh && changes.added) {
     parts.push(`<span class="chg">${icon("plus")}${plural(changes.added, "new photo")} in the folder.
       <button type="button" class="primary" data-act="add">Add ${changes.added === 1 ? "it" : "them"}</button></span>`);
   }
-  if (changes.withExisting) {
+  if (fresh && changes.withExisting) {
     parts.push(`<span class="chg">${plural(changes.withExisting, "RAW")} arrived for photos already here; `
       + `only a re-score brings ${changes.withExisting === 1 ? "it" : "them"} in.</span>`);
   }
-  if (n) {
+  if (fresh && n) {
     parts.push(`<span class="chg warn">${icon("warning")}The original${n === 1 ? " of 1 photo is" : `s of ${n} photos are`} gone from disk.
       <button type="button" data-act="show">Show</button>
       <button type="button" data-act="drop">Remove from project</button></span>`);
@@ -1750,7 +1772,7 @@ function renderChangesBar() {
   on("add", addNewPhotos);
   on("drop", dropMissing);
   on("folders", () => openFoldersModal(false));
-  on("dismiss", () => { changes.dismissed = sig; renderChangesBar(); });
+  on("dismiss", () => { changes.dismissed = sig; changes.followed = 0; renderChangesBar(); });
   on("show", () => {
     // To a scene with some, if this one has none.
     const has = (sc) => (state.byScene.get(sc) || []).some((p) => state.missing.has(p.rel_path));

@@ -48,6 +48,7 @@ from .scorer import (
     excluded_scan_dirs,
     find_changes,
     fold_in,
+    follow_moves,
     ignored_scan_dirs,
     is_folder_name,
     photo_folder,
@@ -3938,7 +3939,27 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         marked = {p["rel_path"] for p in ctx.data["photos"]
                   if any(p.get(k) for k in ("decision", "rating", "label", "edit"))}
         return {"added": len(ch["shots"]), "with_existing": ch["with_existing"],
-                "missing": ch["missing"], "missing_marked": len(marked.intersection(ch["missing"]))}
+                "missing": ch["missing"], "missing_marked": len(marked.intersection(ch["missing"])),
+                "moved": len(ch["moved"]) + len(ch["member_moves"])}
+
+    @app.post("/api/photos/follow")
+    def follow_moved_photos() -> dict[str, Any]:
+        """Point photos moved within the photo folder (a subfolder renamed,
+        files moved between subfolders) at where they are now, with all that
+        is theirs. The client does this as soon as it finds them, so changing
+        the folder's structure loses nothing."""
+        _require_loaded()
+        if ctx.scoring_state["running"] or ctx.cluster_state["running"]:
+            raise HTTPException(status_code=409, detail="another task is running")
+        ch = find_changes(ctx.data, ctx.db_path, ctx.project_dir)
+        with ctx.save_lock:
+            followed = follow_moves(ctx.data, ch["moved"], ch["member_moves"],
+                                    ctx.db_path, ctx.project_dir)
+            db.save(ctx.db_path, ctx.data)
+            # Reloaded rather than reindexed: the decode caches are keyed by
+            # the paths that just changed.
+            ctx.reload_data()
+        return {"followed": followed}
 
     @app.post("/api/photos/add")
     def add_new_photos() -> dict[str, Any]:

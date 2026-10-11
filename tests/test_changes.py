@@ -49,7 +49,12 @@ def _project(tmp_path: Path, n: int = 3, grouping=None) -> tuple[Path, Path]:
 def test_changes_find_new_shots_missing_photos_and_raws_for_jpegs(tmp_path) -> None:
     photos, proj = _project(tmp_path)
     data = db.load(proj / "picks.json")
-    assert find_changes(data, proj / "picks.json", proj) == {"shots": [], "with_existing": 0, "missing": []}
+    nothing = {"shots": [], "with_existing": 0, "missing": [], "moved": [], "member_moves": {}}
+    assert find_changes(data, proj / "picks.json", proj) == nothing
+    # The photo folder unplugged: nothing is reported gone.
+    photos.rename(tmp_path / "unplugged")
+    assert find_changes(data, proj / "picks.json", proj) == nothing
+    (tmp_path / "unplugged").rename(photos)
 
     _jpeg(photos / "b0.jpg", 10)                       # new
     (photos / "a1.jpg").unlink()                       # gone
@@ -209,3 +214,150 @@ def test_a_missing_original_is_reported_shown_and_refused_for_editing(tmp_path) 
     out = _route(app, "/api/photos/drop", "POST")(DropPhotosPayload(rel_paths=["a1.jpg", "a0.jpg"]))
     assert out == {"dropped": 1, "kept": 1}         # a0's original is there: kept
     assert sorted(p["rel_path"] for p in db.load(proj / "picks.json")["photos"]) == ["a0.jpg", "a2.jpg"]
+
+
+# ----- photos moved within the folder ----------------------------------------
+
+def _foldered(tmp_path: Path) -> tuple[Path, Path]:
+    """day1/ with three photos a minute apart, day2/ with one, scored by folder."""
+    photos, proj = tmp_path / "shoot", tmp_path / "proj"
+    for i, (folder, name, stamp) in enumerate([("day1", "a.jpg", "10:00:00"), ("day1", "b.jpg", "10:01:00"),
+                                                ("day1", "c.jpg", "10:02:00"), ("day2", "d.jpg", "15:00:00")]):
+        _jpeg(photos / folder / name, i, f"2026:10:03 {stamp}")
+    (proj / ".cache" / "thumbs" / "day1").mkdir(parents=True)
+    run_scoring(photos, "", proj / "picks.json", with_faces=False, progress_cb=lambda *a: None,
+                project_dir=proj, subject_classes=[], detect_faces=False)
+    return photos, proj
+
+
+def test_a_renamed_subfolder_is_followed_with_everything_kept(tmp_path) -> None:
+    from pickapicka.scorer import follow_moves
+    photos, proj = _foldered(tmp_path)
+    db_path = proj / "picks.json"
+    data = db.load(db_path)
+    a = next(p for p in data["photos"] if p["rel_path"] == str(Path("day1/a.jpg")))
+    a.update(decision="pick", rating=4, edit={"exposure": 0.5}, edited_at="2026-10-04")
+    blur = a["scores"]["blur"]
+    data["people"] = [{"id": "p0", "label": "Mum", "ref": {"rel_path": a["rel_path"], "face_idx": 0}}]
+    (proj / ".cache" / "thumbs" / "day1" / "a.jpg").write_bytes(b"thumb")
+    (proj / ".cache" / "thumbs" / "day1" / "a.jpg.0123abcd.v2.jpg").write_bytes(b"edited thumb")
+    (proj / ".cache" / "thumbs" / "day1" / "a.jpg2").write_bytes(b"not a's")
+    db.save(db_path, data)
+
+    (photos / "day1").rename(photos / "Day One")
+    ch = find_changes(data, db_path, proj)
+    assert (len(ch["moved"]), ch["missing"], ch["shots"]) == (3, [], [])
+    assert follow_moves(data, ch["moved"], ch["member_moves"], db_path, proj) == 3
+
+    new_a = next(p for p in data["photos"] if p["rel_path"] == str(Path("Day One/a.jpg")))
+    assert (new_a["decision"], new_a["rating"], new_a["edit"], new_a["scores"]["blur"]) == \
+        ("pick", 4, {"exposure": 0.5}, blur)
+    assert new_a["scene"] == "Day One"                       # the folder is the scene
+    assert data["people"][0]["ref"]["rel_path"] == new_a["rel_path"]
+    thumbs = proj / ".cache" / "thumbs"
+    assert (thumbs / "Day One" / "a.jpg").read_bytes() == b"thumb"
+    assert (thumbs / "Day One" / "a.jpg.0123abcd.v2.jpg").is_file()
+    assert (thumbs / "day1" / "a.jpg2").is_file()            # another photo's, left alone
+    assert find_changes(data, db_path, proj) == {"shots": [], "with_existing": 0, "missing": [],
+                                                 "moved": [], "member_moves": {}}
+
+
+def test_a_photo_moved_to_another_subfolder_is_followed(tmp_path) -> None:
+    from pickapicka.scorer import follow_moves
+    photos, proj = _foldered(tmp_path)
+    data = db.load(proj / "picks.json")
+    (photos / "day1" / "c.jpg").rename(photos / "day2" / "c.jpg")
+    ch = find_changes(data, proj / "picks.json", proj)
+    assert ch["moved"] == [{"rel": str(Path("day1/c.jpg")), "new_rel": str(Path("day2/c.jpg"))}]
+    follow_moves(data, ch["moved"], ch["member_moves"], proj / "picks.json", proj)
+    scenes = {p["rel_path"]: p["scene"] for p in data["photos"]}
+    assert scenes[str(Path("day2/c.jpg"))] == "day2"
+
+
+def test_another_card_s_photo_of_the_same_name_is_not_taken_for_it(tmp_path) -> None:
+    photos, proj = _foldered(tmp_path)
+    data = db.load(proj / "picks.json")
+    (photos / "day1" / "a.jpg").unlink()
+    _jpeg(photos / "day2" / "a.jpg", 99, "2026:10:05 09:00:00")   # same name, another moment
+    ch = find_changes(data, proj / "picks.json", proj)
+    assert ch["moved"] == [] and ch["missing"] == [str(Path("day1/a.jpg"))] and len(ch["shots"]) == 1
+
+
+def test_two_candidates_are_left_alone(tmp_path) -> None:
+    import shutil
+    photos, proj = _foldered(tmp_path)
+    data = db.load(proj / "picks.json")
+    (photos / "x").mkdir()
+    shutil.copy2(photos / "day1" / "a.jpg", photos / "x" / "a.jpg")
+    shutil.move(photos / "day1" / "a.jpg", photos / "day2" / "a.jpg")
+    ch = find_changes(data, proj / "picks.json", proj)
+    assert ch["moved"] == [] and ch["missing"] == [str(Path("day1/a.jpg"))]
+
+
+def test_a_moved_raw_keeps_its_cached_preview(tmp_path) -> None:
+    from pickapicka import raw
+    from pickapicka.scorer import follow_moves, raw_cache_dir
+    photos, proj = tmp_path / "shoot", tmp_path / "proj"
+    (photos / "day1").mkdir(parents=True)
+    (photos / "day2").mkdir()
+    (photos / "day1" / "r.arw").write_bytes(b"raw")
+    data = db.init_db(photos, "")
+    data["photos"] = [{"rel_path": str(Path("day1/r.arw")), "src": str(Path("day1/r.arw")), "type": "raw",
+                       "scene": "day1", "decision": "pick", "faces": [], "objects": [],
+                       "scores": {"blur": 1.0, "brightness": 0.5, "eye_open": None}}]
+    cache = raw_cache_dir(proj / "picks.json", proj)
+    cache.mkdir(parents=True)
+    raw.raw_cache_path(cache, str(Path("day1/r.arw"))).write_bytes(b"preview")
+    (photos / "day1" / "r.arw").rename(photos / "day2" / "r.arw")
+    ch = find_changes(data, proj / "picks.json", proj)
+    assert ch["moved"] == [{"rel": str(Path("day1/r.arw")), "new_rel": str(Path("day2/r.arw")),
+                            "src": str(Path("day2/r.arw"))}]
+    follow_moves(data, ch["moved"], ch["member_moves"], proj / "picks.json", proj)
+    assert data["photos"][0]["src"] == str(Path("day2/r.arw")) and data["photos"][0]["decision"] == "pick"
+    assert raw.raw_cache_path(cache, str(Path("day2/r.arw"))).read_bytes() == b"preview"
+
+
+def test_a_bracket_whose_frames_moved_gets_their_names(tmp_path) -> None:
+    from pickapicka import hdr
+    from pickapicka.scorer import follow_moves, hdr_dir
+    photos, proj = tmp_path / "shoot", tmp_path / "proj"
+    old = [str(Path("day1") / f"f{i}.jpg") for i in range(3)]
+    for i, m in enumerate(old):
+        _jpeg(photos / m, i)
+    data = db.init_db(photos, "")
+    merged = hdr.merged_rel_path(old)
+    data["brackets"] = [{"id": hdr.bracket_id(old), "members": old, "merged": merged,
+                         "scene": "day1", "base": old[1]}]
+    data["photos"] = [{"rel_path": merged, "type": "hdr", "members": old, "base": old[1], "scene": "day1",
+                       "decision": "pick", "faces": [], "objects": [],
+                       "scores": {"blur": 1.0, "brightness": 0.5, "eye_open": None}}]
+    hdir = hdr_dir(proj / "picks.json", proj)
+    hdir.mkdir(parents=True)
+    (hdir / hdr.merged_filename(old)).write_bytes(b"merged")
+    (photos / "day1").rename(photos / "Day 1")
+    ch = find_changes(data, proj / "picks.json", proj)
+    new = [str(Path("Day 1") / f"f{i}.jpg") for i in range(3)]
+    assert ch["member_moves"] == dict(zip(old, new)) and ch["shots"] == []
+    follow_moves(data, ch["moved"], ch["member_moves"], proj / "picks.json", proj)
+    b, p = data["brackets"][0], data["photos"][0]
+    assert b["members"] == new and b["base"] == new[1] and b["id"] == hdr.bracket_id(new)
+    assert p["rel_path"] == b["merged"] == hdr.merged_rel_path(new) and p["decision"] == "pick"
+    assert (hdir / hdr.merged_filename(new)).read_bytes() == b"merged"
+
+
+def test_the_open_project_follows_a_renamed_folder(tmp_path) -> None:
+    photos, proj = _foldered(tmp_path)
+    app = create_app()
+    _route(app, "/api/project/open", "POST")(OpenProjectPayload(project_dir=str(proj)))
+    _wait(_route(app, "/api/state", "GET")()["opening"], "the open")
+    _route(app, "/api/db", "GET")()["photos"][0]["decision"] = "reject"
+    first = _route(app, "/api/db", "GET")()["photos"][0]["rel_path"]
+
+    (photos / "day1").rename(photos / "Morning")
+    ch = _route(app, "/api/changes", "GET")()
+    assert (ch["moved"], ch["missing"], ch["added"]) == (3, [], 0)
+    assert _route(app, "/api/photos/follow", "POST")() == {"followed": 3}
+    data = db.load(proj / "picks.json")
+    moved = {p["rel_path"]: p for p in data["photos"]}
+    assert moved[str(Path("Morning") / Path(first).name)]["decision"] == "reject"
+    assert _route(app, "/api/changes", "GET")()["moved"] == 0

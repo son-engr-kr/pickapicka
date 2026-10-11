@@ -961,7 +961,9 @@ def find_changes(data: dict[str, Any], db_path: Path, project_dir: Path | None) 
     same files, the same way, as scoring does."""
     photo_dir, jpeg_root, raw_root = _roots(data)
     if not jpeg_root.is_dir():
-        return {"shots": [], "with_existing": 0, "missing": []}
+        # The drive is not plugged in (or the folder moved, which re-linking is
+        # for): nothing is reported gone, or the bar would offer to remove all.
+        return {"shots": [], "with_existing": 0, "missing": [], "moved": [], "member_moves": {}}
     ignored = data.get("ignored_dirs") or []
     excludes = excluded_scan_dirs(db_path, project_dir) | ignored_scan_dirs(jpeg_root, raw_root, ignored)
     collected = _collect_jpegs(jpeg_root, excludes)
@@ -987,9 +989,155 @@ def find_changes(data: dict[str, Any], db_path: Path, project_dir: Path | None) 
             with_existing += 1  # a RAW for a JPEG photo: it would take the photo's place
             continue
         shots.append((scene, raw_f, jpeg_f))
-    missing = [p["rel_path"] for p in data["photos"]
-               if not source_file(data, db_path, project_dir, p).is_file()]
-    return {"shots": shots, "with_existing": with_existing, "missing": missing}
+    gone = [p for p in data["photos"] if not source_file(data, db_path, project_dir, p).is_file()]
+    moved, member_moves, claimed = _find_moves(data, gone, shots, photo_dir, jpeg_root, raw_root)
+    followed = {m["rel"] for m in moved}
+    return {"shots": [s for i, s in enumerate(shots) if i not in claimed],
+            "with_existing": with_existing,
+            "missing": [p["rel_path"] for p in gone if p["rel_path"] not in followed],
+            "moved": moved, "member_moves": member_moves}
+
+
+def _same_shot(photo: dict[str, Any], f: Path, kind: str) -> bool:
+    """Whether file `f` is `photo` moved: the same capture time as it was
+    scored with, or for one with none, a JPEG of the same size. A file of the
+    same name from another card is then not taken for it."""
+    stored = photo.get("captured_at")
+    if stored:
+        t = raw.read_capture_time(f) if kind == "raw" else scenes.read_capture_time(f)
+        return t is not None and t.isoformat() == stored
+    if kind == "jpeg" and photo.get("width") and photo.get("height"):
+        return _image_dims(str(f)) == (photo["width"], photo["height"])
+    return True
+
+
+def _find_moves(data: dict[str, Any], gone: list[dict[str, Any]], shots: list[Shot],
+                photo_dir: Path, jpeg_root: Path, raw_root: Path,
+                ) -> tuple[list[dict[str, str]], dict[str, str], set[int]]:
+    """Photos whose originals are gone that turn up elsewhere in the folder:
+    a subfolder renamed, or files moved between subfolders. A gone photo and a
+    new shot of the same file name are one photo moved when `_same_shot` says
+    so and no other new shot could be it; two candidates and it is left as it
+    is, gone and new. Frames of an HDR bracket are matched by name alone, as
+    nothing else about them is kept. Returns the photos moved (rel, new rel,
+    new src), the bracket frames moved (old -> new), and which shots were
+    claimed."""
+    by_name: dict[tuple[str, str], list[int]] = {}
+    for i, (_, r, j) in enumerate(shots):
+        f = r if r is not None else j
+        by_name.setdefault(("raw" if r is not None else "jpeg", f.name.lower()), []).append(i)
+    claimed: set[int] = set()
+    moved: list[dict[str, str]] = []
+    for p in gone:
+        if p.get("type") == "hdr":
+            continue    # its merged JPEG is in the project; its frames are below
+        kind = "raw" if p.get("type") == "raw" else "jpeg"
+        name = Path(p.get("src", p["rel_path"]) if kind == "raw" else p["rel_path"]).name.lower()
+        cands = [i for i in by_name.get((kind, name), []) if i not in claimed]
+        if len(cands) != 1:
+            continue
+        _, r, j = shots[cands[0]]
+        f = r if kind == "raw" else j
+        if not _same_shot(p, f, kind):
+            continue
+        claimed.add(cands[0])
+        if kind == "raw":
+            moved.append({"rel": p["rel_path"], "new_rel": str(r.relative_to(raw_root)),
+                          "src": str(r.relative_to(photo_dir))})
+        else:
+            moved.append({"rel": p["rel_path"], "new_rel": str(j.relative_to(jpeg_root))})
+    member_moves: dict[str, str] = {}
+    for b in data.get("brackets", []):
+        for m in b["members"]:
+            if (jpeg_root / m).is_file():
+                continue
+            cands = [i for i in by_name.get(("jpeg", Path(m).name.lower()), []) if i not in claimed]
+            if len(cands) == 1:
+                claimed.add(cands[0])
+                member_moves[m] = str(shots[cands[0]][2].relative_to(jpeg_root))
+    return moved, member_moves, claimed
+
+
+def _cache_roots(db_path: Path, project_dir: Path | None) -> list[Path]:
+    """The caches whose files are named after a photo's rel_path."""
+    if project_dir is not None:
+        cache = project_dir / ".cache"
+        return [cache / "thumbs", cache / "faces", cache / "peaks"]
+    return [db_path.with_suffix(db_path.suffix + ext) for ext in (".thumbs", ".faces", ".peaks")]
+
+
+def _move_cached(roots: list[Path], raw_cache_root: Path, old: str, new: str) -> None:
+    """Move what is cached of a photo to its new rel_path: its thumbnails, face
+    crops and peaking overlays (`<rel>`, `<rel>.<tag>.jpg`, …), and a RAW's
+    preview, filed under a hash of it. What is not moved is made again."""
+    for root in roots:
+        src_dir = (root / old).parent
+        if not src_dir.is_dir():
+            continue
+        base = Path(old).name
+        for f in list(src_dir.glob(glob_escape(base) + "*")):
+            rest = f.name[len(base):]
+            if rest and rest[0] not in ".-":
+                continue    # another photo whose name starts with this one's
+            dst = root / (new + rest)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            f.replace(dst)
+    cached = raw.raw_cache_path(raw_cache_root, old)
+    if cached.is_file():
+        cached.replace(raw.raw_cache_path(raw_cache_root, new))
+
+
+def glob_escape(name: str) -> str:
+    return "".join(f"[{c}]" if c in "*?[" else c for c in name)
+
+
+def follow_moves(data: dict[str, Any], moved: list[dict[str, str]], member_moves: dict[str, str],
+                 db_path: Path, project_dir: Path | None) -> int:
+    """Point the photos `find_changes` found moved at where they are now,
+    keeping all that is theirs: marks, edits, scores, faces. A bracket whose
+    frames moved gets the id and merged file name of its new frames. What
+    refers to a photo by its path follows it (a group's representative, the
+    caches), and scenes are made again, as a folder may be a scene. Returns
+    how many photos moved."""
+    _, jpeg_root, _ = _roots(data)
+    by_rel = {p["rel_path"]: p for p in data["photos"]}
+    renames: dict[str, str] = {}
+    for mv in moved:
+        p = by_rel[mv["rel"]]
+        renames[mv["rel"]] = mv["new_rel"]
+        p["rel_path"] = mv["new_rel"]
+        if "src" in mv:
+            p["src"] = mv["src"]
+
+    hdr_root = hdr_dir(db_path, project_dir)
+    for b in data.get("brackets", []):
+        if not any(m in member_moves for m in b["members"]):
+            continue
+        members = [member_moves.get(m, m) for m in b["members"]]
+        old_merged, new_name = b["merged"], hdr.merged_filename(members)
+        old_file = hdr_root / old_merged[len(hdr.HDR_PREFIX) + 1:]
+        if old_file.is_file():
+            old_file.replace(hdr_root / new_name)
+        b.update(id=hdr.bracket_id(members), members=members,
+                 merged=f"{hdr.HDR_PREFIX}/{new_name}", base=member_moves.get(b["base"], b["base"]))
+        hp = by_rel.get(old_merged)
+        if hp is not None:
+            hp.update(rel_path=b["merged"], members=members, base=b["base"])
+            renames[old_merged] = b["merged"]
+
+    for group in data.get("people", []) + data.get("vehicles", []):
+        ref = group.get("ref") or {}
+        if ref.get("rel_path") in renames:
+            ref["rel_path"] = renames[ref["rel_path"]]
+    roots = _cache_roots(db_path, project_dir)
+    for old, new in renames.items():
+        _move_cached(roots, raw_cache_dir(db_path, project_dir), old, new)
+
+    grouping = data.get("scene_grouping") or {}
+    scenes.regroup(data["photos"], jpeg_root, grouping.get("mode", "folder"), grouping.get("gap_minutes", 30))
+    _suggest_by_scene(data["photos"])
+    return len(moved) + sum(1 for b in data.get("brackets", [])
+                            if any(m in member_moves.values() for m in b["members"]))
 
 
 def score_new(data: dict[str, Any], db_path: Path, project_dir: Path | None,
