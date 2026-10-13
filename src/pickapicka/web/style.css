@@ -2698,6 +2698,8 @@ body.landing-mode { grid-template-columns: minmax(0, 1fr); }
 .edit-preview .filmstrip { background: none; border-top: none; padding: 6px 0; }
 /* Preferences can turn it off: 74 px is a lot of a portrait frame's height. */
 body.filmstrip-off .filmstrip { display: none; }
+body[data-film-size="m"] .filmstrip { height: 98px; }
+body[data-film-size="l"] .filmstrip { height: 128px; }
 
 /* Tab in the viewer: nothing but the photo, over the top bar as well. The keys
    still decide, rate and move. */
@@ -2732,6 +2734,10 @@ body.inspector-off #inspector { display: none; }
 #insp-decide { display: flex; gap: 1px; background: var(--line); border-radius: var(--r2); overflow: hidden; }
 #insp-decide .btn-decision { flex: 1; padding: 6px 0; }
 #insp-faces { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+body[data-insp-width="m"] #inspector { flex-basis: 340px; }
+body[data-insp-width="l"] #inspector { flex-basis: 420px; }
+body[data-insp-faces="m"] #insp-faces { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+body[data-insp-faces="l"] #insp-faces { grid-template-columns: 1fr; gap: 10px; }
 #insp-faces figure { margin: 0; }
 #insp-faces img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: var(--r1); display: block; }
 #insp-faces figcaption { margin-top: 2px; font-size: var(--fs-xs); color: var(--ink-faint);
@@ -2867,6 +2873,8 @@ label.prefs-row { cursor: pointer; }
 .prefs-row small { color: var(--ink-faint); font-size: var(--fs-xs); line-height: 1.5; }
 .prefs-row input[type=checkbox] { width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--accent); }
 .prefs-row > button { flex-shrink: 0; }
+/* A setting of the row above it: how big what that row turns on is. */
+.prefs-row.prefs-sub { padding-left: 16px; }
 .prefs-seg { display: inline-flex; gap: 2px; padding: 2px; background: var(--sunken); border-radius: var(--r2); flex-shrink: 0; }
 .prefs-seg button { border: none; background: none; padding: 4px 10px; font-size: var(--fs-sm); color: var(--ink-dim); }
 .prefs-seg button.active { background: var(--raised); color: var(--ink); }

@@ -9933,8 +9933,10 @@ function renderInspector() {
   const faces = (p.faces || []).map((f, fi) => ({ f, fi, person: f.person_id ? state.peopleById.get(f.person_id) : null }))
     .filter(({ person }) => !(person && person.excluded));
   $("#insp-faces-section").classList.toggle("hidden", !faces.length);
+  // One or two to a row is wider than the usual crop is.
+  const detail = uiSize("inspFaces") === "s" ? "" : "&detail=1";
   $("#insp-faces").innerHTML = faces.map(({ fi, person }) =>
-    `<figure><img loading="lazy" alt="" src="/face/${enc(p.rel_path)}?idx=${fi}" />`
+    `<figure><img loading="lazy" alt="" src="/face/${enc(p.rel_path)}?idx=${fi}${detail}" />`
     + `<figcaption>${person ? escapeHtml(person.label) : ""}</figcaption></figure>`).join("");
   const px = pixelSize(p);
   const rows = [["Camera", ex.camera], ["Lens", ex.lens], ["Focal", ex.focal], ["Aperture", ex.aperture],
@@ -10415,6 +10417,36 @@ function filmstripOn() {
   try { return localStorage.getItem("pcls.filmstrip") !== "0"; } catch { return true; }
 }
 
+// How big parts of the screen are, each Small, Medium or Large ("s", "m",
+// "l"), kept per browser. Small is the size they always were. Each lands on
+// <body> as a data attribute that the stylesheet sizes from.
+const UI_SIZES = {
+  inspWidth: { key: "pcls.inspWidth", seg: "#pref-insp-width" },
+  inspFaces: { key: "pcls.inspFaces", seg: "#pref-insp-faces" },
+  filmSize: { key: "pcls.filmSize", seg: "#pref-film-size" },
+};
+
+function uiSize(name) {
+  let v = null;
+  try { v = localStorage.getItem(UI_SIZES[name].key); } catch { /* private */ }
+  return ["s", "m", "l"].includes(v) ? v : "s";
+}
+
+function applyUiSize(name, size) {
+  document.body.dataset[name] = size;
+  $$(`${UI_SIZES[name].seg} button`).forEach((b) => b.classList.toggle("active", b.dataset.size === size));
+}
+
+function setUiSize(name, size) {
+  try { localStorage.setItem(UI_SIZES[name].key, size); } catch { /* private */ }
+  applyUiSize(name, size);
+  // The grid, the viewer and the editor lay out to the room they have, which
+  // the panel's width and the filmstrip's height just changed.
+  window.dispatchEvent(new Event("resize"));
+  if (name === "filmSize" && editSession.relPath) fetchEditPreview(true);
+  if (name === "inspFaces") renderInspector();   // larger faces ask for larger crops
+}
+
 // The viewer and the editor lay the photo out on resize; this is one.
 function applyFilmstrip(on) {
   document.body.classList.toggle("filmstrip-off", !on);
@@ -10424,6 +10456,11 @@ function applyFilmstrip(on) {
 function bindPrefs() {
   applyPhotoBg(photoBg());
   applyFilmstrip(filmstripOn());
+  for (const name of Object.keys(UI_SIZES)) {
+    applyUiSize(name, uiSize(name));
+    $$(`${UI_SIZES[name].seg} button`).forEach((b) =>
+      b.addEventListener("click", () => setUiSize(name, b.dataset.size)));
+  }
   $("#prefs-btn").addEventListener("click", () => openPrefs());
   $("#prefs-close").addEventListener("click", closePrefs);
   $("#prefs-modal").addEventListener("click", (e) => { if (e.target.id === "prefs-modal") closePrefs(); });

@@ -620,10 +620,22 @@
               <input type="checkbox" id="pref-keybar" /></label>
             <label class="prefs-row"><span><b>Filmstrip</b><small>The scene's photos along the bottom of the viewer and the editor. Off gives its height to the photo.</small></span>
               <input type="checkbox" id="pref-filmstrip" /></label>
+            <div class="prefs-row prefs-sub"><span><b>Filmstrip size</b><small>How tall its photos are.</small></span>
+              <div class="prefs-seg" id="pref-film-size" role="group">
+                <button type="button" data-size="s">Small</button><button type="button" data-size="m">Medium</button><button type="button" data-size="l">Large</button>
+              </div></div>
             <label class="prefs-row"><span><b>Scene previews</b><small>A few photos under each scene in the list: its picks, and until there are enough, the best of each part of it.</small></span>
               <input type="checkbox" id="pref-scene-previews" /></label>
             <label class="prefs-row"><span><b>Photo info panel</b><small>Beside the grid: histogram, why a photo was suggested, faces, camera. Also <kbd>I</kbd>.</small></span>
               <input type="checkbox" id="pref-inspector" /></label>
+            <div class="prefs-row prefs-sub"><span><b>Panel width</b><small>A wider panel gives the faces and the histogram more room, and the grid less.</small></span>
+              <div class="prefs-seg" id="pref-insp-width" role="group">
+                <button type="button" data-size="s">Narrow</button><button type="button" data-size="m">Medium</button><button type="button" data-size="l">Wide</button>
+              </div></div>
+            <div class="prefs-row prefs-sub"><span><b>Faces in the panel</b><small>Three to a row, two, or one: large enough to see eyes and expressions.</small></span>
+              <div class="prefs-seg" id="pref-insp-faces" role="group">
+                <button type="button" data-size="s">Small</button><button type="button" data-size="m">Medium</button><button type="button" data-size="l">Large</button>
+              </div></div>
             <label class="prefs-row"><span><b>Loupe in the viewer</b><small>A magnified view under the pointer. Also <kbd>L</kbd>.</small></span>
               <input type="checkbox" id="pref-loupe" /></label>
             <label class="prefs-row"><span><b>Launch sound</b><small>A short chime as the app opens, on macOS and Windows.</small></span>

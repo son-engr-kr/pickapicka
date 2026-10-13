@@ -68,6 +68,9 @@ THUMB_QUALITY = 90
 # so without this a cached thumb would outlive the change.
 THUMB_VERSION = "v2"
 FACE_LONG_EDGE = 360
+# The info panel's faces at their larger sizes: one or two to a row of a wide
+# panel is 300 to 400 CSS px, which a 360 px crop would only be stretched to.
+FACE_DETAIL_EDGE = 720
 FACE_QUALITY = 90
 FACE_PADDING = 0.85  # crop half-side = max(w, h) * FACE_PADDING (about 70% padding around face)
 WEB_DIR = Path(__file__).parent / "web"
@@ -1986,11 +1989,14 @@ def _ensure_face_crop(
     db_path: Path,
     padding: float = FACE_PADDING,
     square: bool = True,
+    long_edge: int = FACE_LONG_EDGE,
 ) -> Path:
     """Cached crop around one bbox. Faces get a square crop (a head is roughly
     square and the padding reads as breathing room); detected objects keep their
-    own aspect, since squaring a wide car box would be mostly asphalt."""
-    dst = faces_root / f"{rel_path}.f{face_idx}.jpg"
+    own aspect, since squaring a wide car box would be mostly asphalt. A crop
+    at a larger `long_edge` is cached apart from the usual one."""
+    tag = "" if long_edge == FACE_LONG_EDGE else f".{long_edge}"
+    dst = faces_root / f"{rel_path}.f{face_idx}{tag}.jpg"
     db_mtime = db_path.stat().st_mtime if db_path.exists() else 0
     src_mtime = src.stat().st_mtime
 
@@ -2014,7 +2020,7 @@ def _ensure_face_crop(
             min(img.height, int(cy + half_h)),
         )
         crop = img.crop(crop_box)
-        crop.thumbnail((FACE_LONG_EDGE, FACE_LONG_EDGE), Image.Resampling.LANCZOS)
+        crop.thumbnail((long_edge, long_edge), Image.Resampling.LANCZOS)
         crop = crop.convert("RGB")
     with _cache_lock(dst):
         if fresh():
@@ -4790,7 +4796,10 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                         headers={"Cache-Control": "no-store"})
 
     @app.get("/face/{rel_path:path}")
-    def get_face(rel_path: str, idx: int = 0) -> Response:
+    def get_face(rel_path: str, idx: int = 0, detail: bool = False) -> Response:
+        """One face, cut out of the frame it was found on. `detail` asks for it
+        at FACE_DETAIL_EDGE, for the info panel's larger faces; a face smaller
+        than that in the frame comes at its own size either way."""
         _require_loaded()
         photo = ctx.photo_index.get(rel_path)
         if photo is None:
@@ -4804,12 +4813,15 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         # detected on it), so the crop must come from that same JPEG, not the RAW.
         crop_src = _thumb_source(ctx, rel_path, photo)
         if not crop_src.is_file():
-            kept = _lexical(ctx.faces_root / f"{rel_path}.f{idx}.jpg")
-            if kept.is_file() and ctx.faces_root in kept.parents:
-                return _cached_image(kept, "image/jpeg")
+            names = ([f"{rel_path}.f{idx}.{FACE_DETAIL_EDGE}.jpg"] if detail else []) + [f"{rel_path}.f{idx}.jpg"]
+            for name in names:
+                kept = _lexical(ctx.faces_root / name)
+                if kept.is_file() and ctx.faces_root in kept.parents:
+                    return _cached_image(kept, "image/jpeg")
             raise HTTPException(status_code=404, detail="the original is not on disk")
         crop_path = _ensure_face_crop(
-            crop_src, ctx.faces_root, rel_path, bbox, idx, ctx.db_path)
+            crop_src, ctx.faces_root, rel_path, bbox, idx, ctx.db_path,
+            long_edge=FACE_DETAIL_EDGE if detail else FACE_LONG_EDGE)
         return _cached_image(crop_path, "image/jpeg")
 
     return app
