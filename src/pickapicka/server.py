@@ -105,6 +105,18 @@ class BulkDecidePayload(BaseModel):
     decision: Decision | None
 
 
+class DecisionEntry(BaseModel):
+    rel_path: str
+    decision: Decision | None
+    decided_at: str | None
+
+
+class RestoreDecisionsPayload(BaseModel):
+    """Each photo's decision and its time stamp as they were before a bulk
+    change: what undoing one puts back."""
+    decisions: list[DecisionEntry]
+
+
 class MarkPayload(BaseModel):
     """Stars and a colour label for one or more photos. A field left out is
     left alone; rating 0 and label "" clear."""
@@ -3250,7 +3262,26 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             photo["decided_at"] = now
         with ctx.save_lock:
             db.save(ctx.db_path, ctx.data)
-        return {"updated": len(payload.rel_paths)}
+        return {"updated": len(payload.rel_paths), "decided_at": now}
+
+    @app.post("/api/decide/restore")
+    def restore_decisions(payload: RestoreDecisionsPayload) -> dict[str, Any]:
+        """Undo a bulk decision: every photo back to the decision it had, with
+        the time it was made, rather than all of them to one."""
+        _require_loaded()
+        if ctx.scoring_state["running"]:
+            raise HTTPException(status_code=409, detail="scoring in progress; decisions disabled")
+        for entry in payload.decisions:
+            photo = ctx.photo_index.get(entry.rel_path)
+            if photo is None:
+                raise HTTPException(status_code=404, detail=f"photo not found: {entry.rel_path}")
+        for entry in payload.decisions:
+            photo = ctx.photo_index[entry.rel_path]
+            photo["decision"] = entry.decision
+            photo["decided_at"] = entry.decided_at
+        with ctx.save_lock:
+            db.save(ctx.db_path, ctx.data)
+        return {"updated": len(payload.decisions)}
 
     # ----- scoring ---------------------------------------------------
 

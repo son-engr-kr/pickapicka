@@ -434,6 +434,9 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
   padding: 10px 12px 10px 16px; display: flex; align-items: center; gap: 12px;
   z-index: 220; max-width: 720px; font-size: 12px; }
 #undo-toast.hidden { display: none; }
+/* Above the selection bar, which sits in the same place: a decision key with
+   photos selected brings up both. */
+body:has(#selection-bar:not(.hidden)) #undo-toast { bottom: 84px; }
 #undo-toast-msg { flex: 1; }
 #undo-toast-btn { padding: 4px 10px; font-size: 11px; font-weight: 600; }
 #undo-toast-btn .kbd { display: inline-block; margin-left: 6px; padding: 1px 5px;
@@ -1074,7 +1077,9 @@ body.resizing-edit, body.resizing-edit * { cursor: col-resize !important; user-s
   padding: 10px 14px; display: flex; align-items: center; gap: 12px; z-index: 60;
   box-shadow: 0 6px 24px rgba(0,0,0,0.5); font-size: 12px; }
 #selection-bar.hidden, #selection-bar .hidden { display: none; }
-#selection-count { font-weight: 600; }
+#selection-count { font-weight: 600; white-space: nowrap; }
+.selection-keys { color: var(--fg-dim); white-space: nowrap; }
+.selection-keys kbd { padding: 0 4px; border: 1px solid var(--border); border-radius: 3px; font: inherit; font-size: 10px; }
 #selection-bar .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 #selection-bar .primary:hover { background: #5aa0f0; }
 

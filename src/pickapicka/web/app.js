@@ -2478,13 +2478,15 @@ function saveDecision(photo, decision) {
     // A later decision on the same photo may already be showing; only the
     // time stamp of this one is the server's to set.
     if (photo.decision === saved.decision) photo.decided_at = saved.decided_at;
-  }).catch((err) => {
-    // The screen and the project no longer agree about this photo: say so,
-    // and reload the project's own record rather than carry on over it.
-    alert(`Saving a decision failed (${err.message}). The project will reload.`);
-    location.reload();
-  });
+  }).catch(decisionSaveFailed);
   return decisionSaves;
+}
+
+// The screen and the project no longer agree about some photo: say so, and
+// reload the project's own record rather than carry on over it.
+function decisionSaveFailed(err) {
+  alert(`Saving a decision failed (${err.message}). The project will reload.`);
+  location.reload();
 }
 
 // `advance` is for the keyboard: the key acts on the highlighted photo and
@@ -2819,7 +2821,41 @@ function finishExport(st) {
 }
 
 // ---------- bulk actions ----------
-async function rejectUndecidedInScene() {
+// Many photos decided in one go: shown at once, saved in turn with the single
+// decisions so that neither lands over the other, and offered back in the
+// undo toast as each photo was, not all as one.
+function decideMany(photos, decision, msg) {
+  const before = photos.map((p) => ({ rel_path: p.rel_path, decision: p.decision ?? null,
+                                      decided_at: p.decided_at ?? null }));
+  const stamp = decision ? new Date().toISOString() : null;
+  for (const p of photos) {
+    p.decision = decision;
+    p.decided_at = stamp;
+  }
+  const relPaths = photos.map((p) => p.rel_path);
+  decisionSaves = decisionSaves.then(async () => {
+    const saved = await postJSON("/api/decide/bulk", { rel_paths: relPaths, decision });
+    for (const p of photos) if (p.decision === decision) p.decided_at = saved.decided_at;
+  }).catch(decisionSaveFailed);
+  recomputeFilter();
+  renderSidebar();
+  renderMain();
+  showUndoToast(msg, before);
+}
+
+const DECIDED_AS = { pick: "Picked", review: "Marked for review", reject: "Rejected" };
+
+// With photos selected, a decision key decides all of them, as in Lightroom:
+// with Rejects shown, select all and U takes every reject back. Photos the
+// filter has since hidden are decided too; the selection bar counts them.
+function decideSelection(decision) {
+  const photos = state.photos.filter((p) => state.selection.has(p.rel_path));
+  if (!photos.length) return;
+  const n = plural(photos.length, "photo");
+  decideMany(photos, decision, decision ? `${DECIDED_AS[decision]} ${n}.` : `Cleared the decision of ${n}.`);
+}
+
+function rejectUndecidedInScene() {
   if (!state.selectedScene) return;
   const photos = state.byScene.get(state.selectedScene) || [];
   const targets = photos.filter((p) => p.decision == null);
@@ -2829,38 +2865,16 @@ async function rejectUndecidedInScene() {
     `Use the Undo toast (or ${MOD_KEY}Z) to revert.`
   );
   if (!ok) return;
-  const sceneLabel = state.selectedScene;
-  const relPaths = targets.map((p) => p.rel_path);
-  const res = await fetch("/api/decide/bulk", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rel_paths: relPaths, decision: "reject" }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    alert("Bulk reject failed: " + errText(err, res));
-    return;
-  }
-  const now = new Date().toISOString();
-  for (const p of targets) {
-    p.decision = "reject";
-    p.decided_at = now;
-  }
-  recomputeFilter();
-  renderSidebar();
-  renderMain();
-  showUndoToast(
-    `Rejected ${relPaths.length} undecided photos in "${sceneLabel}".`,
-    relPaths,
-  );
+  decideMany(targets, "reject", `Rejected ${targets.length} undecided photos in "${state.selectedScene}".`);
 }
 
 // ---------- undo toast ----------
-const undoToast = { paths: null, timer: null };
+// `before`: each photo's decision and its time stamp before the change.
+const undoToast = { before: null, timer: null };
 
-function showUndoToast(msg, relPaths) {
+function showUndoToast(msg, before) {
   if (undoToast.timer) clearTimeout(undoToast.timer);
-  undoToast.paths = relPaths;
+  undoToast.before = before;
   $("#undo-toast-msg").textContent = msg;
   $("#undo-toast").classList.remove("hidden");
   undoToast.timer = setTimeout(hideUndoToast, 12000);
@@ -2868,34 +2882,25 @@ function showUndoToast(msg, relPaths) {
 
 function hideUndoToast() {
   $("#undo-toast").classList.add("hidden");
-  undoToast.paths = null;
+  undoToast.before = null;
   if (undoToast.timer) {
     clearTimeout(undoToast.timer);
     undoToast.timer = null;
   }
 }
 
-async function performUndo() {
-  if (!undoToast.paths || !undoToast.paths.length) return;
-  const paths = undoToast.paths;
+function performUndo() {
+  const before = undoToast.before;
+  if (!before || !before.length) return;
   hideUndoToast();
-  const res = await fetch("/api/decide/bulk", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rel_paths: paths, decision: null }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    alert("Undo failed: " + errText(err, res));
-    return;
+  const byRel = new Map(state.photos.map((p) => [p.rel_path, p]));
+  for (const b of before) {
+    const photo = byRel.get(b.rel_path);
+    photo.decision = b.decision;
+    photo.decided_at = b.decided_at;
   }
-  for (const rp of paths) {
-    const photo = state.photos.find((p) => p.rel_path === rp);
-    if (photo) {
-      photo.decision = null;
-      photo.decided_at = null;
-    }
-  }
+  decisionSaves = decisionSaves.then(() => postJSON("/api/decide/restore", { decisions: before }))
+    .catch(decisionSaveFailed);
   recomputeFilter();
   renderSidebar();
   renderMain();
@@ -9590,7 +9595,7 @@ function bindKeys() {
     // ⌘Z (or Ctrl+Z) restores the last bulk-decide action.
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey
         && (e.key === "z" || e.key === "Z")) {
-      if (undoToast.paths && undoToast.paths.length) {
+      if (undoToast.before && undoToast.before.length) {
         e.preventDefault();
         performUndo();
         return;
@@ -9815,7 +9820,8 @@ function bindKeys() {
     const decision = decisionForKey(k);
     if (decision !== undefined) {
       e.preventDefault();
-      decideAt(i, decision, { advance: true });
+      if (state.selection.size) decideSelection(decision);
+      else decideAt(i, decision, { advance: true });
     }
   });
 
@@ -12665,7 +12671,7 @@ async function checkUpdateNow() {
 const MOD = IS_MAC ? "⌘" : "Ctrl";
 const KEYMAP = {
   grid: [
-    { group: "Decide", note: "Acts on the highlighted photo, then moves to the next.", keys: [
+    { group: "Decide", note: "Acts on the highlighted photo, then moves to the next. With photos selected, on all of them.", keys: [
       { k: ["P"], alt: "A", label: "Pick", bar: true },
       { k: ["R"], label: "Reject", bar: true },
       { k: ["V"], label: "Review", bar: true },
