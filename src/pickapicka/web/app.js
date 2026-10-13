@@ -11737,12 +11737,12 @@ async function openLegacyDb(entry) {
 const HELP_CONTENT = {
   "scene-grouping": `
     <h3>How scenes are grouped</h3>
-    <p><b>By folder</b> — each subdirectory under your photo folder
+    <p><b>By folder</b>: each subdirectory under your photo folder
     becomes one scene. Use this if you organized shots into folders.</p>
-    <p><b>By time gap</b> — reads EXIF capture time and starts a new scene
+    <p><b>By time gap</b>: reads EXIF capture time and starts a new scene
     after a configurable gap. Good for an unsorted dump.</p>
-    <p><b>Folder, then time</b> — each subfolder, split wherever you paused
-    for longer than the gap: <i>reception · 1</i>, <i>reception · 2</i>. For
+    <p><b>Folder, then time</b>: each subfolder, split wherever you paused
+    for longer than the gap (<i>reception · 1</i>, <i>reception · 2</i>). For
     folders that still run for hours.</p>
     <p>You can switch any time without re-scoring; only auto-suggestions are
     recomputed within each new scene.</p>`,

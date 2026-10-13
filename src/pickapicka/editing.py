@@ -511,7 +511,7 @@ def _fnum(raw: Any, lo: float, hi: float, fallback: float) -> float:
 
 def _neutral_adj() -> dict[str, Any]:
     """A mask's adjustments at their neutral values. Not all of those are zero
-    — `sharpen_radius` is neutral at its midpoint, a curve is the diagonal — so
+    (`sharpen_radius` is neutral at its midpoint, a curve is the diagonal), so
     this reads them off DEFAULT_EDIT rather than assuming."""
     out = {k: DEFAULT_EDIT[k] for k in LOCAL_KEYS}
     for key in LOCAL_STRUCT_KEYS:
