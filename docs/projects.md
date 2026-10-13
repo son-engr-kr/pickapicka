@@ -50,10 +50,15 @@
     in Preferences → Workspaces; **Locate…** points it at the new place, and
     its projects, recents and remembered views follow.
   - **Photos** of workspace projects: re-link one project (the banner above the
-    list starts it). The app works out which folder moved (`/A/Photos` →
-    `/B/Archive` from `/A/Photos/2024/x` → `/B/Archive/2024/x`) and offers the
-    other projects whose photos were in it, each checked against a sample of
-    its photos at the new place.
+    list starts it, and asks which one when several cannot find their photos).
+    The app works out which folder moved (`/A/Photos` → `/B/Archive` from
+    `/A/Photos/2024/x` → `/B/Archive/2024/x`) and offers the other projects
+    whose photos were in it, each checked against a sample of its photos at
+    the new place.
+  - Photos on a **drive that is not connected** have not moved: the banner,
+    the project's card and the re-link dialog name the drive, and plugging it
+    back in is all they need. The one offered first for a re-link is the one
+    opened last whose drive is there.
   - Projects **kept with their photos** moved along with them. **Find
     projects…** looks through a folder or drive for every `.pickapicka`
     project in it and lists them. One the app knew somewhere else is

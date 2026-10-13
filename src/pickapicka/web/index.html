@@ -1935,13 +1935,13 @@
         <button id="relink-close" type="button" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
       <div class="relink-body">
-        <p class="relink-hint">
-          This project's photo folder isn't where it used to be (moved, renamed,
-          or on a drive that's disconnected). Pick the new location and I'll
-          re-link the photos — matching by folder structure first, then by file
-          name for anything that moved around.
-        </p>
+        <p class="relink-hint" id="relink-hint"></p>
+        <div class="relink-row" id="relink-project-row">
+          <label for="relink-project">Project</label>
+          <select id="relink-project"></select>
+        </div>
         <div class="relink-row"><label>Was</label><code id="relink-old"></code></div>
+        <p class="relink-drive hidden" id="relink-drive"></p>
         <div class="relink-row">
           <label>Now</label>
           <input type="text" id="relink-new" placeholder="/new/path/to/photos" />

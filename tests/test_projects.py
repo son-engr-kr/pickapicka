@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -253,6 +254,18 @@ def test_moved_prefix_takes_off_the_shared_tail() -> None:
     assert projects.moved_prefix(p("/A/Photos/x"), p("/B/x-2024")) == (p("/A/Photos/x"), p("/B/x-2024"))
     # Never down to nothing on the shorter side.
     assert projects.moved_prefix(p("/x"), p("/B/x")) == (p("/"), p("/B"))
+
+
+def test_photos_on_an_unplugged_drive_are_told_from_moved_ones(tmp_path, unplugged) -> None:
+    drive, name = unplugged
+    assert projects.missing_drive(drive / "2026" / "shoot") == name
+    # The drive of a folder that moved is still here; the system's is not one.
+    assert projects.missing_drive(tmp_path / "moved") is None
+    assert projects.drive_of(Path.home() / "Pictures") is None
+    if os.name != "nt":
+        assert projects.drive_of(Path("/media/me/card/DCIM")) == Path("/media/me/card")
+        assert projects.drive_of(Path("/run/media/me/card/DCIM")) == Path("/run/media/me/card")
+        assert projects.drive_of(Path("/mnt/nas/2026")) == Path("/mnt/nas")
 
 
 def test_photos_found_samples_the_project(tmp_path) -> None:

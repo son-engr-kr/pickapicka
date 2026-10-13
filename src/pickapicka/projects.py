@@ -394,6 +394,34 @@ def ensure_id(project_dir: Path) -> str:
     return data["project_id"]
 
 
+def drive_of(path: Path) -> Path | None:
+    """Where the drive `path` is on is mounted, when it is not the system's:
+    /Volumes/<name> on macOS, /media/<user>/<name>, /run/media/<user>/<name>
+    or /mnt/<name> on Linux, a drive letter or a share on Windows."""
+    if os.name == "nt":
+        if not path.drive or path.drive.lower() == os.environ["SystemDrive"].lower():
+            return None
+        return Path(path.anchor)
+    parts = path.parts
+    if len(parts) >= 3 and parts[1] in ("Volumes", "mnt"):
+        return Path(*parts[:3])
+    if len(parts) >= 4 and parts[1] == "media":
+        return Path(*parts[:4])
+    if len(parts) >= 5 and parts[1:3] == ("run", "media"):
+        return Path(*parts[:5])
+    return None
+
+
+def missing_drive(path: Path) -> str | None:
+    """The name of the drive `path` is on, when that drive is not connected:
+    photos on it are unplugged rather than moved, and re-linking them is not
+    what they need. None when it is connected, or `path` is on the system's."""
+    d = drive_of(path)
+    if d is None or d.exists():
+        return None
+    return d.name or d.drive
+
+
 def moved_prefix(old: Path, new: Path) -> tuple[Path, Path]:
     """The folder that moved, as (where it was, where it is now): both paths
     with the tail they share taken off. A shoot re-linked from

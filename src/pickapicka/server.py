@@ -2390,6 +2390,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                         "db_path": str(db_path),
                         "photo_dir": str(photo_dir),
                         "jpeg_subdir": jpeg_subdir,
+                        "drive_missing": projects_mod.missing_drive(photo_dir),
                     }
                 raise RuntimeError(f"photo folder not found: {jpeg_root}")
             ignored = (existing_data or {}).get("ignored_dirs") or []
@@ -2525,6 +2526,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail={
                 "missing": True, "project_dir": str(project_dir),
                 "photo_dir": str(project_dir.parent.parent),
+                "drive_missing": projects_mod.missing_drive(project_dir),
                 "message": f"photo folder not found: {project_dir.parent.parent}",
             })
         if not db_path.is_file():
@@ -2705,6 +2707,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             return {"name": pdir.name, "project_dir": str(pdir),
                     "photo_dir": str(pdir.parent.parent), "location": "photos",
                     "project_missing": True, "photos_exist": False,
+                    "drive_missing": projects_mod.missing_drive(pdir),
                     "photos": 0, "decided": 0, "picks": 0, "scored_at": None,
                     "opened_at": opened.get(str(pdir)), "cover": None}
         try:
@@ -2730,6 +2733,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             "opened_at": opened.get(str(pdir)),
             "cover": _project_cover(pdir, photos),
             "photos_exist": Path(photo_root).is_dir(),
+            "drive_missing": projects_mod.missing_drive(Path(photo_root)),
             "project_missing": False,
         }
 

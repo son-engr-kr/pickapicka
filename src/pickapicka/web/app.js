@@ -10698,6 +10698,7 @@ function bindUi() {
     if (onboardState.pending) commitOnboardWorkspace(onboardState.pending);
   });
   $("#relink-confirm").addEventListener("click", confirmRelink);
+  $("#relink-project").addEventListener("change", (e) => relinkShow(relinkState.choices[+e.target.value]));
   $("#wizard-close").addEventListener("click", () => {
     if (confirm("Cancel project setup?")) closeWizard();
   });
@@ -11700,8 +11701,10 @@ function renderProjectGrid(projects) {
         <span class="project-foot"><span>${p.decided} of ${p.photos} decided</span><span>${sinceText(p.opened_at)}</span></span>`}
         <span class="project-path" title="${escapeHtml(p.photo_dir || "")}">${icon("folder")} ${escapeHtml(basename(p.photo_dir || ""))}</span>
         <span class="project-where">${p.location === "photos" ? "Kept with the photos" : "In the workspace"}</span>
-        ${p.project_missing ? `<span class="project-missing">${icon("warning")} Photo folder moved. Click to find it.</span>`
-          : p.photos_exist ? "" : `<span class="project-missing">${icon("warning")} Photos not found. Click to re-link.</span>`}
+        ${p.project_missing || !p.photos_exist ? `<span class="project-missing"${p.drive_missing
+            ? ` title="On ${escapeHtml(p.drive_missing)}, which is not connected"` : ""}>${icon("warning")} ${p.drive_missing
+            ? "Drive not connected." : p.project_missing ? "Photo folder moved." : "Photos not found."} `
+            + `Click to ${p.project_missing ? "find it" : "re-link"}.</span>` : ""}
       </span>
       <button class="project-del" type="button" aria-label="Delete this project"
         title="Delete this project (photos are kept)">${icon("trash")}</button>`;
@@ -11712,7 +11715,7 @@ function renderProjectGrid(projects) {
         card.classList.toggle("selected", projectSel.dirs.has(p.project_dir));
         syncProjectSelbar();
       } else if (p.project_missing) {
-        openRelinkModal({ project_dir: p.project_dir, photo_dir: p.photo_dir });
+        openRelinkModal({ project_dir: p.project_dir, photo_dir: p.photo_dir, drive_missing: p.drive_missing });
       } else {
         openProjectByDir(p.project_dir);
       }
@@ -11904,17 +11907,43 @@ function showLandingToast(text) {
 
 // ---------- relink ----------
 // openAfter: open the project once re-linked (false from the banner on the list).
-const relinkState = { projectDir: null, dbPath: null, openAfter: true };
+// choices: the projects the banner offers, any of which can be the one re-linked.
+const relinkState = { projectDir: null, dbPath: null, openAfter: true, choices: [] };
 
-function openRelinkModal(info, { openAfter = true } = {}) {
+function openRelinkModal(info, { openAfter = true, choices = [] } = {}) {
   relinkState.openAfter = openAfter;
+  relinkState.choices = choices;
+  const many = choices.length > 1;
+  $("#relink-project-row").classList.toggle("hidden", !many);
+  if (many) {
+    $("#relink-project").innerHTML = choices.map((p, i) => `<option value="${i}">${escapeHtml(p.name)}`
+      + (p.drive_missing ? ` (on ${escapeHtml(p.drive_missing)}, not connected)` : "") + "</option>").join("");
+    $("#relink-project").value = String(choices.indexOf(info));
+  }
+  $("#relink-hint").textContent = many
+    ? `${plural(choices.length, "project")} cannot find their photos. Choose one whose photos you know the `
+      + "new place of. Once it is re-linked, the others whose photos moved with it are offered too."
+    : "This project's photo folder isn't where it used to be (moved, renamed, or on a drive that's "
+      + "disconnected). Pick the new location and I'll re-link the photos, matching by folder structure "
+      + "first, then by file name for anything that moved around.";
+  $("#relink-confirm").textContent = openAfter ? "Re-link & open" : "Re-link";
+  $("#relink-new").value = "";
+  $("#relink-status").textContent = "";
+  relinkShow(info);
+  $("#relink-modal").classList.remove("hidden");
+}
+
+// The project the dialog re-links: where its photos were, and whether they
+// may only be on a drive that is not plugged in.
+function relinkShow(info) {
   relinkState.projectDir = info.project_dir || null;
   relinkState.dbPath = info.db_path || null;
   $("#relink-old").textContent =
     (info.photo_dir || "") + (info.jpeg_subdir ? " / " + info.jpeg_subdir : "");
-  $("#relink-new").value = "";
-  $("#relink-status").textContent = "";
-  $("#relink-modal").classList.remove("hidden");
+  const drive = info.drive_missing;
+  $("#relink-drive").classList.toggle("hidden", !drive);
+  if (drive) $("#relink-drive").textContent = `${drive} is not connected. If the photos are still on it, `
+    + "plug it in and open the project: nothing needs re-linking.";
 }
 
 function closeRelinkModal() { $("#relink-modal").classList.add("hidden"); }
@@ -12030,14 +12059,16 @@ function renderProjectsBanner(projects) {
   }
   const unlinked = projects.filter((p) => !p.project_missing && !p.photos_exist);
   if (unlinked.length) {
-    rows.push([`${plural(unlinked.length, "project")} cannot find ${unlinked.length === 1 ? "its" : "their"} photos. `
-      + "Re-link one, and the others that moved with it are found too.", "relink", "Re-link…"]);
+    rows.push([`${plural(unlinked.length, "project")} cannot find ${unlinked.length === 1 ? "its" : "their"} photos.`
+      + unpluggedNote(unlinked) + " Re-link one, and the others that moved with it are found too.",
+               "relink", "Re-link…"]);
   }
   const lost = projects.filter((p) => p.project_missing);
   if (lost.length) {
     rows.push([`${plural(lost.length, "project")} kept with ${lost.length === 1 ? "its" : "their"} photos `
-      + `${lost.length === 1 ? "is" : "are"} not where ${lost.length === 1 ? "it was" : "they were"}. `
-      + `Look for ${lost.length === 1 ? "it" : "them"} where the photos went.`, "find", "Find projects…"]);
+      + `${lost.length === 1 ? "is" : "are"} not where ${lost.length === 1 ? "it was" : "they were"}.`
+      + unpluggedNote(lost) + ` Look for ${lost.length === 1 ? "it" : "them"} where the photos went.`,
+               "find", "Find projects…"]);
   }
   el.classList.toggle("hidden", !rows.length);
   el.innerHTML = rows.map(([text, act, label]) =>
@@ -12045,11 +12076,24 @@ function renderProjectsBanner(projects) {
   el.querySelector('[data-act="locate"]')?.addEventListener("click", () => locateWorkspace(workspaceState.current));
   el.querySelector('[data-act="find"]')?.addEventListener("click", findProjects);
   el.querySelector('[data-act="relink"]')?.addEventListener("click", () => {
-    // The one opened last is the likeliest to be remembered by where it went.
-    const p = unlinked.slice().sort((a, b) => (b.opened_at || "").localeCompare(a.opened_at || ""))[0];
-    openRelinkModal({ project_dir: p.project_dir, photo_dir: p.photo_dir, jpeg_subdir: p.jpeg_subdir },
-                    { openAfter: false });
+    // Any can be the one re-linked. Offered first, the one opened last, the
+    // likeliest to be remembered by where it went, unless its drive is only
+    // unplugged.
+    const byOpened = unlinked.slice().sort((a, b) => (b.opened_at || "").localeCompare(a.opened_at || ""));
+    openRelinkModal(byOpened.find((p) => !p.drive_missing) || byOpened[0],
+                    { openAfter: false, choices: byOpened });
   });
+}
+
+// Which of `projects` are on a drive that is not plugged in, as a sentence
+// for the banner: their photos may not have moved at all.
+function unpluggedNote(projects) {
+  const off = projects.filter((p) => p.drive_missing);
+  if (!off.length) return "";
+  const drives = [...new Set(off.map((p) => p.drive_missing))];
+  const who = off.length === projects.length ? (off.length === 1 ? "It is" : "All are")
+    : pluralPhrase(off.length, "is", "are");
+  return ` ${who} on ${drives.length === 1 ? "a drive" : "drives"} not connected now (${drives.join(", ")}).`;
 }
 
 function showLanding() {

@@ -1299,7 +1299,11 @@ body.resizing-edit, body.resizing-edit * { cursor: col-resize !important; user-s
 .relink-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
 .relink-hint { margin: 0; font-size: 12px; color: var(--fg-dim); line-height: 1.55; }
 .relink-row { display: flex; align-items: center; gap: 10px; }
-.relink-row > label { width: 44px; font-size: 12px; color: var(--fg-dim); flex-shrink: 0; }
+.relink-row > label { width: 52px; font-size: 12px; color: var(--fg-dim); flex-shrink: 0; }
+.relink-row select { flex: 1; min-width: 0; background: var(--bg-3); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; font: inherit; font-size: 12px; }
+#relink-project-row.hidden, .relink-drive.hidden { display: none; }
+.relink-drive { margin: 0 0 0 62px; font-size: 12px; color: var(--review); line-height: 1.5; }
 .relink-row code { flex: 1; word-break: break-all; font-size: 11px; }
 .relink-row input { flex: 1; background: var(--bg); color: var(--fg);
   border: 1px solid var(--border); border-radius: 4px; padding: 7px 10px;

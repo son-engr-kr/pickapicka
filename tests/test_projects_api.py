@@ -275,6 +275,16 @@ def test_one_relink_offers_the_projects_that_moved_with_it(app, tmp_path) -> Non
     assert data["photos"][0]["decision"] == "pick"
 
 
+def test_the_list_says_which_projects_are_on_an_unplugged_drive(app, tmp_path, unplugged) -> None:
+    drive, name = unplugged
+    ws = _ws(app, tmp_path / "ws")
+    _project(ws / "away", drive / "shoot")
+    _project(ws / "moved", tmp_path / "was-here")
+    cards = {c["name"]: c for c in _route(app, "/api/workspaces/projects", "GET")()["projects"]}
+    assert not cards["away"]["photos_exist"] and cards["away"]["drive_missing"] == name
+    assert not cards["moved"]["photos_exist"] and cards["moved"]["drive_missing"] is None
+
+
 def test_find_lists_new_projects_and_refiles_moved_ones(app, tmp_path) -> None:
     from pickapicka import projects
     drive_a, drive_b = tmp_path / "A", tmp_path / "B"
