@@ -60,12 +60,10 @@ def has_trash(path: Path) -> bool:
 
 def discard(path: Path, *, permanent: bool) -> None:
     """Send one original to the Trash, or delete it for good when the user
-    agreed to that for a drive with no Trash (see `has_trash`)."""
+    agreed to that for a drive with no Trash (see `has_trash`). Retried for a
+    moment on Windows while the grid is reading the file, which both refuse."""
     assert path.is_file(), f"not a file: {path}"
-    if permanent:
-        path.unlink()
-    else:
-        send2trash(path)
+    fsutil.retry_busy(path.unlink if permanent else lambda: send2trash(path))
 
 
 def read_small(path: Path, long_edge: int) -> tuple[np.ndarray, Image.Exif, bytes | None]:

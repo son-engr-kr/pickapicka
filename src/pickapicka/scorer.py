@@ -13,7 +13,7 @@ import numpy as np
 
 from PIL import Image
 
-from . import db, exifinfo, hdr, raw, scenes
+from . import db, exifinfo, fsutil, hdr, raw, scenes
 from .projects import PHOTOS_SUBDIR as PROJECTS_SUBDIR
 from .scoring import blur as blur_mod
 from .scoring import exposure as exp_mod
@@ -1102,7 +1102,11 @@ def _cache_roots(db_path: Path, project_dir: Path | None) -> list[Path]:
 def _move_cached(roots: list[Path], raw_cache_root: Path, old: str, new: str) -> None:
     """Move what is cached of a photo to its new rel_path: its thumbnails, face
     crops and peaking overlays (`<rel>`, `<rel>.<tag>.jpg`, …), and a RAW's
-    preview, filed under a hash of it. What is not moved is made again."""
+    preview, filed under a hash of it. What is not moved is made again.
+
+    Through fsutil.replace, which waits out a reader on Windows: the grid may
+    be streaming the very thumbnail, and a bare rename then failed with
+    WinError 32 half way through bringing the project in line."""
     for root in roots:
         src_dir = (root / old).parent
         if not src_dir.is_dir():
@@ -1114,10 +1118,10 @@ def _move_cached(roots: list[Path], raw_cache_root: Path, old: str, new: str) ->
                 continue    # another photo whose name starts with this one's
             dst = root / (new + rest)
             dst.parent.mkdir(parents=True, exist_ok=True)
-            f.replace(dst)
+            fsutil.replace(f, dst)
     cached = raw.raw_cache_path(raw_cache_root, old)
     if cached.is_file():
-        cached.replace(raw.raw_cache_path(raw_cache_root, new))
+        fsutil.replace(cached, raw.raw_cache_path(raw_cache_root, new))
 
 
 def glob_escape(name: str) -> str:
@@ -1150,7 +1154,7 @@ def follow_moves(data: dict[str, Any], moved: list[dict[str, str]], member_moves
         old_merged, new_name = b["merged"], hdr.merged_filename(members)
         old_file = hdr_root / old_merged[len(hdr.HDR_PREFIX) + 1:]
         if old_file.is_file():
-            old_file.replace(hdr_root / new_name)
+            fsutil.replace(old_file, hdr_root / new_name)
         b.update(id=hdr.bracket_id(members), members=members,
                  merged=f"{hdr.HDR_PREFIX}/{new_name}", base=member_moves.get(b["base"], b["base"]))
         hp = by_rel.get(old_merged)

@@ -3,6 +3,7 @@
 Only Windows refuses that rename, so the first test only proves something
 there; CI runs the suite on Windows for it.
 """
+import ast
 import re
 import threading
 import time
@@ -35,11 +36,19 @@ def test_replace_waits_out_a_reader(tmp_path):
 
 
 def test_no_bare_replace_in_the_package():
-    bare = re.compile(r"\bos\.replace\(|\btmp\.replace\(")
-    offenders = [
-        f"{p.relative_to(PKG)}:{n}"
-        for p in PKG.rglob("*.py") if p.name != "fsutil.py"
-        for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
-        if bare.search(line) and not line.lstrip().startswith("#")
-    ]
+    """os.replace, and Path.replace in any variable's name. The regex this
+    used to be knew only `os.` and `tmp.`, and `f.replace(dst)` in the cache
+    move got past it to fail on Windows. A rename takes one argument, and
+    str.replace two or three, which is how the two are told apart."""
+    bare = re.compile(r"\bos\.replace\(")
+    offenders = []
+    for p in PKG.rglob("*.py"):
+        if p.name == "fsutil.py":
+            continue
+        text = p.read_text(encoding="utf-8")
+        offenders += [f"{p.relative_to(PKG)}:{n}" for n, line in enumerate(text.splitlines(), 1)
+                      if bare.search(line) and not line.lstrip().startswith("#")]
+        offenders += [f"{p.relative_to(PKG)}:{node.lineno}" for node in ast.walk(ast.parse(text))
+                      if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                      and node.func.attr == "replace" and len(node.args) == 1 and not node.keywords]
     assert not offenders, f"use fsutil.replace instead: {offenders}"

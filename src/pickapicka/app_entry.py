@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import sys
 
-from pickapicka import paths
+from pickapicka import fsutil, paths
 
 LOG_NAME = "app.log"
 LOG_MAX_BYTES = 2_000_000   # past this the last run's log is kept as app.log.1
@@ -32,14 +32,19 @@ def give_output_somewhere() -> None:
 
     Appended to, so a second launch that only points the browser at the running
     one does not wipe that one's log; set aside once it grows past
-    LOG_MAX_BYTES.
+    LOG_MAX_BYTES. On Windows the running one holds it open, so the rename
+    then fails; that launch appends instead, and the next first launch sets it
+    aside. Raised, it would have stopped the app from opening at all.
     """
     if sys.stdout is not None and sys.stderr is not None:
         return
     paths.DATA_DIR.mkdir(parents=True, exist_ok=True)
     log = paths.DATA_DIR / LOG_NAME
     if log.is_file() and log.stat().st_size > LOG_MAX_BYTES:
-        log.replace(log.with_name(LOG_NAME + ".1"))
+        try:
+            fsutil.replace(log, log.with_name(LOG_NAME + ".1"))
+        except PermissionError:
+            pass
     out = open(log, "a", encoding="utf-8", buffering=1)   # line-buffered, so a crash still lands
     if sys.stdout is None:
         sys.stdout = out

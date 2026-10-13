@@ -14,6 +14,9 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from typing import Callable, TypeVar
+
+T = TypeVar("T")
 
 _TRIES = 100
 _WAIT = 0.02    # seconds; 2 s in all
@@ -21,14 +24,20 @@ _WAIT = 0.02    # seconds; 2 s in all
 
 def replace(src: str | Path, dst: str | Path) -> None:
     """`os.replace`, retried while Windows reports the target busy."""
+    retry_busy(lambda: os.replace(src, dst))
+
+
+def retry_busy(op: Callable[[], T]) -> T:
+    """Run `op` on a file, retried while Windows reports the file busy: the
+    same wait as a rename gets, for a delete or a move to the Trash."""
     for attempt in range(_TRIES):
         try:
-            os.replace(src, dst)
-            return
+            return op()
         except PermissionError:
             if os.name != "nt" or attempt == _TRIES - 1:
                 raise
             time.sleep(_WAIT)
+    raise AssertionError("unreachable")
 
 
 def read_text(path: Path) -> str:
