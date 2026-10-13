@@ -1301,7 +1301,8 @@ function modalRefSize() {
   if (img.src.endsWith(img.dataset.full || "\0") && !(photo && isRendered(photo))) return { w: nw, h: nh };
   // A crop keeps that share of the frame's pixels.
   const c = photo?.edit?.crop || { w: 1, h: 1 };
-  const long = Math.max((photo?.width || 0) * c.w, (photo?.height || 0) * c.h);
+  const px = photo && pixelSize(photo);
+  const long = px ? Math.max(px.w * c.w, px.h * c.h) : 0;
   const k = long ? long / Math.max(nw, nh) : 1;
   return { w: nw * k, h: nh * k };
 }
@@ -3412,7 +3413,9 @@ function openEditModal(absIdx) {
   editSession.livePreset = null;     // a preset is live on the photo it was applied to
   // Every photo opens fitted; the zoom is a per-photo inspection, not a mode.
   editSession.view = { zoom: 0, cx: 0.5, cy: 0.5 };
-  editSession.natural = { w: photo.width || 0, h: photo.height || 0 };
+  // Until the first render says (X-Frame-Size), the scored frame stands in for
+  // a RAW whose size is not known yet: it has the photo's shape.
+  editSession.natural = pixelSize(photo) || { w: photo.width || 0, h: photo.height || 0 };
   editSession.frame = { ...editSession.natural };
   editSession.cropFrame = { ...editSession.natural };
   editSession.cropAspect = "free";
@@ -9300,6 +9303,14 @@ function isRendered(photo) {
   return photo.type === "raw" || !!photo.edited_at;
 }
 
+// A photo's size as it exports, {w, h}, or null when not known. `width` and
+// `height` are the frame it was scored on, which its face and subject boxes
+// are in: a RAW's is its cached preview, so its own size is `full_size`.
+function pixelSize(p) {
+  if (p.type === "raw") return p.full_size ? { w: p.full_size[0], h: p.full_size[1] } : null;
+  return p.width && p.height ? { w: p.width, h: p.height } : null;
+}
+
 // Zoomed in on a rendered photo: swap in its full-resolution render, once.
 function upgradeModalImage() {
   const photo = state.filteredPhotos[state.modal.idx];
@@ -9906,8 +9917,9 @@ function renderInspector() {
   $("#insp-faces").innerHTML = faces.map(({ fi, person }) =>
     `<figure><img loading="lazy" alt="" src="/face/${enc(p.rel_path)}?idx=${fi}" />`
     + `<figcaption>${person ? escapeHtml(person.label) : ""}</figcaption></figure>`).join("");
+  const px = pixelSize(p);
   const rows = [["Camera", ex.camera], ["Lens", ex.lens], ["Focal", ex.focal], ["Aperture", ex.aperture],
-    ["Shutter", ex.shutter], ["ISO", ex.iso_text], ["Size", p.width && p.height ? `${p.width} × ${p.height}` : ""]];
+    ["Shutter", ex.shutter], ["ISO", ex.iso_text], ["Size", px ? `${px.w} × ${px.h}` : ""]];
   $("#insp-exif").innerHTML = rows.filter(([, v]) => v).map(([k, v]) => `<dt>${k}</dt><dd>${escapeHtml(v)}</dd>`).join("");
 }
 
@@ -13346,10 +13358,13 @@ function pollOpenStatus() {
       s = (await stateRes.json()).opening || {};
     } catch { return; }
     showScoreProgress({
-      step: s.phase === "done" ? "loading" : s.phase,
+      // Reading RAW sizes happens once, for a project scored before they were
+      // kept: part of loading it.
+      step: s.phase === "done" || s.phase === "sizes" ? "loading" : s.phase,
       title: (s.phase === "scoring") ? (s.total ? `Scoring ${plural(s.total, "photo")}…` : "Getting ready to score…")
         : (s.phase === "clustering") ? "Grouping faces…"
         : (s.phase === "scanning") ? "Finding photos…"
+        : (s.phase === "sizes") ? "Reading the size of each RAW, once…"
         : "Opening the project…",
       idx: s.idx, total: s.total, current: s.current, message: s.message,
     });

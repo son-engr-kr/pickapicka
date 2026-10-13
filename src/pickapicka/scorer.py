@@ -552,8 +552,48 @@ def _score_one(
     if target.get("kind") == "raw":
         photo["type"] = "raw"
         photo["src"] = target["src"]
+        photo["full_size"] = target["full_size"]
     photo.update(existing_edits.get(rel_path, {}))
     return photo
+
+
+def pixel_size(photo: dict[str, Any]) -> tuple[int, int] | None:
+    """(width, height) of a photo as it decodes and exports; None when that is
+    not known.
+
+    `width` and `height` are the frame the photo was scored on, which its face
+    and subject boxes are measured in. For a JPEG or an HDR result that is the
+    file itself. A RAW is scored on its cached preview, so its own size is kept
+    apart, as `full_size`.
+    """
+    if photo.get("type") == "raw":
+        size = photo.get("full_size")
+        return (int(size[0]), int(size[1])) if size else None
+    w, h = photo.get("width"), photo.get("height")
+    return (int(w), int(h)) if w and h else None
+
+
+def fill_full_sizes(data: dict[str, Any], photo_dir: Path, progress_cb=None) -> int:
+    """Give each RAW photo scored before `full_size` was kept its size, read
+    from the RAW (`raw.output_size`). One whose RAW is not on disk is left for
+    a later open. `progress_cb(done, total)` is called as they come in and may
+    raise to stop. Returns how many were filled."""
+    todo = [p for p in data.get("photos", [])
+            if p.get("type") == "raw" and not p.get("full_size")
+            and (photo_dir / p.get("src", p["rel_path"])).is_file()]
+    if not todo:
+        return 0
+    pool = ThreadPoolExecutor(max_workers=RAW_PREVIEW_WORKERS)
+    try:
+        sizes = pool.map(lambda p: raw.output_size(photo_dir / p.get("src", p["rel_path"])), todo)
+        for n, (p, size) in enumerate(zip(todo, sizes), 1):
+            p["full_size"] = list(size)
+            if progress_cb is not None:
+                progress_cb(n, len(todo))
+    finally:
+        # As for the previews: a stop drops what is still queued.
+        pool.shutdown(wait=True, cancel_futures=True)
+    return len(todo)
 
 
 def embeddings_path(db_path: Path) -> Path:
@@ -614,12 +654,12 @@ def _shot_targets(shots: list[Shot], photo_dir: Path, jpeg_root: Path, raw_root:
     # GIL — and on a RAW shoot it is the part that would otherwise dominate:
     # ~700 ms a frame serially against ~100 ms across eight workers, which is
     # quicker than pulling the camera's embedded JPEG used to be.
-    prepared: dict[Path, tuple[Path, datetime | None]] = {}
+    prepared: dict[Path, tuple[Path, datetime | None, tuple[int, int]]] = {}
     if raws_to_prepare:
-        def _prepare(abs_raw: Path) -> tuple[Path, datetime | None]:
+        def _prepare(abs_raw: Path) -> tuple[Path, datetime | None, tuple[int, int]]:
             rel = str(abs_raw.relative_to(raw_root))
             return (raw.ensure_cache(abs_raw, raw_cache_root, rel),
-                    raw.read_capture_time(abs_raw))
+                    raw.read_capture_time(abs_raw), raw.output_size(abs_raw))
 
         if progress_cb is None:
             click.echo(f"Preparing {len(raws_to_prepare)} RAW preview(s)…")
@@ -640,13 +680,14 @@ def _shot_targets(shots: list[Shot], photo_dir: Path, jpeg_root: Path, raw_root:
     for scene, abs_raw, jpg in shots:
         if abs_raw is not None:  # RAW wins when a shot has both
             rel = str(abs_raw.relative_to(raw_root))
-            score_path, captured = prepared[abs_raw]
+            score_path, captured, size = prepared[abs_raw]
             targets.append({
                 "scene": scene, "score_path": score_path, "rel": rel,
                 "members": None, "kind": "raw",
                 "src": str(abs_raw.relative_to(photo_dir)),
                 "exif_path": abs_raw,
                 "captured_at": captured.isoformat() if captured else None,
+                "full_size": list(size),
             })
         else:
             assert jpg is not None

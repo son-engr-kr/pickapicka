@@ -80,6 +80,35 @@ def decode_raw(path: Path, half_size: bool = False) -> np.ndarray:
     return np.ascontiguousarray(rgb)
 
 
+def output_size(path: Path) -> tuple[int, int]:
+    """(width, height) of what `decode_raw` gives for this RAW, from libraw's
+    parse of the file and without decoding it: 13 ms for a 33 MP ARW, against
+    a second for the decode.
+
+    The cached preview is no measure of it. That is a half-size decode fitted
+    into 2560 px, and the scan used to store its size as the photo's: a Sony
+    a7C II frame of 4688 x 7028 was given as 1708 x 2560.
+    """
+    import rawpy
+    with rawpy.imread(str(path)) as r:
+        return sized_output(r.sizes)
+
+
+def sized_output(sizes: Any) -> tuple[int, int]:
+    """libraw's own arithmetic for the size of its output image
+    (`get_mem_image_format`): the visible area, stretched to square pixels for
+    a sensor whose pixels are not, then turned on its side by a quarter-turn
+    orientation (flip 5 or 6). Fujifilm's SuperCCD bodies (S2 Pro to S5 Pro)
+    are rotated by 45 degrees there as well, by a width rawpy does not expose,
+    so their size is not this."""
+    w, h = int(sizes.width), int(sizes.height)
+    if sizes.pixel_aspect < 0.995:
+        h = int(h / sizes.pixel_aspect + 0.5)
+    elif sizes.pixel_aspect > 1.005:
+        w = int(w * sizes.pixel_aspect + 0.5)
+    return (h, w) if sizes.flip & 4 else (w, h)
+
+
 def decode_preview(path: Path, max_edge: int) -> np.ndarray:
     """Preview-sized RGB from the same settings `decode_raw` uses.
 

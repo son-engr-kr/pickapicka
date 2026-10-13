@@ -47,12 +47,14 @@ from .scorer import (
     drop_photos,
     embeddings_path,
     excluded_scan_dirs,
+    fill_full_sizes,
     find_changes,
     fold_in,
     follow_moves,
     ignored_scan_dirs,
     is_folder_name,
     photo_folder,
+    pixel_size,
     shot_files,
     source_folders,
     top_folder,
@@ -845,6 +847,15 @@ class AppContext:
                 im.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
             return np.ascontiguousarray(np.asarray(im))
 
+    def pixel_size(self, rel_path: str) -> tuple[int, int] | None:
+        """`scorer.pixel_size`, read from the RAW itself for one the db has no
+        size for yet: a RAW that was not on disk when its project was opened.
+        Kept on the photo, so it is saved with the project's next save."""
+        photo = self.photo_index[rel_path]
+        if photo.get("type") == "raw" and not photo.get("full_size"):
+            photo["full_size"] = list(raw.output_size(self.source_path(rel_path)))
+        return pixel_size(photo)
+
     def decode_full(self, rel_path: str) -> np.ndarray:
         """Full-resolution oriented RGB uint8 (used for export baking)."""
         return self._decode_scaled(rel_path, None)
@@ -1573,9 +1584,11 @@ def _delete_originals(ctx: "AppContext", payload: DeleteOriginalsPayload) -> dic
                 follow_moves(ctx.data, moves, {}, ctx.db_path, ctx.project_dir)
                 for mv in moves:
                     p = next(q for q in ctx.data["photos"] if q["rel_path"] == mv["new_rel"])
-                    # A JPEG photo has neither: it is read from the JPEG root.
+                    # A JPEG photo has none of these: it is read from the JPEG
+                    # root, and is the size of its file.
                     p.pop("type", None)
                     p.pop("src", None)
+                    p.pop("full_size", None)
         db.save(ctx.db_path, ctx.data)
         ctx.reload_data()
     return {"done": len(done), "failed": failed, "freed": freed, "mode": payload.mode,
@@ -2414,6 +2427,19 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             needs_score = existing_data is None or existing_data.get("scored_at") is None
             if not needs_score:
                 ctx.opening_state["files_changed"] = current_files != set(source_folders(existing_data))
+                # Scored before a RAW's own size was kept: read once, then saved.
+                if any(p.get("type") == "raw" and not p.get("full_size")
+                       for p in existing_data.get("photos", [])):
+                    ctx.opening_state["phase"] = "sizes"
+                    ctx.opening_state["message"] = "Reading the size of each RAW…"
+
+                    def size_cb(i: int, total: int) -> None:
+                        _stop_if_asked(ctx.opening_state)
+                        ctx.opening_state["idx"] = i
+                        ctx.opening_state["total"] = total
+
+                    if fill_full_sizes(existing_data, photo_dir, size_cb):
+                        db.save(db_path, existing_data)
 
             if needs_score:
                 ctx.opening_state["phase"] = "scoring"
@@ -3370,9 +3396,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             else:
                 base, which = ctx.get_corrected_base(rel, fit_edit), "corrected"
             analysis = ctx.analysis_edit(rel, fit_edit, draft)
-            photo = ctx.photo_index[rel]
-            frame = (int(photo["width"]), int(photo["height"])) \
-                if photo.get("width") and photo.get("height") else None
+            frame = ctx.pixel_size(rel)
             out = editing.render(base, fit_edit,
                                  meta=ctx.photo_meta(rel),
                                  auto=ctx.auto_fields(rel, analysis),
@@ -3392,9 +3416,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         # change it, and the client lays the overlay and the 1:1 view out against
         # it — reported rather than recomputed in JS so there is one copy of the
         # arithmetic.
-        photo = ctx.photo_index[payload.rel_path]
-        src_w = int(photo.get("width") or out.shape[1])
-        src_h = int(photo.get("height") or out.shape[0])
+        # The photo's own size, not the frame it was scored on: a RAW's is its
+        # preview, and the crop's pixels and the 1:1 view were read off that.
+        src_w, src_h = ctx.pixel_size(payload.rel_path) or (out.shape[1], out.shape[0])
         uncropped = {**editing.normalize(payload.edit), "crop": None}
         shown = uncropped if payload.skip_crop else payload.edit
         fw, fh = editing.geometry_size(src_w, src_h, shown)

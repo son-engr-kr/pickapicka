@@ -195,7 +195,10 @@ def test_a_raw_becomes_its_small_jpeg(tmp_path, trash, monkeypatch) -> None:
     monkeypatch.setattr(raw, "decode_preview",
                         lambda path, edge: np.full((round(edge / 1.6), edge, 3), 128, np.uint8))
     monkeypatch.setattr(metadata, "read_source", lambda path, is_raw: (Image.Exif(), None))
+    # Opening reads the RAW's own size, which this stand-in file has none of.
+    monkeypatch.setattr(raw, "output_size", lambda path: (6400, 4000))
     app = _open(proj)
+    assert next(p for p in db.load(db_path)["photos"] if p["rel_path"] == "a0.arw")["full_size"] == [6400, 4000]
 
     r = _delete(app, ["a0.arw"], mode="small", long_edge=1280)
     assert r["done"] == 1, r
@@ -207,5 +210,5 @@ def test_a_raw_becomes_its_small_jpeg(tmp_path, trash, monkeypatch) -> None:
     after = {p["rel_path"]: p for p in db.load(db_path)["photos"]}
     assert "a0.arw" not in after
     p = after["a0.jpg"]
-    assert "type" not in p and "src" not in p and p["decision"] == "reject"
+    assert "type" not in p and "src" not in p and "full_size" not in p and p["decision"] == "reject"
     assert (p["width"], p["height"]) == (1280, 800) and p["faces"][0]["bbox_xywh"] == [384, 256, 77, 51]
