@@ -31,7 +31,8 @@ from pydantic import BaseModel, Field
 from . import (
     aifill as aifill_mod, cameras, db, editing, genfill as genfill_mod, healing as healing_mod,
     modelstore, exifinfo, exporting, film as film_mod, folderinfo, fsutil, hdr, imfile,
-    launch, lut as lut_mod, metadata as metadata_mod, portrait as portrait_mod,
+    launch, lut as lut_mod, metadata as metadata_mod, originals as originals_mod,
+    portrait as portrait_mod,
     presets as presets_mod, projects as projects_mod,
     redeye as redeye_mod, transform as transform_mod, raw, relink, scenes, segment as segment_mod,
     updater as updater_mod, userstate, watermark as watermark_mod,
@@ -52,6 +53,7 @@ from .scorer import (
     ignored_scan_dirs,
     is_folder_name,
     photo_folder,
+    shot_files,
     source_folders,
     top_folder,
     walk_files,
@@ -458,6 +460,21 @@ class DropPhotosPayload(BaseModel):
     rel_paths: list[str]
 
 
+class OriginalsPayload(BaseModel):
+    rel_paths: list[str]
+
+
+class DeleteOriginalsPayload(BaseModel):
+    rel_paths: list[str] = Field(min_length=1)
+    # "trash": the originals go, and the photos leave the project. "small":
+    # each is replaced by a small JPEG of itself, and the photos stay.
+    mode: Literal["trash", "small"]
+    long_edge: Literal[originals_mod.SMALL_EDGES] = 2048
+    # Agreed to in the confirmation: files on a drive with no Trash
+    # (originals.has_trash) are deleted for good. Without it they are left.
+    permanent_ok: bool = False
+
+
 class FoldersPayload(BaseModel):
     ignored: list[str]          # top-level folder names the project leaves out
 
@@ -603,6 +620,7 @@ class AppContext:
         self.cluster_state: dict[str, Any] = self._fresh_cluster_state()
         self.opening_state: dict[str, Any] = self._fresh_opening_state()
         self.export_state: dict[str, Any] = self._fresh_export_state()
+        self.originals_state: dict[str, Any] = self._fresh_export_state()
         # Faces for the portrait panel, per photo and optics. One lock, because the
         # face model is one session and a grid full of thumbnails would
         # otherwise analyse the same photo several times at once.
@@ -1405,6 +1423,119 @@ def _export_picks_to(ctx: "AppContext", picks: list[dict[str, Any]], target: Pat
     }
 
 
+def _small_copy(ctx: "AppContext", photo: dict[str, Any], rel: str, files: list[Path],
+                long_edge: int, permanent: bool) -> dict[str, Any]:
+    """Replace one photo's originals with a small JPEG of it (originals.py).
+
+    A JPEG photo's copy takes the JPEG's name, so the photo stays where it is;
+    a RAW photo's takes its camera JPEG's name, or the RAW's own with .jpg in
+    the JPEG folder, and the photo is then that JPEG (returned for the caller
+    to move it to). An HDR result keeps its merged file, the project's own,
+    and each frame of its bracket is made small. Returns the copies written;
+    the copy's size, for `originals.scale_geometry` (None for an HDR result,
+    whose stored frame is the merged one); and for a RAW photo the JPEG it now
+    is."""
+    assert ctx.jpeg_root is not None
+    if photo.get("type") == "hdr":
+        for f in files:
+            rgb, exif, icc = originals_mod.read_small(f, long_edge)
+            originals_mod.write_small(rgb, originals_mod.staged(f), src_exif=exif, icc=icc,
+                                      captured_at="", from_raw=False)
+            originals_mod.put_in_place(originals_mod.staged(f), [f], f, permanent=permanent)
+        return {"copies": files, "size": None, "moved_to": None}
+    captured = ctx.photo_meta(rel).get("captured_at") or ""
+    if photo.get("type") == "raw":
+        raw_file = ctx.source_path(rel)
+        partner = next((f for f in files if f != raw_file), None)
+        dst = partner or ctx.jpeg_root / Path(rel).with_suffix(".jpg")
+        if partner is None and dst.exists():
+            raise FileExistsError(f"{dst} is there already and is not this photo's")
+        rgb = ctx._decode_scaled(rel, long_edge, quick=True)
+        src_exif, icc = metadata_mod.read_source(raw_file, True)
+        from_raw = True
+    else:
+        dst = ctx.source_path(rel)
+        rgb, src_exif, icc = originals_mod.read_small(dst, long_edge)
+        from_raw = False
+    size = (rgb.shape[1], rgb.shape[0])
+    # Checked before anything goes: a copy that is not the scored frame would
+    # leave the photo's face boxes nowhere near the faces.
+    originals_mod.check_shape(photo, size)
+    staged = originals_mod.staged(dst)
+    originals_mod.write_small(rgb, staged, src_exif=src_exif, icc=icc,
+                              captured_at=captured, from_raw=from_raw)
+    originals_mod.put_in_place(staged, files, dst, permanent=permanent)
+    return {"copies": [dst], "size": size, "moved_to": dst if photo.get("type") == "raw" else None}
+
+
+def _delete_originals(ctx: "AppContext", payload: DeleteOriginalsPayload) -> dict[str, Any]:
+    """Delete the originals of `payload.rel_paths`, then bring the project in
+    line: the photos dropped, or pointed at their small copies. Runs on its own
+    thread; progress and cancellation go through ctx.originals_state, and a
+    photo that fails is left as it is and reported, the rest carry on."""
+    state = ctx.originals_state
+    assert ctx.db_path is not None and ctx.jpeg_root is not None
+    photos = [ctx.photo_index[r] for r in payload.rel_paths if r in ctx.photo_index]
+    files = shot_files(ctx.data, ctx.db_path, ctx.project_dir, photos)
+    done: list[str] = []
+    failed: list[dict[str, str]] = []
+    sizes: dict[str, tuple[int, int]] = {}
+    moves: list[dict[str, str]] = []
+    freed = 0
+    for i, photo in enumerate(photos):
+        if state["cancel"]:
+            break
+        rel = photo["rel_path"]
+        state["idx"], state["current"] = i, rel
+        fs = files[rel]
+        if not fs:
+            failed.append({"rel": rel, "error": "its original is not on disk"})
+            continue
+        permanent = not all(originals_mod.has_trash(f) for f in fs)
+        if permanent and not payload.permanent_ok:
+            failed.append({"rel": rel, "error": "it is on a drive with no Trash"})
+            continue
+        before = sum(f.stat().st_size for f in fs)
+        try:
+            if payload.mode == "trash":
+                for f in fs:
+                    originals_mod.discard(f, permanent=permanent)
+                freed += before
+            else:
+                made = _small_copy(ctx, photo, rel, fs, payload.long_edge, permanent)
+                if made["size"] is not None:
+                    sizes[rel] = made["size"]
+                if made["moved_to"] is not None:
+                    moves.append({"rel": rel, "new_rel": str(made["moved_to"].relative_to(ctx.jpeg_root))})
+                freed += before - sum(f.stat().st_size for f in made["copies"])
+        except OSError as exc:
+            # One photo's files: a share that refused the move, a file another
+            # program holds open. The others go on.
+            failed.append({"rel": rel, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        done.append(rel)
+    state["idx"] = len(done) + len(failed)
+
+    with ctx.save_lock:
+        if payload.mode == "trash":
+            drop_photos(ctx.data, set(done))
+        else:
+            by_rel = {p["rel_path"]: p for p in ctx.data["photos"]}
+            for rel, size in sizes.items():
+                originals_mod.scale_geometry(by_rel[rel], size)
+            if moves:
+                follow_moves(ctx.data, moves, {}, ctx.db_path, ctx.project_dir)
+                for mv in moves:
+                    p = next(q for q in ctx.data["photos"] if q["rel_path"] == mv["new_rel"])
+                    # A JPEG photo has neither: it is read from the JPEG root.
+                    p.pop("type", None)
+                    p.pop("src", None)
+        db.save(ctx.db_path, ctx.data)
+        ctx.reload_data()
+    return {"done": len(done), "failed": failed, "freed": freed, "mode": payload.mode,
+            "cancelled": bool(state["cancel"])}
+
+
 def _render_roi(ctx: "AppContext", payload: EditPreviewPayload) -> np.ndarray:
     """Grade one window of a photo at full resolution — the editor's 1:1 view.
 
@@ -2024,7 +2155,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             # What is running in the background, for the top bar's indicator.
             "tasks": {name: {k: st.get(k) for k in ("running", "phase", "idx", "total")}
                       for name, st in (("export", ctx.export_state), ("scoring", ctx.scoring_state),
-                                       ("grouping", ctx.cluster_state))},
+                                       ("grouping", ctx.cluster_state),
+                                       ("originals", ctx.originals_state))},
         }
 
     def _view_key() -> str:
@@ -2061,6 +2193,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         return [what for what, st in (
             ("an export", ctx.export_state), ("scoring", ctx.scoring_state),
             ("grouping", ctx.cluster_state), ("opening a project", ctx.opening_state),
+            ("deleting originals", ctx.originals_state),
         ) if st["running"]]
 
     def _stop_server() -> None:
@@ -2122,6 +2255,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         busy = [what for what, st in (
             ("an export", ctx.export_state), ("scoring", ctx.scoring_state),
             ("grouping", ctx.cluster_state), ("opening a project", ctx.opening_state),
+            ("deleting originals", ctx.originals_state),
         ) if st["running"]]
         if busy:
             raise HTTPException(status_code=409, detail=" and ".join(busy) + " is still running")
@@ -2297,7 +2431,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     def _claim_open_lock() -> None:
         with ctx.score_lock:
             if (ctx.opening_state["running"] or ctx.scoring_state["running"]
-                    or ctx.cluster_state["running"] or ctx.export_state["running"]):
+                    or ctx.cluster_state["running"] or ctx.export_state["running"]
+                    or ctx.originals_state["running"]):
                 raise HTTPException(status_code=409, detail="another task is running")
             ctx.opening_state.update(
                 ctx._fresh_opening_state(),
@@ -2607,7 +2742,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         """Project folders are not moved while a task may be writing into one."""
         with ctx.score_lock:
             if (ctx.opening_state["running"] or ctx.scoring_state["running"]
-                    or ctx.cluster_state["running"] or ctx.export_state["running"]):
+                    or ctx.cluster_state["running"] or ctx.export_state["running"]
+                    or ctx.originals_state["running"]):
                 raise HTTPException(status_code=409, detail="another task is running")
 
     def _workspace_pair(payload: MergeWorkspacesPayload) -> tuple[Path, Path]:
@@ -3789,7 +3925,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     def start_cluster(payload: ClusterPayload | None = None) -> dict[str, Any]:
         _require_loaded()
         with ctx.score_lock:
-            if ctx.scoring_state["running"] or ctx.cluster_state["running"]:
+            if ctx.scoring_state["running"] or ctx.cluster_state["running"] or ctx.originals_state["running"]:
                 raise HTTPException(status_code=409, detail="another task is already running")
             ctx.cluster_state.update(
                 running=True, phase="starting", idx=0, total=0,
@@ -3962,7 +4098,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         is theirs. The client does this as soon as it finds them, so changing
         the folder's structure loses nothing."""
         _require_loaded()
-        if ctx.scoring_state["running"] or ctx.cluster_state["running"]:
+        if ctx.scoring_state["running"] or ctx.cluster_state["running"] or ctx.originals_state["running"]:
             raise HTTPException(status_code=409, detail="another task is running")
         ch = find_changes(ctx.data, ctx.db_path, ctx.project_dir)
         with ctx.save_lock:
@@ -3981,7 +4117,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         groups there, so people keep their names; nothing else is re-scored."""
         _require_loaded()
         with ctx.score_lock:
-            if ctx.scoring_state["running"] or ctx.cluster_state["running"]:
+            if ctx.scoring_state["running"] or ctx.cluster_state["running"] or ctx.originals_state["running"]:
                 raise HTTPException(status_code=409, detail="another task is running")
             ctx.scoring_state.update(
                 running=True, phase="adding", idx=0, total=0, current=None,
@@ -4032,7 +4168,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         """Take photos whose originals are gone out of the project, with their
         marks and edits. One whose original is back on disk is kept."""
         _require_loaded()
-        if ctx.scoring_state["running"] or ctx.cluster_state["running"]:
+        if ctx.scoring_state["running"] or ctx.cluster_state["running"] or ctx.originals_state["running"]:
             raise HTTPException(status_code=409, detail="another task is running")
         gone = {r for r in payload.rel_paths
                 if r in ctx.photo_index and not ctx.source_path(r).is_file()}
@@ -4041,6 +4177,59 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             db.save(ctx.db_path, ctx.data)
             ctx._rebuild_index()
         return {"dropped": dropped, "kept": len(payload.rel_paths) - len(gone)}
+
+    @app.post("/api/originals/plan")
+    def plan_originals(payload: OriginalsPayload) -> dict[str, Any]:
+        """What deleting these photos' originals would take off the disk, for
+        the confirmation to say before anything happens: how many files and
+        bytes, how many are RAW, and how many are on a drive with no Trash,
+        where they would be deleted for good. A photo with no files has its
+        original gone already."""
+        _require_loaded()
+        assert ctx.db_path is not None
+        photos = [ctx.photo_index[r] for r in payload.rel_paths if r in ctx.photo_index]
+        files = shot_files(ctx.data, ctx.db_path, ctx.project_dir, photos)
+        # Per photo, so the dialog can total whichever ones stay checked.
+        return {"per": {rel: {"files": len(fs), "bytes": sum(f.stat().st_size for f in fs),
+                              "raw": sum(1 for f in fs if f.suffix.lower() in raw.RAW_EXTS),
+                              "no_trash": sum(1 for f in fs if not originals_mod.has_trash(f))}
+                        for rel, fs in files.items()}}
+
+    @app.post("/api/originals/delete")
+    def delete_originals(payload: DeleteOriginalsPayload) -> dict[str, Any]:
+        _require_loaded()
+        with ctx.score_lock:
+            if (ctx.originals_state["running"] or ctx.export_state["running"]
+                    or ctx.scoring_state["running"] or ctx.cluster_state["running"]
+                    or ctx.opening_state["running"]):
+                raise HTTPException(status_code=409, detail="another task is running")
+            ctx.originals_state.update(ctx._fresh_export_state(), running=True,
+                                       total=len(payload.rel_paths),
+                                       started_at=datetime.now().isoformat())
+
+        def runner() -> None:
+            try:
+                ctx.originals_state["result"] = _delete_originals(ctx, payload)
+            except Exception as exc:
+                traceback.print_exception(type(exc), exc, exc.__traceback__)
+                ctx.originals_state["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                ctx.originals_state["running"] = False
+                ctx.originals_state["current"] = None
+                ctx.originals_state["ended_at"] = datetime.now().isoformat()
+
+        threading.Thread(target=runner, daemon=True, name="originals").start()
+        return {"started": True}
+
+    @app.get("/api/originals/status")
+    def originals_status() -> dict[str, Any]:
+        return ctx.originals_state
+
+    @app.post("/api/originals/cancel")
+    def originals_cancel() -> dict[str, Any]:
+        """Stop after the photo being done now; what is done stays done."""
+        ctx.originals_state["cancel"] = True
+        return ctx.originals_state
 
     @app.get("/api/folders")
     def get_folders() -> dict[str, Any]:
@@ -4053,7 +4242,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         folder newly left out leave the project now, marks and all; one taken
         back in comes in with the next re-score. Nothing on disk is touched."""
         _require_loaded()
-        if ctx.scoring_state["running"] or ctx.cluster_state["running"]:
+        if ctx.scoring_state["running"] or ctx.cluster_state["running"] or ctx.originals_state["running"]:
             raise HTTPException(status_code=409, detail="another task is running")
         bad = [n for n in payload.ignored if not is_folder_name(n)]
         if bad:
@@ -4074,7 +4263,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     @app.post("/api/scene-grouping")
     def set_scene_grouping(payload: SceneGroupingPayload) -> dict[str, Any]:
         _require_loaded()
-        if ctx.scoring_state["running"] or ctx.cluster_state["running"]:
+        if ctx.scoring_state["running"] or ctx.cluster_state["running"] or ctx.originals_state["running"]:
             raise HTTPException(status_code=409, detail="another task is running")
         photos = ctx.data["photos"]
         scenes.regroup(photos, ctx.jpeg_root, payload.mode, payload.gap_minutes)
@@ -4161,7 +4350,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         # the run would stay marked as running with nothing behind it.
         with ctx.score_lock:
             if (ctx.export_state["running"] or ctx.scoring_state["running"]
-                    or ctx.cluster_state["running"] or ctx.opening_state["running"]):
+                    or ctx.cluster_state["running"] or ctx.opening_state["running"]
+                    or ctx.originals_state["running"]):
                 raise HTTPException(status_code=409, detail="another task is running")
             picks = _export_selection(payload.scenes, payload.which)
             ctx.export_state.update(ctx._fresh_export_state(), running=True,

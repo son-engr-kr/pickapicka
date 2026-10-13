@@ -486,6 +486,7 @@
             <button id="rescore-btn" role="menuitem" title="Re-run scoring on all photos (preserves decisions)" data-icon="refresh">Rescore…</button>
             <hr />
             <button id="reject-undecided-btn" role="menuitem" class="danger" title="Mark all undecided photos in this scene as reject" disabled data-icon="close">Reject undecided</button>
+            <button id="delete-rejects-btn" role="menuitem" class="danger" title="Delete the original files of the rejected photos, in every scene" data-icon="trash">Delete rejected originals…</button>
           </div>
         </div>
       </div>
@@ -502,6 +503,7 @@
         <button data-filter="missing" class="filter hidden" role="tab" title="Photos whose original is gone from disk">Missing <span class="n"></span></button>
       </div>
       <div class="filter-extra">
+        <button id="select-all-btn" type="button" data-icon="check">Select all</button>
         <select id="rating-filter" title="Only photos with at least this many stars">
           <option value="0">Any stars</option>
           <option value="1">★ or more</option>
@@ -1732,8 +1734,10 @@
 
   <div id="selection-bar" class="hidden">
     <span id="selection-count"></span>
+    <button id="selection-all" type="button">Select all</button>
     <button id="selection-download" data-icon="download">download</button>
     <button id="selection-apply" class="primary">Apply edit / preset…</button>
+    <button id="selection-delete" type="button" class="danger" data-icon="trash">Delete originals…</button>
     <button id="selection-clear" type="button">Clear</button>
   </div>
 
@@ -1773,6 +1777,65 @@
       </footer>
     </div>
   </div>
+  <!-- Deleting originals from disk (originals.py): which photos, how, and a
+       second step that says exactly what goes before anything does. -->
+  <div id="originals-modal" class="hidden">
+    <div class="bulk-box originals-box">
+      <header>
+        <h2 id="originals-title">Delete originals</h2>
+        <button id="originals-close" title="Esc" data-icon="close" aria-label="Close"></button>
+      </header>
+      <div class="bulk-body" id="originals-pick">
+        <p class="bulk-hint">
+          The original files of the checked photos are taken off the disk. Click
+          a photo to leave it out.
+        </p>
+        <div class="originals-tools">
+          <span id="originals-count"></span>
+          <button id="originals-all" type="button">Select all</button>
+          <button id="originals-none" type="button">Select none</button>
+        </div>
+        <div id="originals-grid"></div>
+        <div class="bulk-row" style="align-items:flex-start;">
+          <label>Then</label>
+          <div class="option-cards" id="originals-mode-cards">
+            <button class="option-card" type="button" data-value="trash">
+              <span class="option-title">Delete them</span>
+              <span class="option-sub" id="originals-trash-sub"></span>
+            </button>
+            <button class="option-card" type="button" data-value="small">
+              <span class="option-title">Keep a small copy</span>
+              <span class="option-sub">Each is replaced by a small JPEG of itself, and stays in the project with its decision.</span>
+            </button>
+          </div>
+        </div>
+        <div class="bulk-row" id="originals-size-row">
+          <label for="originals-size">Copy size</label>
+          <select id="originals-size">
+            <option value="1280">1280 px on the long edge</option>
+            <option value="2048" selected>2048 px on the long edge</option>
+            <option value="3072">3072 px on the long edge</option>
+          </select>
+        </div>
+      </div>
+      <div class="bulk-body hidden" id="originals-check">
+        <p class="originals-what" id="originals-what"></p>
+        <ul class="originals-warnings" id="originals-warnings"></ul>
+        <label class="originals-type" for="originals-typed">Type <b>delete</b> to confirm
+          <input type="text" id="originals-typed" autocomplete="off" spellcheck="false" /></label>
+      </div>
+      <div class="bulk-body hidden" id="originals-run">
+        <p class="originals-what" id="originals-progress"></p>
+        <ul class="originals-warnings" id="originals-failed"></ul>
+      </div>
+      <footer>
+        <span id="originals-summary"></span>
+        <button id="originals-cancel" type="button">Cancel</button>
+        <button id="originals-next" type="button" class="danger-solid">Continue…</button>
+      </footer>
+    </div>
+  </div>
+
   <div id="bulk-modal" class="hidden">
     <div class="bulk-box">
       <header>

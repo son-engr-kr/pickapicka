@@ -65,6 +65,10 @@ a = Analysis(
         "insightface.model_zoo.scrfd",
         "insightface.utils",
         "insightface.utils.face_align",
+        # The Trash on each platform (originals.py): send2trash picks its
+        # module at import time, behind a try, so name the ones it falls to.
+        "send2trash.mac.legacy",
+        "send2trash.win.legacy",
         # sklearn submodules used at runtime via DBSCAN(metric="cosine")
         "sklearn.cluster",
         "sklearn.metrics.pairwise",

@@ -998,6 +998,39 @@ def find_changes(data: dict[str, Any], db_path: Path, project_dir: Path | None) 
             "moved": moved, "member_moves": member_moves}
 
 
+def shot_files(data: dict[str, Any], db_path: Path, project_dir: Path | None,
+               photos: list[dict[str, Any]]) -> dict[str, list[Path]]:
+    """Every file on disk that is an original of each photo, by rel_path.
+
+    Paired the way scoring pairs them (`_shots`): a RAW photo is its RAW and
+    the JPEG the camera wrote with it, which the project does not record, as
+    the RAW won; a JPEG photo is its JPEG and a RAW that arrived for it later.
+    An HDR result is its bracket's frames; the merged JPEG is the project's own
+    file, not an original. A photo whose file is gone has none."""
+    _, jpeg_root, raw_root = _roots(data)
+    if not jpeg_root.is_dir():
+        return {p["rel_path"]: [] for p in photos}
+    ignored = data.get("ignored_dirs") or []
+    excludes = excluded_scan_dirs(db_path, project_dir) | ignored_scan_dirs(jpeg_root, raw_root, ignored)
+    bracketed = {m for b in data.get("brackets", []) for m in b["members"]}
+    shots = _shots(_collect_jpegs(jpeg_root, excludes), _collect_raws(raw_root, excludes),
+                   jpeg_root, bracketed)
+    by_file: dict[Path, list[Path]] = {}
+    for _, r, j in shots:
+        files = [f for f in (r, j) if f is not None]
+        for f in files:
+            by_file[f] = files
+    out: dict[str, list[Path]] = {}
+    for p in photos:
+        if p.get("type") == "hdr":
+            out[p["rel_path"]] = [jpeg_root / m for m in p.get("members") or []
+                                  if (jpeg_root / m).is_file()]
+        else:
+            src = source_file(data, db_path, project_dir, p)
+            out[p["rel_path"]] = by_file.get(src, [src] if src.is_file() else [])
+    return out
+
+
 def _same_shot(photo: dict[str, Any], f: Path, kind: str) -> bool:
     """Whether file `f` is `photo` moved: the same capture time as it was
     scored with, or for one with none, a JPEG of the same size. A file of the

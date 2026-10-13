@@ -637,6 +637,9 @@ const SHORTCUT_TIPS = {
   "#export-picks-btn": ["Copy all PICK photos to a folder", null],
   "#selection-apply": ["Apply an edit or preset to the selection", null],
   "#selection-download": ["Save the selected photos to your Downloads folder", "D"],
+  "#selection-all": ["Select every photo shown", `${MOD_KEY}A`],
+  "#select-all-btn": ["Select every photo shown", `${MOD_KEY}A`],
+  "#selection-delete": ["Delete the originals of the selected photos from disk", null],
   // viewer
   "#modal-close": ["Close", "Esc"],
   "#modal-edit": ["Edit this photo", "E"],
@@ -1761,6 +1764,7 @@ async function fetchOk(url) {
 async function checkChanges({ force = false } = {}) {
   if (document.body.classList.contains("landing-mode") || !state.photos.length) return;
   if (scorePollTimer) return;       // a re-score or an add is under way
+  if (originals.step === "run") return;   // files are going; it reloads after
   if (!force && Date.now() - changes.at < CHANGES_EVERY_MS) return;
   changes.at = Date.now();
   let d = await (await fetchOk("/api/changes")).json();
@@ -4977,7 +4981,10 @@ function bindPortraitPanel() {
 const modelState = { id: null, resolve: null, poll: null };
 const JSON_POST = { method: "POST", headers: { "Content-Type": "application/json" } };
 
-function fmtBytes(b) { return b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${Math.round(b / 1e6)} MB`; }
+function fmtBytes(b) {
+  return b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b >= 1e6 ? `${Math.round(b / 1e6)} MB`
+    : `${Math.round(b / 1e3)} KB`;
+}
 // Memory as the system states it (binary gigabytes, called GB), so a 24 GB
 // machine reads as 24 GB.
 function fmtMemory(b) { return `${Math.round(b / 2 ** 30)} GB`; }
@@ -8667,8 +8674,241 @@ function showDownloadToast(text, dir) {
   showDownloadToast.timer = setTimeout(() => el.classList.add("hidden"), 10000);
 }
 
+// ---------- deleting originals ----------
+// The selection's, or every reject of the project's (More). The photos are
+// shown checked so the ones to keep can be clicked out, then a second step says
+// what goes, in files and bytes, and wants "delete" typed before anything does.
+// The server does the work in the background (originals.py).
+const originals = { rels: [], off: new Set(), per: {}, step: "pick", timer: 0 };
+const TRASH_NAME = IS_MAC ? "Trash" : "Recycle Bin";
+const DECISION_WORDS = { pick: "Pick", review: "Review", reject: "Reject" };
+
+async function openOriginalsModal(rels, title) {
+  if (!rels.length) return;
+  originals.rels = rels;
+  originals.off = new Set();
+  originals.per = {};
+  $("#originals-title").textContent = title;
+  $("#originals-trash-sub").textContent =
+    `The files go to the ${TRASH_NAME}, and the photos leave the project.`;
+  setOptionCardValue("#originals-mode-cards", "trash");
+  $("#originals-modal").classList.remove("hidden");
+  setOriginalsStep("pick");
+  $("#originals-cancel").textContent = "Cancel";
+  $("#originals-next").classList.remove("hidden");
+  $("#originals-summary").textContent = "Finding the files…";
+  $("#originals-next").disabled = true;
+  renderOriginalsGrid();
+  const res = await fetch("/api/originals/plan", { ...JSON_POST, body: JSON.stringify({ rel_paths: rels }) });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    $("#originals-summary").textContent = "Could not read the files: " + errText(err, res);
+    return;
+  }
+  originals.per = (await res.json()).per;
+  // A photo whose original is gone already has nothing to delete.
+  for (const rel of rels) if (!originals.per[rel] || !originals.per[rel].files) originals.off.add(rel);
+  renderOriginalsGrid();
+  renderOriginalsSummary();
+}
+
+function closeOriginalsModal() {
+  if (originals.step === "run") return;   // it says when it is done
+  $("#originals-modal").classList.add("hidden");
+}
+
+function setOriginalsStep(step) {
+  originals.step = step;
+  $("#originals-pick").classList.toggle("hidden", step !== "pick");
+  $("#originals-check").classList.toggle("hidden", step !== "check");
+  $("#originals-run").classList.toggle("hidden", step !== "run" && step !== "done");
+  $("#originals-close").classList.toggle("hidden", step === "run");
+}
+
+function originalsChecked() {
+  return originals.rels.filter((r) => !originals.off.has(r));
+}
+
+function originalsTotals() {
+  const t = { photos: 0, files: 0, bytes: 0, raw: 0, noTrash: 0, notRejects: 0 };
+  const byRel = new Map(state.photos.map((p) => [p.rel_path, p]));
+  for (const rel of originalsChecked()) {
+    const d = originals.per[rel];
+    if (!d || !d.files) continue;
+    t.photos++; t.files += d.files; t.bytes += d.bytes; t.raw += d.raw; t.noTrash += d.no_trash;
+    const p = byRel.get(rel);
+    if (p && p.decision !== "reject") t.notRejects++;
+  }
+  return t;
+}
+
+function renderOriginalsGrid() {
+  const byRel = new Map(state.photos.map((p) => [p.rel_path, p]));
+  $("#originals-grid").innerHTML = originals.rels.map((rel) => {
+    const p = byRel.get(rel);
+    const d = originals.per[rel];
+    const gone = d && !d.files;
+    const badge = gone ? "not on disk"
+      : (p && p.decision !== "reject" ? (DECISION_WORDS[p.decision] || "Undecided") : "");
+    return `<button type="button" class="orig-tile${originals.off.has(rel) ? " off" : ""}${gone ? " gone" : ""}"
+        data-rel="${escapeAttr(rel)}" title="${escapeAttr(basename(rel))}"${gone ? " disabled" : ""}>
+      <img loading="lazy" alt="" src="${p ? thumbUrl(p) : ""}" />
+      <span class="orig-check">✓</span>
+      ${badge ? `<span class="orig-badge ${p ? p.decision || "" : ""}">${escapeHtml(badge)}</span>` : ""}
+    </button>`;
+  }).join("");
+}
+
+function renderOriginalsSummary() {
+  const t = originalsTotals();
+  const small = getOriginalsMode() === "small";
+  $("#originals-size-row").classList.toggle("hidden", !small);
+  $("#originals-count").textContent = `${t.photos} of ${plural(originals.rels.length, "photo")} checked`
+    + (t.notRejects ? ` · ${t.notRejects} not rejected` : "");
+  $("#originals-summary").textContent = t.photos
+    ? `${plural(t.files, "file")}, ${fmtBytes(t.bytes)}` : "Nothing checked";
+  $("#originals-next").disabled = t.photos === 0;
+  $("#originals-next").textContent = "Continue…";
+}
+
+function getOriginalsMode() { return getOptionCardValue("#originals-mode-cards"); }
+
+// The second step: everything that is about to happen, in plain numbers, and
+// the warnings that matter most first.
+function showOriginalsCheck() {
+  const t = originalsTotals();
+  const small = getOriginalsMode() === "small";
+  const kinds = t.raw && t.raw < t.files ? ` (${t.raw} RAW, ${t.files - t.raw} JPEG)`
+    : t.raw ? " (RAW)" : "";
+  $("#originals-what").textContent = small
+    ? `${plural(t.files, "original file")}${kinds}, ${fmtBytes(t.bytes)} in all, go to the ${TRASH_NAME}.\n`
+      + `Each of the ${plural(t.photos, "photo")} is replaced by a JPEG ${$("#originals-size").value} px `
+      + "on the long edge, and stays in the project with its decision, stars and label."
+    : `${plural(t.files, "original file")}${kinds}, ${fmtBytes(t.bytes)} in all, go to the ${TRASH_NAME}.\n`
+      + `The ${plural(t.photos, "photo")} leave this project, with their decisions and edits. `
+      + `Until the ${TRASH_NAME} is emptied they can still be taken back out of it.`;
+  const warn = [];
+  if (t.noTrash) warn.push(`${pluralPhrase(t.noTrash, "file is", "files are")} on a drive with no ${TRASH_NAME}, `
+    + "so they are deleted for good.");
+  if (t.notRejects) warn.push(`${pluralPhrase(t.notRejects, "photo has", "photos have")} not been rejected.`);
+  $("#originals-warnings").innerHTML = warn.map((w) => `<li>${escapeHtml(w)}</li>`).join("");
+  $("#originals-typed").value = "";
+  setOriginalsStep("check");
+  $("#originals-next").textContent = `Delete ${plural(t.files, "file")}`;
+  $("#originals-next").disabled = true;
+  $("#originals-cancel").textContent = "Back";
+  $("#originals-typed").focus();
+}
+
+async function startOriginalsDelete() {
+  const t = originalsTotals();
+  const body = { rel_paths: originalsChecked().filter((r) => originals.per[r] && originals.per[r].files),
+                 mode: getOriginalsMode(), long_edge: Number($("#originals-size").value),
+                 permanent_ok: t.noTrash > 0 };
+  const res = await fetch("/api/originals/delete", { ...JSON_POST, body: JSON.stringify(body) });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert("Could not start: " + errText(err, res));
+    return;
+  }
+  setOriginalsStep("run");
+  $("#originals-failed").innerHTML = "";
+  $("#originals-cancel").textContent = "Stop";
+  $("#originals-next").classList.add("hidden");
+  pollOriginals();
+}
+
+async function pollOriginals() {
+  const st = await (await fetchOk("/api/originals/status")).json();
+  if (st.running) {
+    $("#originals-progress").textContent = `Deleting… ${st.idx} of ${st.total}`;
+    $("#originals-summary").textContent = st.current ? basename(st.current) : "";
+    originals.timer = setTimeout(pollOriginals, 500);
+    return;
+  }
+  setOriginalsStep("done");
+  $("#originals-cancel").textContent = "Close";
+  $("#originals-summary").textContent = "";
+  if (st.error) {
+    $("#originals-progress").textContent = `Stopped by an error: ${st.error}`;
+  } else {
+    const r = st.result;
+    const freed = r.mode === "trash" ? `${fmtBytes(r.freed)} free once the ${TRASH_NAME} is emptied`
+      : `${fmtBytes(r.freed)} smaller, once the ${TRASH_NAME} is emptied`;
+    $("#originals-progress").textContent = `${r.cancelled ? "Stopped. " : ""}`
+      + `${plural(r.done, "photo")} done, ${freed}.`
+      + (r.failed.length ? `\n${pluralPhrase(r.failed.length, "photo was", "photos were")} left as they were:` : "");
+    $("#originals-failed").innerHTML = r.failed.slice(0, 20).map((f) =>
+      `<li>${escapeHtml(basename(f.rel))}: ${escapeHtml(f.error)}</li>`).join("")
+      + (r.failed.length > 20 ? `<li>and ${r.failed.length - 20} more</li>` : "");
+  }
+  clearSelection();
+  await reloadAfterFolders();
+}
+
+function bindOriginals() {
+  $("#selection-delete").addEventListener("click", () => {
+    const rels = [...state.selection];
+    openOriginalsModal(rels, `Delete the originals of ${plural(rels.length, "photo")}`);
+  });
+  $("#delete-rejects-btn").addEventListener("click", () => {
+    closeMenus();
+    const rels = state.photos.filter((p) => p.decision === "reject").map((p) => p.rel_path);
+    if (!rels.length) { alert("No photo in this project is rejected."); return; }
+    openOriginalsModal(rels, `Delete the originals of ${plural(rels.length, "rejected photo")}`);
+  });
+  $("#originals-grid").addEventListener("click", (e) => {
+    const tile = e.target.closest(".orig-tile");
+    if (!tile || tile.disabled) return;
+    const rel = tile.dataset.rel;
+    if (originals.off.has(rel)) originals.off.delete(rel); else originals.off.add(rel);
+    tile.classList.toggle("off", originals.off.has(rel));
+    renderOriginalsSummary();
+  });
+  $("#originals-all").addEventListener("click", () => {
+    originals.off = new Set(originals.rels.filter((r) => originals.per[r] && !originals.per[r].files));
+    renderOriginalsGrid(); renderOriginalsSummary();
+  });
+  $("#originals-none").addEventListener("click", () => {
+    originals.off = new Set(originals.rels);
+    renderOriginalsGrid(); renderOriginalsSummary();
+  });
+  $$("#originals-mode-cards .option-card").forEach((c) => c.addEventListener("click", () => {
+    setOptionCardValue("#originals-mode-cards", c.dataset.value);
+    renderOriginalsSummary();
+  }));
+  $("#originals-typed").addEventListener("input", (e) => {
+    $("#originals-next").disabled = e.target.value.trim().toLowerCase() !== "delete";
+  });
+  $("#originals-typed").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !$("#originals-next").disabled) startOriginalsDelete();
+  });
+  $("#originals-next").addEventListener("click", () => {
+    if (originals.step === "pick") showOriginalsCheck();
+    else if (originals.step === "check") startOriginalsDelete();
+  });
+  $("#originals-cancel").addEventListener("click", async () => {
+    if (originals.step === "check") {
+      setOriginalsStep("pick");
+      $("#originals-cancel").textContent = "Cancel";
+      renderOriginalsSummary();
+    } else if (originals.step === "run") {
+      await fetch("/api/originals/cancel", { method: "POST" });
+      $("#originals-progress").textContent = "Stopping after this photo…";
+    } else {
+      $("#originals-next").classList.remove("hidden");
+      $("#originals-cancel").textContent = "Cancel";
+      closeOriginalsModal();
+    }
+  });
+  $("#originals-close").addEventListener("click", () => $("#originals-cancel").click());
+}
+
 // ---------- selection + batch apply ----------
 let lastSelIdx = null;
+// What the key handler calls ⌘A / Ctrl+A: a name no key of its own has, so no
+// shortcut but select-all can answer it.
+const SELECT_ALL_KEY = "SelectAll";
 
 function toggleSelect(absIdx, shift) {
   const photo = state.filteredPhotos[absIdx];
@@ -8696,11 +8936,25 @@ function clearSelection() {
   renderSelectionBar();
 }
 
+// ⌘A, as in a file manager: every photo the grid shows, which is this scene
+// through the filter. What the filter hides is not selected behind your back,
+// so Rejects then ⌘A is every reject of the scene and nothing else.
+function selectAllShown() {
+  for (const p of state.filteredPhotos) state.selection.add(p.rel_path);
+  lastSelIdx = null;
+  renderGrid();
+  renderSelectionBar();
+}
+
 function renderSelectionBar() {
   const bar = $("#selection-bar");
   const n = state.selection.size;
   if (!n) { bar.classList.add("hidden"); return; }
-  $("#selection-count").textContent = `${n} selected`;
+  const shown = state.filteredPhotos.filter((p) => state.selection.has(p.rel_path)).length;
+  // Selected under one filter and then another: say so, since what the bar's
+  // buttons act on is then more than the grid shows.
+  $("#selection-count").textContent = shown < n ? `${n} selected (${n - shown} not shown)` : `${n} selected`;
+  $("#selection-all").classList.toggle("hidden", shown === state.filteredPhotos.length);
   bar.classList.remove("hidden");
 }
 
@@ -9100,8 +9354,12 @@ function bindKeys() {
         return;
       }
     }
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
-    const k = e.key;
+    // ⌘A / Ctrl+A goes on, as a key of its own that only the grid answers;
+    // as a plain "a" it would pick the photo in the viewer.
+    const selectAll = (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey
+      && (e.key === "a" || e.key === "A");
+    if ((e.metaKey || e.ctrlKey || e.altKey) && !selectAll) return;
+    const k = selectAll ? SELECT_ALL_KEY : e.key;
 
     // A text field owns its letters. Without this a filter box cannot be typed
     // into at all, because "a" is pick and "r" is reject — which is exactly what
@@ -9133,6 +9391,12 @@ function bindKeys() {
     // The relink dialog (landing) — Esc only.
     if (!$("#relink-modal").classList.contains("hidden")) {
       if (k === "Escape") { closeRelinkModal(); e.preventDefault(); }
+      return;
+    }
+
+    // Deleting originals: Esc backs out a step, never stops a run.
+    if (!$("#originals-modal").classList.contains("hidden")) {
+      if (k === "Escape" && originals.step !== "run") { $("#originals-cancel").click(); e.preventDefault(); }
       return;
     }
 
@@ -9298,6 +9562,7 @@ function bindKeys() {
     if (k === "i" || k === "I") { toggleInspector(); e.preventDefault(); return; }
     if (k === "c" || k === "C") { openCompare(); e.preventDefault(); return; }
     if (k === "x" || k === "X") { toggleSelect(state.cursorIdx, e.shiftKey); e.preventDefault(); return; }
+    if (k === SELECT_ALL_KEY) { selectAllShown(); e.preventDefault(); return; }
     if ((k === "d" || k === "D") && state.selection.size) {
       downloadSelection(); e.preventDefault(); return;
     }
@@ -9745,7 +10010,8 @@ async function renderProjectMenu() {
 }
 
 // Background work, said in the bar: an export, a re-score or face grouping.
-const TASK_WORDS = { export: "Exporting", scoring: "Scoring", grouping: "Grouping faces" };
+const TASK_WORDS = { export: "Exporting", scoring: "Scoring", grouping: "Grouping faces",
+                     originals: "Deleting originals" };
 let activityTimer = null;
 
 async function pollActivity() {
@@ -10161,6 +10427,9 @@ function bindUi() {
   $("#selection-apply").addEventListener("click", () => openBulkModal({ scope: "selected" }));
   $("#selection-download").addEventListener("click", downloadSelection);
   $("#selection-clear").addEventListener("click", clearSelection);
+  $("#selection-all").addEventListener("click", selectAllShown);
+  bindOriginals();
+  $("#select-all-btn").addEventListener("click", selectAllShown);
   $("#bulk-modal-close").addEventListener("click", closeBulkModal);
   $("#bulk-cancel").addEventListener("click", closeBulkModal);
   $("#bulk-confirm").addEventListener("click", confirmBulkApply);
@@ -10783,6 +11052,11 @@ async function inspectFolder(path, workspace = null) {
 
 function plural(n, word) {
   return `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
+}
+
+// For a phrase whose verb agrees too: pluralPhrase(2, "file is", "files are").
+function pluralPhrase(n, one, many) {
+  return `${n.toLocaleString()} ${n === 1 ? one : many}`;
 }
 
 // Why a folder makes a poor workspace, or null if it is fine. The mistake this
@@ -12089,6 +12363,7 @@ const KEYMAP = {
     { group: "Select", keys: [
       { k: ["X"], label: "Select or unselect" },
       { k: ["⇧", "X"], label: "Select a range" },
+      { k: [MOD, "A"], label: "Select every photo shown" },
       { k: ["D"], label: "Download the selection" },
       { k: ["Esc"], label: "Clear the selection" },
     ]},
