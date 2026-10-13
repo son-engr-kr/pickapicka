@@ -652,6 +652,7 @@ own controls:
 | --- | --- |
 | the row | Loads that slot. |
 | the save button | Writes what is on screen into that slot, empty or not. |
+| the pencil button | Names it. Overwriting the slot keeps its name. |
 | the × button | Clears it. |
 
 One action per control, on purpose. The first version of this panel was a row of
@@ -685,6 +686,21 @@ Three properties are what make them worth using while experimenting:
 
 An empty rack is not stored at all, so a photo you have never stashed anything
 on stays exactly as small in the database as it was before slots existed.
+
+**Slots are also versions.** A photo can go out in more than one look, colour
+and black and white say, with each look in a slot:
+
+- **Export** with **Each saved slot too** ticked writes each slot as a file of
+  its own beside the photo, with the slot's name after the photo's
+  (`a0_bw.jpg`), or its number when it has none (`a0_slot2.jpg`). A slot that
+  renders the same as the photo's own edit, or as a slot before it, is left
+  out.
+- **Apply to more** fills a slot on many photos at once: **Save as** *A
+  version, in slot N*, with a name. The edit or preset is laid on each photo's
+  own edit as usual, and the result goes into the slot, so the photos render
+  as before. The dialog says how many already hold something in that slot,
+  which this replaces. **Clear edits** with a slot chosen empties that slot
+  instead.
 
 ## Presets
 
@@ -729,7 +745,8 @@ do.
   per part it carries ("Mixer · 3 bands", "1 layer"), and hovering one shows it
   on the photo until the pointer moves off.
 - **Apply to more** takes a preset too, and lays it on each photo's own edit by
-  the same rules (each with its own auto tone and its own automatic layers).
+  the same rules (each with its own auto tone and its own automatic layers), and
+  can save the result as a version in a slot instead (see *Slots*).
 
 ## Pipeline order
 

@@ -2533,7 +2533,8 @@ const exportUi = { pollTimer: null, nameTimer: null };
 // What goes out: from which scenes (all, the one open, or those ticked), and
 // which of their photos. The target folder follows the choice until it is
 // typed into or browsed to, then it is left alone.
-const exportPick = { scope: "all", which: "picks", chosen: new Set(), targetTouched: false };
+const exportPick = { scope: "all", which: "picks", chosen: new Set(), targetTouched: false,
+                     count: 0, versions: 0 };
 
 function exportScenes() {
   if (exportPick.scope === "this") return state.selectedScene ? [state.selectedScene] : [];
@@ -2582,7 +2583,9 @@ async function refreshExportPreview() {
   const res = await fetch("/api/export/picks/preview?" + q);
   if (!res.ok) throw new Error(`export preview failed: ${res.status}`);
   const info = await res.json();
-  $("#export-count").textContent = plural(info.count, "photo");
+  exportPick.count = info.count;
+  exportPick.versions = info.versions;
+  showExportCount();
   if (!exportPick.targetTouched) $("#export-target").value = info.default_target;
   $("#export-confirm").disabled = info.count === 0;
   return info;
@@ -2605,6 +2608,16 @@ async function openExportModal() {
   if (st.running) followExport();
 }
 
+// How many files go out: the photos, and with Versions ticked their saved
+// slots (only those that differ from the photo's own edit and from each other).
+function showExportCount() {
+  const n = exportPick.count, v = exportPick.versions;
+  const on = $("#export-versions").checked;
+  $("#export-count").textContent = plural(n, "photo") + (on && v ? ` and ${plural(v, "version")}` : "");
+  $("#export-versions-note").textContent = !v ? "None of these photos has a saved slot."
+    : `${plural(v, "slot")} saved in these photos. Each is named after its photo and the slot's name, as a0_bw.jpg, or its number, as a0_slot2.jpg.`;
+}
+
 function closeExportModal() {
   $("#export-modal").classList.add("hidden");
 }
@@ -2619,6 +2632,8 @@ function applyExportSettings(st) {
   $("#export-size-custom").value = preset ? "" : size;
   $("#export-name").value = st.name_template;
   $("#export-metadata").value = st.metadata;
+  $("#export-versions").checked = !!st.versions;
+  showExportCount();
   syncExportForm();
   previewExportName();
 }
@@ -2653,6 +2668,7 @@ function readExportSettings() {
     long_edge: longEdge,
     metadata: $("#export-metadata").value,
     name_template: $("#export-name").value,
+    versions: $("#export-versions").checked,
   };
 }
 
@@ -2699,6 +2715,7 @@ function bindExportForm() {
     if ($("#export-size").value === "custom") $("#export-size-custom").focus();
   });
   $("#export-name").addEventListener("input", previewExportName);
+  $("#export-versions").addEventListener("change", showExportCount);
 }
 
 async function confirmExport() {
@@ -2764,7 +2781,8 @@ function finishExport(st) {
   }
   const r = st.result;
   const verb = r.cancelled ? "Stopped after" : "Exported";
-  let html = `${icon("check")} ${verb} <b>${r.copied}</b> photo${r.copied === 1 ? "" : "s"} to<br>`
+  const and = r.versions ? ` and <b>${r.versions}</b> version${r.versions === 1 ? "" : "s"}` : "";
+  let html = `${icon("check")} ${verb} <b>${r.copied}</b> photo${r.copied === 1 ? "" : "s"}${and} to<br>`
     + `<code>${escapeHtml(r.target_dir)}</code>`;
   if (r.skipped) html += `<br>Skipped ${r.skipped} (missing source).`;
   if (r.per_combo && Object.keys(r.per_combo).length) {
@@ -8184,26 +8202,31 @@ function renderSlots() {
     const save = `<button class="slot-btn" data-slot-save="${i}" title="${
       sl ? `Overwrite slot ${i + 1} with what is on screen`
          : `Save what is on screen into slot ${i + 1}`}">${icon("save")}</button>`;
+    const name = sl
+      ? `<button class="slot-btn" data-slot-name="${i}" title="Name slot ${i + 1}: an export with its versions ends the file's name with it">${icon("pencil")}</button>`
+      : `<span class="slot-btn" style="visibility:hidden">${icon("pencil")}</span>`;
     const del = sl
       ? `<button class="slot-btn" data-slot-del="${i}" title="Clear slot ${i + 1}">×</button>`
       : `<span class="slot-btn">&nbsp;</span>`;
     return `<div class="slot-row ${cls}" data-slot="${i}"${
       sl ? ` title="Click to load slot ${i + 1}"` : ""}>`
       + `<span class="slot-num">${i + 1}</span>`
-      + `<span class="slot-what">${escapeHtml(what)}</span>`
-      + `<span class="slot-when">${escapeHtml(when)}</span>${save}${del}</div>`;
+      + `<span class="slot-what">${sl?.name ? `<b>${escapeHtml(sl.name)}</b> · ` : ""}${escapeHtml(what)}</span>`
+      + `<span class="slot-when">${escapeHtml(when)}</span>${save}${name}${del}</div>`;
   }).join("");
 }
 
 // Write one slot through to the db. `edit` of null clears it. The server owns
-// the rack, so its answer replaces ours rather than being merged into it.
-async function slotWrite(i, edit) {
+// the rack, so its answer replaces ours rather than being merged into it. A
+// slot keeps its name when it is overwritten. A rename leaves alone which slot
+// the working edit came from.
+async function slotWrite(i, edit, name = editSession.slots[i]?.name || "", rename = false) {
   if (!editSession.relPath) return;
   const rel = editSession.relPath;
   const res = await fetch("/api/edit/slot", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rel_path: rel, slot: i, edit }),
+    body: JSON.stringify({ rel_path: rel, slot: i, edit, name }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -8211,7 +8234,7 @@ async function slotWrite(i, edit) {
     return;
   }
   const { slots } = await res.json();
-  editSession.slotTouch = edit ? i : -1;
+  if (!rename) editSession.slotTouch = edit ? i : -1;
   setSlots(slots);
   renderSlots();
   // The grid's copy has to agree, or reopening the editor shows the old rack.
@@ -8220,8 +8243,8 @@ async function slotWrite(i, edit) {
     if (editSession.slots.some(Boolean)) photo.edit_slots = editSession.slots;
     else delete photo.edit_slots;
   }
-  $("#edit-status").textContent = edit
-    ? `saved into slot ${i + 1}` : `slot ${i + 1} cleared`;
+  $("#edit-status").textContent = rename ? `slot ${i + 1} ${name ? `named ${name}` : "unnamed"}`
+    : edit ? `saved into slot ${i + 1}` : `slot ${i + 1} cleared`;
 }
 
 // Bring a stash back. Replaces the working edit outright — that is what a slot
@@ -8257,6 +8280,14 @@ function bindSlots() {
     if (save) { slotWrite(Number(save.dataset.slotSave), editPayload()); return; }
     const del = e.target.closest("[data-slot-del]");
     if (del) { slotWrite(Number(del.dataset.slotDel), null); return; }
+    const named = e.target.closest("[data-slot-name]");
+    if (named) {
+      const i = Number(named.dataset.slotName), sl = editSession.slots[i];
+      const name = prompt(`A name for slot ${i + 1}. An export with its versions names its file `
+        + `after the photo and this, as IMG_0001_${sl.name || "bw"}.jpg.`, sl.name || "");
+      if (name !== null) slotWrite(i, sl.edit, name.trim(), true);
+      return;
+    }
     // The row itself only ever loads. Saving is the button, always, full slot
     // or empty — one action per control.
     const row = e.target.closest("[data-slot]");
@@ -9007,6 +9038,8 @@ function openBulkModal(opts) {
   curCard.classList.toggle("disabled", !bulkState.currentEdit);
   setOptionCardValue("#bulk-source-cards", bulkState.currentEdit ? "current" : "preset");
   renderPresetOptions();
+  $("#bulk-into").value = "";
+  $("#bulk-slot-name").value = "";
   $("#bulk-status").textContent = "";
   updateBulkUi();
   $("#bulk-modal").classList.remove("hidden");
@@ -9023,9 +9056,27 @@ function updateBulkUi() {
   $("#bulk-mode-note").textContent = bulkMode() === "add"
     ? "keeps each photo's own adjustments; masks are added to them"
     : "discards each photo's current adjustments";
-  const n = bulkScopeRelPaths(getOptionCardValue("#bulk-scope-cards")).length;
-  $("#bulk-summary").textContent = n ? `${n} photo(s) will change` : "no target photos";
+  const rels = bulkScopeRelPaths(getOptionCardValue("#bulk-scope-cards"));
+  const n = rels.length, slot = bulkSlot();
+  $("#bulk-slot-name").classList.toggle("hidden", slot === null || source === "clear");
+  let summary = n ? `${n} photo(s) will change` : "no target photos";
+  if (n && slot !== null) {
+    // Their own edits stay as they are; what a slot held before is the one
+    // thing this replaces, so say how many hold something there.
+    const held = rels.filter((r) => state.photos.find((p) => p.rel_path === r)?.edit_slots?.[slot]).length;
+    summary = source === "clear"
+      ? `slot ${slot + 1} cleared on ${plural(held, "photo")} that have one`
+      : `a version in slot ${slot + 1} of ${plural(n, "photo")}; their own edits stay`
+        + (held ? `. ${held} already have one there, which this replaces` : "");
+  }
+  $("#bulk-summary").textContent = summary;
   $("#bulk-confirm").disabled = n === 0;
+}
+
+// The slot "Save as" puts the result in, or null for each photo's own edit.
+function bulkSlot() {
+  const v = $("#bulk-into").value;
+  return v === "" ? null : Number(v);
 }
 
 function bulkScopeRelPaths(scope) {
@@ -9062,6 +9113,8 @@ async function confirmBulkApply() {
   } else {
     body = { rel_paths: rels, edit: bulkSourceEdit(source), mode: bulkMode() };
   }
+  const slot = bulkSlot();
+  if (slot !== null) Object.assign(body, { slot, slot_name: $("#bulk-slot-name").value.trim() });
   $("#bulk-confirm").disabled = true;
   $("#bulk-status").textContent = "Applying…";
   const res = await fetch("/api/edit/bulk", { ...JSON_POST, body: JSON.stringify(body) });
@@ -9079,6 +9132,12 @@ async function confirmBulkApply() {
     if (!ph) continue;
     if (now.edit) { ph.edit = now.edit; ph.edited_at = now.edited_at; }
     else { delete ph.edit; delete ph.edited_at; }
+    if (now.edit_slots) ph.edit_slots = now.edit_slots; else delete ph.edit_slots;
+  }
+  // The editor's slot list, when it is open on one of them.
+  if (!$("#edit-modal").classList.contains("hidden") && rels.includes(editSession.relPath)) {
+    setSlots(result.photos[editSession.relPath].edit_slots);
+    renderSlots();
   }
   const left = Object.keys(result.skipped || {}).length;
   if (left) alert(`${left} photo${left === 1 ? " had" : "s had"} nothing for some of the preset's `
@@ -10598,6 +10657,9 @@ function bindUi() {
       updateBulkUi();
     }));
   $("#bulk-preset-select").addEventListener("change", updateBulkUi);
+  $("#bulk-into").insertAdjacentHTML("beforeend", Array.from({ length: EDIT_SLOTS }, (_, i) =>
+    `<option value="${i}">A version, in slot ${i + 1}</option>`).join(""));
+  $("#bulk-into").addEventListener("change", updateBulkUi);
   $("#people-cluster-btn").addEventListener("click", () => startCluster(null));
   bindClusterModal();
   $("#people-manage-btn").addEventListener("click", openPeopleModal);

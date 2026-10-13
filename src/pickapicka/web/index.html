@@ -771,6 +771,15 @@
           <span id="export-count">—</span>
         </div>
         <div class="export-row">
+          <label for="export-versions">Versions</label>
+          <label class="cb"><input type="checkbox" id="export-versions" />
+            Each saved slot too, as a file of its own</label>
+        </div>
+        <div class="export-row export-sub">
+          <label></label>
+          <span class="export-note" id="export-versions-note"></span>
+        </div>
+        <div class="export-row">
           <label for="export-target">Target folder</label>
           <input type="text" id="export-target" placeholder="/absolute/path/to/output" spellcheck="false" />
           <button type="button" class="browse-btn" id="export-browse">Browse…</button>
@@ -1619,7 +1628,9 @@
                   Versions of this photo, kept on disk. Saving into a slot changes
                   nothing about the photo itself, and loading one only changes
                   what is on screen until you press Save — so Cancel loses the
-                  working edit and keeps every slot.
+                  working edit and keeps every slot. An export with Versions ticked
+                  writes each slot as a file of its own, with the slot's name
+                  (or number) after the photo's.
                 </p>
                 <div class="slot-list" id="edit-slots"></div>
               </div>
@@ -1898,6 +1909,14 @@
                     data-bulk-mode="replace" type="button">replace</button>
           </span>
           <span class="bulk-mode-note" id="bulk-mode-note"></span>
+        </div>
+        <div class="bulk-row">
+          <label for="bulk-into">Save as</label>
+          <select id="bulk-into">
+            <option value="">Each photo's edit</option>
+          </select>
+          <input type="text" id="bulk-slot-name" maxlength="40" spellcheck="false"
+                 placeholder="name, e.g. bw" title="Ends the version's file name in an export" />
         </div>
         <div id="bulk-status"></div>
       </div>

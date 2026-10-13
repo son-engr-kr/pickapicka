@@ -157,6 +157,12 @@ resting on the grid does not pull the cursor when the page turns under it.
   `{project}`); and metadata kept whole, kept without location, or left out.
   The export runs in the background with a progress bar and can be stopped,
   and the dialog opens on the settings used last.
+- **Versions**: with **Each saved slot too** ticked, an export writes every
+  saved edit slot of a photo (see *Slots* in the editing guide) as a file of
+  its own beside the photo, `a0_bw.jpg` after a slot named `bw`, `a0_slot2.jpg`
+  after one with no name. A slot that would come out the same as the photo, or
+  as another slot, is left out, and a version never takes the name of a file
+  already there. The count says how many versions go out with the photos.
 - **Metadata survives the export.** Camera, lens, exposure, capture time,
   copyright and GPS are carried into every rendered file. Orientation is reset
   because the pixels are already upright, and the size is the exported size.

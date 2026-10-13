@@ -2967,3 +2967,6 @@ html.launching #intro { position: fixed; inset: 0; z-index: 1000; display: flex;
 .projects-banner .icon { color: var(--review); width: 14px; height: 14px; flex: none; }
 .pref-ws-missing { color: var(--review); }
 #choice-body { white-space: pre-line; }
+#bulk-slot-name { width: 130px; background: var(--bg-3); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 6px 8px; font: inherit; font-size: 12px; }
+#bulk-slot-name.hidden { display: none; }

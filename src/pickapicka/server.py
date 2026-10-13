@@ -173,6 +173,11 @@ class EditBulkPayload(BaseModel):
     # which has no modes; `edit` and `mode` are then not read.
     preset_id: str | None = None
     amount: float = Field(default=100, ge=0, le=200)
+    # Into this edit slot (0-based) instead: the result is saved as a version
+    # beside each photo's own edit, which stays as it is. With an empty `edit`
+    # in "replace" mode, the slot is cleared.
+    slot: int | None = None
+    slot_name: str = ""
 
 
 class AutoTonePayload(BaseModel):
@@ -267,6 +272,9 @@ class ExportSettings(BaseModel):
     long_edge: int | None = None          # None: full size
     metadata: metadata_mod.MetadataMode = "all"
     name_template: str = "{name}"
+    # Each photo's saved edit slots too, a file each beside the photo's own
+    # (`_export_versions`).
+    versions: bool = False
 
 
 ExportWhich = Literal["picks", "kept", "all"]
@@ -1305,6 +1313,30 @@ def _needs_render(photo: dict[str, Any]) -> bool:
     return photo.get("type") == "raw" or bool(edit and not editing.is_neutral(edit))
 
 
+def _export_versions(photo: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """The versions of a photo an export writes beside it: each saved edit slot
+    as (what its file name ends in, its edit), in slot order. The ending is the
+    slot's name, or `slot` and its number. A slot that would come out the same
+    as the photo's own edit, or as a slot before it, is left out: it would only
+    be the same picture twice."""
+    seen = {editing.edit_hash(photo.get("edit"))}
+    taken: set[str] = set()
+    out: list[tuple[str, dict[str, Any]]] = []
+    for i, entry in enumerate(photo.get("edit_slots") or []):
+        if entry is None:
+            continue
+        h = editing.edit_hash(entry["edit"])
+        if h in seen:
+            continue
+        seen.add(h)
+        tail = _sanitize_segment(entry.get("name") or f"slot{i + 1}")
+        if tail in taken:
+            tail = f"{tail}{i + 1}"
+        taken.add(tail)
+        out.append((tail, entry["edit"]))
+    return out
+
+
 def _unique_name(parent: Path, base: str, seen: set[str]) -> str:
     """A name free in `parent` and not already claimed in this run."""
     stem, suffix = Path(base).stem, Path(base).suffix
@@ -1371,6 +1403,7 @@ def _export_picks_to(ctx: "AppContext", picks: list[dict[str, Any]], target: Pat
     width = exporting.seq_width(len(picks))
     copied: list[str] = []
     skipped: list[str] = []
+    versions = 0
     per_combo: dict[str, int] = {}
     for seq, photo in enumerate(picks, start=1):
         if state["cancel"]:
@@ -1413,12 +1446,21 @@ def _export_picks_to(ctx: "AppContext", picks: list[dict[str, Any]], target: Pat
         else:  # "folder"
             dst = (target / rel).parent / out_name
             dst.parent.mkdir(parents=True, exist_ok=True)
+            used_names.setdefault(dst.parent, set()).add(out_name)
         _bake_photo(ctx, photo, rel, dst, settings)
+        # The versions go beside the photo, whichever folder it went to, and
+        # never over a file: a slot's name is the user's to choose.
+        for tail, edit in _export_versions(photo) if settings.versions else []:
+            version = {**photo, "edit": edit}
+            name = _baked_name(ctx, version, rel, settings, f"{stem}_{tail}")
+            _bake_photo(ctx, version, rel, dst.parent / unique_in(dst.parent, name), settings)
+            versions += 1
         copied.append(rel)
         state["idx"] = seq
     return {
         "target_dir": str(target),
         "copied": len(copied),
+        "versions": versions,
         "skipped": len(skipped),
         "missing": skipped,
         "cancelled": bool(state["cancel"]),
@@ -3690,10 +3732,19 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             photo = ctx.photo_index.get(rp)
             if photo is None:
                 raise HTTPException(status_code=404, detail=f"photo not found: {rp}")
+        if payload.slot is not None and not 0 <= payload.slot < EDIT_SLOTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"slot must be 0..{EDIT_SLOTS - 1}, got {payload.slot}")
+        clear_slot = (payload.slot is not None and payload.preset_id is None
+                      and payload.mode == "replace" and not payload.edit)
         preset = _preset(payload.preset_id) if payload.preset_id else None
         skipped: dict[str, list[str]] = {}
         for rp in payload.rel_paths:
             photo = ctx.photo_index[rp]
+            if clear_slot:
+                _write_slot(photo, payload.slot, None)
+                continue
             if preset is not None:
                 edit, left_out = _apply_preset(rp, photo.get("edit"), preset, payload.amount)
                 if left_out:
@@ -3703,10 +3754,17 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             else:
                 edit = _keep_own(editing.normalize(payload.edit), photo.get("edit"))
             _keep_lut(ctx, edit)
-            _apply_edit_to_photo(photo, edit)
+            if payload.slot is None:
+                _apply_edit_to_photo(photo, edit)
+            else:
+                # As the editor's own slot save has it; the photo renders as before.
+                _write_slot(photo, payload.slot, {
+                    "edit": editing.normalize(edit), "saved_at": datetime.now().isoformat(),
+                    "name": payload.slot_name[:40]})
         with ctx.save_lock:
             db.save(ctx.db_path, ctx.data)
-        _prebuild_thumbs(ctx, list(payload.rel_paths))
+        if payload.slot is None:
+            _prebuild_thumbs(ctx, list(payload.rel_paths))
         # Each photo as it now is: a preset lands differently on each (its own
         # auto tone, the layers it has nothing for), so the grid is told rather
         # than left to work it out.
@@ -3750,9 +3808,13 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=400,
                 detail=f"slot must be 0..{EDIT_SLOTS - 1}, got {payload.slot}")
-        entry = None if payload.edit is None else {
-            "edit": editing.normalize(payload.edit),
-            "saved_at": datetime.now().isoformat(),
+        rack = photo.get("edit_slots") or []
+        old = rack[payload.slot] if payload.slot < len(rack) else None
+        edit = None if payload.edit is None else editing.normalize(payload.edit)
+        entry = None if edit is None else {
+            "edit": edit,
+            # Naming a slot is not saving into it: it keeps when it was filled.
+            "saved_at": old["saved_at"] if old and old["edit"] == edit else datetime.now().isoformat(),
             "name": (payload.name or "")[:40],
         }
         slots = _write_slot(photo, payload.slot, entry)
@@ -4322,7 +4384,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                              scenes: list[str] | None = Query(None)) -> dict[str, Any]:
         _require_loaded()
         chosen = _export_selection(scenes, which)
-        return {"count": len(chosen), "default_target": str(_export_folder_name(scenes)),
+        return {"count": len(chosen),
+                "versions": sum(len(_export_versions(p)) for p in chosen),
+                "default_target": str(_export_folder_name(scenes)),
                 "settings": ExportSettings(**userstate.get_export_settings()).model_dump()}
 
     @app.post("/api/export/name-preview")
