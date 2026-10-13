@@ -705,18 +705,35 @@ and black and white say, with each look in a slot:
 ## Presets
 
 A preset is a named set of **parts** of an edit, and it carries only the parts
-ticked when it was saved. None ship with the app; the 39 that once did went
-unused. How it behaves follows what Lightroom, Capture One, darktable and DxO
-PhotoLab agree on, which is also what the old *add* and *replace* modes did not
-do.
+ticked when it was saved. How it behaves follows what Lightroom, Capture One,
+darktable and DxO PhotoLab agree on, which is also what the old *add* and
+*replace* modes did not do.
+
+Twenty **looks** come with the app, listed after your own presets in six
+groups: Bright & soft (Pastel, Airy, Peach, Cotton candy), Vivid (Vivid,
+Clear, Golden hour, Autumn), Moody (Cinematic, Moody, Heritage, Forest), Film
+(Portrait film, Daylight film, Gold film, Faded 70s), Black & white (Noir,
+Silver) and Comic (Anime, Comic). They are the kind of colour an Instagram
+filter gives, for landscapes and portraits alike, and they are presets like
+any other (Amount, Remove, Shift-click), read-only. Each is made of the parts
+that are a look rather than a correction of this photo: the tone curves, the
+colour mixer and the grading wheels, and film for the film looks. None
+carries Light, so the Exposure slider stays where it was, and all of them
+carry **Keep brightness** (below), so the photo's brightness does too. The two
+black and white looks carry Color for its Saturation, which also puts
+Temperature and Tint at zero. Moody, Heritage, Noir, Anime and Comic carry
+Detail & effects for clarity, texture or a vignette, and so set sharpening and
+noise reduction too; the five with a glow carry Creative. Hovering one says
+what it is for.
 
 - **Saving** (**Presets** above the tabs, then *Save this edit as a preset*)
   lists every part: Light, Color, Tone curve, Color mixer, Color grading,
   Detail & effects, Creative, Look, Film, Layers, Portrait (all faces), Crop &
-  straighten, Lens & perspective, Watermark, and Auto light. *Modified* (the
-  default) ticks every part this edit sets; crop, lens and the watermark are
-  marked as usually the photo's own when they are, to untick if the preset is
-  a look rather than this photo. *All* and *None* are there too. Heals, red
+  straighten, Lens & perspective, Watermark, Auto light and Keep brightness.
+  *Modified* (the default) ticks every part this edit sets; crop, lens and the
+  watermark are marked as usually the photo's own when they are, to untick if
+  the preset is a look rather than this photo. *All* and *None* are there too;
+  *All* leaves Auto light and Keep brightness to be ticked by hand. Heals, red
   eye and a face's own portrait settings are never part of one.
 - **Applying** sets each ticked part to the stored value, **a zero included**,
   and leaves every other part of the photo's edit as it was. Values are
@@ -731,6 +748,21 @@ do.
   tone sets exposure, contrast, whites and blacks, so one preset suits frames
   exposed differently. It runs after a stored Light part, so it wins for those
   four.
+- **Keep brightness** is the other part with no values, and the opposite
+  promise. A look's curves and colours move a frame's midtone, and a fixed
+  curve cannot know where that midtone is: an unedited RAW's sits near a
+  quarter of the way up, a frame after Auto near the middle, a night frame
+  lower still. So on applying, the photo is rendered small with and without
+  the preset, and the preset's master curve is bent (a gamma under it, which
+  leaves its own black and white where they were) until the photo's median
+  brightness is what it was. Measured against the photo itself rather than
+  against a target, a night frame stays a night frame and a snowfield stays
+  bright. The bend never blows out or blocks up more of the frame than the
+  preset itself does; where the midtone cannot come all the way back without
+  that, it comes as far as it can. On 80 picks of a hiking shoot, the twenty
+  looks moved the median by 0.03 stops on average with it, where their curves
+  alone moved it by up to a fifth of a stop. It is measured on the photo's own
+  grade without its layers, and costs about 30 ms an apply.
 - **The preset just applied** shows a chip beside **Presets** for as long as
   the edit is exactly as it left it: **Amount** (0 to 200) moves every value
   from where the photo had it towards the preset's, and **Remove** goes back to

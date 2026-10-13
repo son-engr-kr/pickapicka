@@ -8338,6 +8338,7 @@ const PRESET_PART_LABELS = {
   curve: "Tone curve", mixer: "Color mixer", grading: "Color grading", look: "Look",
   film: "Film", layers: "Layers", portrait: "Portrait (all faces)", crop: "Crop & straighten",
   lens: "Lens & perspective", watermark: "Watermark", auto_light: "Auto light",
+  keep_light: "Keep brightness",
 };
 // The save dialog's sections, in the editor's own order.
 const PRESET_PART_GROUPS = [
@@ -8345,8 +8346,10 @@ const PRESET_PART_GROUPS = [
   ["Retouch", ["portrait"]],
   ["Geometry", ["crop", "lens"]],
   ["Output", ["watermark"]],
-  ["From each photo", ["auto_light"]],
+  ["From each photo", ["auto_light", "keep_light"]],
 ];
+// Parts with no values, worked out from each photo on apply; "All" leaves them.
+const PRESET_FROM_PHOTO = ["auto_light", "keep_light"];
 const PRESET_THUMB_EDGE = 160;
 const PRESET_HOVER_MS = 220;
 
@@ -8359,7 +8362,6 @@ async function loadPresets() {
 }
 
 function renderPresetOptions(selectId) {
-  const mine = state.presets;
   const opts = (list) => list.map((p) => {
     // Flag the ones that carry local adjustments — those are the presets the
     // add/replace choice actually matters for.
@@ -8372,7 +8374,9 @@ function renderPresetOptions(selectId) {
     if (!sel) continue;
     const keep = selectId != null ? selectId : sel.value;
     const placeholder = sel.id === "bulk-preset-select" ? "Choose a preset…" : "Presets…";
-    sel.innerHTML = `<option value="">${placeholder}</option>` + opts(mine);
+    sel.innerHTML = `<option value="">${placeholder}</option>` + presetSections()
+      .filter((sec) => sec.items.length)
+      .map((sec) => `<optgroup label="${escapeAttr(sec.name)}">${opts(sec.items)}</optgroup>`).join("");
     if (keep && state.presets.some((p) => p.id === keep)) sel.value = keep;
   }
 }
@@ -8504,22 +8508,36 @@ function openPresetPanel(open) {
   if (open) renderPresetList(); else presetHoverEnd();
 }
 
+// The user's own presets, then the looks that come with the app, by group,
+// in the order the server lists them.
+function presetSections() {
+  const sections = [{ name: "Your presets", items: [] }];
+  for (const p of state.presets) {
+    const name = p.builtin ? p.group : "Your presets";
+    let sec = sections.find((x) => x.name === name);
+    if (!sec) sections.push(sec = { name, items: [] });
+    sec.items.push(p);
+  }
+  return sections;
+}
+
 function renderPresetList() {
   const list = $("#preset-list");
   if (!list) return;
-  if (!state.presets.length) {
-    list.innerHTML = `<div class="mask-parts-empty">No presets yet. Save one from an edit you like.</div>`;
-    return;
-  }
   const live = editSession.livePreset ? livePreset() : null;
-  list.innerHTML = state.presets.map((p) =>
+  const row = (p) =>
     `<div class="preset-item${live && live.id === p.id ? " active" : ""}" data-preset="${p.id}" ` +
-    `role="button" tabindex="0">` +
+    `role="button" tabindex="0"${p.hint ? ` title="${escapeAttr(p.hint)}"` : ""}>` +
     `<img class="preset-thumb" data-preset-thumb="${p.id}" alt="" />` +
     `<div class="preset-text"><span class="preset-name">${escapeHtml(p.name)}</span>` +
     `<span class="preset-chips">${presetChips(p).map((c) =>
       `<span class="preset-chip">${escapeHtml(c)}</span>`).join("")}</span></div>` +
-    `<button class="mask-del" data-preset-del="${p.id}" title="Delete this preset">×</button></div>`,
+    (p.builtin ? "" : `<button class="mask-del" data-preset-del="${p.id}" title="Delete this preset">×</button>`) +
+    `</div>`;
+  list.innerHTML = presetSections().map((sec) =>
+    `<div class="preset-group">${escapeHtml(sec.name)}</div>` +
+    (sec.items.length ? sec.items.map(row).join("")
+      : `<div class="preset-none">None yet. Save an edit you like with the button above.</div>`),
   ).join("");
   // The rows are new elements; their pictures come back from the cache.
   if (presetPanelOpen()) renderPresetThumbs();
@@ -8648,13 +8666,14 @@ function renderPresetSaveParts() {
       (modified.has(k) && presetSave.photoOwn.includes(k)
         ? `<span class="preset-part-hint">set · often photo-specific</span>`
         : modified.has(k) ? `<span class="preset-part-hint">set</span>`
-        : k === "auto_light" ? `<span class="preset-part-hint">each photo's own tone</span>` : "") +
+        : k === "auto_light" ? `<span class="preset-part-hint">each photo's own tone</span>`
+        : k === "keep_light" ? `<span class="preset-part-hint">the photo's own brightness stays</span>` : "") +
       `</label>`).join("") + `</div>`).join("");
   const n = presetSave.parts.size;
   $("#preset-save-summary").textContent = n ? `${n} part${n === 1 ? "" : "s"}` : "nothing ticked";
   $("#preset-save-confirm").disabled = !n;
   for (const b of $$("[data-parts-quick]")) {
-    const all = PRESET_PART_GROUPS.flatMap(([, ps]) => ps).filter((k) => k !== "auto_light");
+    const all = PRESET_PART_GROUPS.flatMap(([, ps]) => ps).filter((k) => !PRESET_FROM_PHOTO.includes(k));
     const sets = { modified: presetSave.modified, all, none: [] };
     const want = new Set(sets[b.dataset.partsQuick]);
     b.classList.toggle("active", want.size === presetSave.parts.size
@@ -8713,7 +8732,7 @@ function bindPresets() {
     renderPresetSaveParts();
   });
   $$("[data-parts-quick]").forEach((b) => b.addEventListener("click", () => {
-    const all = PRESET_PART_GROUPS.flatMap(([, ps]) => ps).filter((k) => k !== "auto_light");
+    const all = PRESET_PART_GROUPS.flatMap(([, ps]) => ps).filter((k) => !PRESET_FROM_PHOTO.includes(k));
     presetSave.parts = new Set({ modified: presetSave.modified, all, none: [] }[b.dataset.partsQuick]);
     renderPresetSaveParts();
   }));

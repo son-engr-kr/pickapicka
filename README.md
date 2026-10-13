@@ -81,7 +81,8 @@ auto-merge, and subject and face grouping.
 from shapes that add, subtract and intersect, crop and straighten, defocus and
 motion and bloom and mosaic, film emulation built as a chain rather than a
 filter, watermarks from EXIF templates, presets that carry only the parts you
-tick.
+tick, and twenty looks to start from (pastel, cinematic, film, black and white,
+comic and more) that leave each photo's brightness as it was.
 → [docs/editing.md](docs/editing.md)
 
 **Projects** — workspaces holding projects by name, three folder layouts, RAW

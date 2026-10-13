@@ -2505,6 +2505,10 @@ button.primary:disabled { background: var(--raised); border-color: var(--line); 
   border-radius: var(--r2); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); }
 .preset-panel.hidden { display: none; }
 .preset-list { display: flex; flex-direction: column; gap: 2px; }
+.preset-group { margin: var(--s2) 4px 2px; font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.6px;
+  text-transform: uppercase; color: var(--ink-faint); }
+.preset-group:first-child { margin-top: 0; }
+.preset-none { padding: 2px 4px 6px; font-size: var(--fs-xs); color: var(--ink-faint); }
 .preset-item { display: flex; align-items: center; gap: var(--s2); padding: 4px;
   border-radius: var(--r1); border: 1px solid transparent; cursor: pointer; }
 .preset-item:hover, .preset-item:focus-visible { background: var(--raised); outline: none; }

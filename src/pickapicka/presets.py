@@ -26,6 +26,14 @@ One, darktable and DxO PhotoLab agree on (see docs/editing.md, "Presets"):
 (`editing.auto_tone`) sets exposure, contrast, whites and blacks, so one preset
 suits frames exposed differently. It runs after the other parts, so it wins
 over a stored Light part for those four sliders.
+
+`keep_light` is the other part with no values, and the opposite promise: the
+photo keeps its own brightness. A look's curves and colours move a frame's
+midtone, and a fixed curve cannot know where that midtone is; a night frame's
+sits at a tenth of a day frame's. So the photo is measured, before and after,
+and the preset's master curve is bent until its median comes back
+(`keep_light`). Measured against the photo itself, not against a target, a
+night frame stays a night frame and a snowfield stays bright.
 """
 from __future__ import annotations
 
@@ -56,7 +64,10 @@ PARTS: dict[str, tuple[str, ...]] = {
     "watermark": ("watermark",),
 }
 AUTO_LIGHT = "auto_light"
-PART_NAMES: tuple[str, ...] = (*PARTS, AUTO_LIGHT)
+KEEP_LIGHT = "keep_light"
+PART_NAMES: tuple[str, ...] = (*PARTS, AUTO_LIGHT, KEEP_LIGHT)
+# Parts with no values: what they do is worked out from each photo on apply.
+FROM_THE_PHOTO: tuple[str, ...] = (AUTO_LIGHT, KEEP_LIGHT)
 # Parts that are usually the photo's own (its framing, its lens, its
 # signature) rather than the look's. Ticked like any other when set; the save
 # dialog says this about them. Leaving them out of "Modified" was tried, and
@@ -231,7 +242,7 @@ def apply(base: dict[str, Any] | None, preset: dict[str, Any], amount: float = 1
     out = copy.deepcopy(b)
     on = a > 0
     for part in parts:
-        if part == AUTO_LIGHT:
+        if part in FROM_THE_PHOTO:
             continue
         if part in _SLIDER_PARTS:
             for k in PARTS[part]:
@@ -273,3 +284,112 @@ def apply(base: dict[str, Any] | None, preset: dict[str, Any], amount: float = 1
         if "pv" in p:
             out["pv"] = p["pv"]
     return editing.normalize(out)
+
+
+# ----- keep the photo's brightness ----------------------------------------
+#
+# The correction is a gamma under the master curve, C(x ** g): it moves the
+# midtone and leaves the curve's own black and white where the look put them,
+# so a faded black stays faded. Solved by bisection on renders of a small copy
+# of the photo; a few milliseconds each at this size.
+#
+# Except where the look's black or white is beyond the photo's midtone: a
+# fade to 0.07 is above the whole of a night frame, whose median sits near
+# 0.06, and no gamma brings back a midtone the floor is above. So the ends of
+# every curve, the master and the three channels, are first fitted to the
+# photo (`_fit_ends`): a lifted black may come up by at most half the frame's
+# median, and a lowered white come down by at most half of what lies above it.
+# A night frame gets a gentler fade, in proportion. What the film stage does
+# after the curves is not undone: film's own black is a few levels above zero.
+
+KEEP_EDGE = 256                    # long edge of the copy the photo is measured on
+_KEEP_GAMMA = (0.5, 2.0)           # about a stop either way at a mid grey
+_KEEP_STEPS = 8                    # the median lands within a few hundredths of a stop
+_KEEP_TOLERANCE = 0.003            # share of the frame the correction may newly clip
+_BLOWN, _BLOCKED = 0.985, 0.02     # encoded luma counted as white, and as black
+_NOTHING = 1.5 / 255.0             # a median this low has no midtone to keep
+# Where the corrected curve is sampled: closer together at the ends, where a
+# look keeps its fade and its roll-off.
+_KEEP_XS = (0.0, 0.06, 0.14, 0.25, 0.38, 0.52, 0.68, 0.84, 1.0)
+_LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+
+
+def _light(rgb: np.ndarray) -> tuple[float, float, float]:
+    """A rendered frame's median encoded luma, and its shares blown and blocked."""
+    y = (rgb.astype(np.float32) / 255.0) @ _LUMA
+    return float(np.median(y)), float((y >= _BLOWN).mean()), float((y <= _BLOCKED).mean())
+
+
+_END_SHARE = 0.5                   # of the midtone, how far a black may lift
+_END_REACH = 0.35                  # how far into the tones the eased ends reach
+
+
+def _fit_ends(curve: list[list[float]], median: float) -> list[list[float]]:
+    """`curve` with its lifted black and lowered white eased to suit a frame of
+    this median encoded luma, sampled at _KEEP_XS; the curve itself when its
+    ends already suit it. The easing fades out over `_END_REACH` of the tones,
+    and keeps the curve rising: it takes away more where the curve is lower."""
+    lut = editing._curve_lut(curve, 1024)
+    floor_cut = max(0.0, float(lut[0]) - _END_SHARE * median)
+    ceil_cut = max(0.0, (1.0 - _END_SHARE * (1.0 - median)) - float(lut[-1]))
+    if floor_cut < 1e-3 and ceil_cut < 1e-3:
+        return curve
+    grid = np.linspace(0.0, 1.0, 1024)
+    lo = np.clip(1.0 - grid / _END_REACH, 0.0, 1.0) ** 2
+    hi = np.clip((grid - (1.0 - _END_REACH)) / _END_REACH, 0.0, 1.0) ** 2
+    eased = np.clip(lut - floor_cut * lo + ceil_cut * hi, 0.0, 1.0)
+    return [[x, float(np.interp(x, grid, eased))] for x in _KEEP_XS]
+
+
+def _under_gamma(curve: list[list[float]], g: float) -> list[list[float]]:
+    lut = editing._curve_lut(curve, 1024)
+    return [[x, float(np.interp(x ** g, np.linspace(0.0, 1.0, 1024), lut))] for x in _KEEP_XS]
+
+
+def keep_light(reference: dict[str, Any] | None, edit: dict[str, Any],
+               render) -> dict[str, Any]:
+    """`edit`, a preset laid on `reference`, with its master curve bent so the
+    photo's median brightness is what it was in `reference`.
+
+    `render(edit)` is the photo rendered small, as uint8 RGB. The correction
+    never blows out or blocks up more of the frame than the photo had or the
+    look itself does, whichever is more (beyond `_KEEP_TOLERANCE`): a night
+    sky the look's fade lifted may go back to the black it was, and no
+    further. Where the midtone cannot come all the way back within that, it
+    comes as far as it can. A frame with no midtone to measure, all but black
+    or all but white, is left as the preset made it.
+    """
+    e = editing.normalize(edit)
+    target, hi0, lo0 = _light(render(reference))
+    if target <= _NOTHING or target >= _BLOWN:
+        return e
+    e = {**e, **{k: _fit_ends(e[k], target) for k in editing.CURVE_KEYS}}
+
+    def at(g: float) -> dict[str, Any]:
+        return {**e, "curve": _under_gamma(e["curve"], g)}
+
+    m1, hi1, lo1 = _light(render(e))
+    if abs(m1 - target) < 0.002:
+        return e
+    lo, hi = _KEEP_GAMMA
+    for _ in range(_KEEP_STEPS):          # a larger g darkens
+        g = (lo * hi) ** 0.5
+        if _light(render(at(g)))[0] > target:
+            lo = g
+        else:
+            hi = g
+    g = (lo * hi) ** 0.5
+    # Clipping guard: back towards 1 until the correction adds no more blown
+    # (when it brightens) or blocked (when it darkens) than the look had.
+    k = 1 if g < 1 else 2
+    limit = (max(hi0, hi1) if k == 1 else max(lo0, lo1)) + _KEEP_TOLERANCE
+    if _light(render(at(g)))[k] > limit:
+        near, far = 1.0, g
+        for _ in range(_KEEP_STEPS):
+            mid = (near * far) ** 0.5
+            if _light(render(at(mid)))[k] > limit:
+                far = mid
+            else:
+                near = mid
+        g = near
+    return editing.normalize(at(g) if abs(g - 1) > 1e-3 else e)

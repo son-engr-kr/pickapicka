@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 from . import (
     aifill as aifill_mod, cameras, db, editing, genfill as genfill_mod, healing as healing_mod,
     modelstore, exifinfo, exporting, film as film_mod, folderinfo, fsutil, hdr, imfile,
-    launch, lut as lut_mod, metadata as metadata_mod, originals as originals_mod,
+    launch, looks as looks_mod, lut as lut_mod, metadata as metadata_mod, originals as originals_mod,
     portrait as portrait_mod,
     presets as presets_mod, projects as projects_mod,
     redeye as redeye_mod, transform as transform_mod, raw, relink, scenes, segment as segment_mod,
@@ -81,6 +81,7 @@ EDIT_BASE_CACHE_MAX = 4    # photos whose preview arrays are kept (RAW A/B benef
 EDIT_VARIANTS_PER_PHOTO = 6  # the decode, a draft, a fit-sized copy, lens-corrected copies
 PORTRAIT_CACHE_MAX = 64    # photos whose faces are kept analysed
 FILL_CACHE_MAX = 64        # AI fill patches kept decoded
+MEASURE_CACHE_MAX = 48     # small copies Keep brightness measures, kept decoded
 PREFETCH_MAX = 2           # neighbours decoded ahead: under EDIT_BASE_CACHE_MAX with the current one
 FULL_BASE_CACHE_MAX = 2    # full-res decode LRU: big arrays, so keep very few
 EDIT_ZOOM_MAX_OUT = 3200   # cap on the pixels a 1:1 request may return
@@ -660,6 +661,10 @@ class AppContext:
         self.portrait_lock = threading.Lock()
         self.fill_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
         self.fill_lock = threading.Lock()
+        # Keep brightness's small copies, apart from the editor's decodes so
+        # that applying a preset to a few hundred photos pushes none of those out.
+        self.measure_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
+        self.measure_lock = threading.Lock()
         # Per photo: the automatic chromatic-aberration estimate made on its
         # preview decode, and the optics of its last settled editor render,
         # whose analysis (faces, segmentation, range source) a drag reuses.
@@ -728,6 +733,7 @@ class AppContext:
         self.portrait_cache.clear()
         self.ca_cache.clear()
         self.settled_optics.clear()
+        self.measure_cache.clear()
         self.opening_state = self._fresh_opening_state()
 
     def load_db(self, db_path: Path) -> None:
@@ -804,6 +810,7 @@ class AppContext:
         self.portrait_cache.clear()
         self.ca_cache.clear()
         self.settled_optics.clear()
+        self.measure_cache.clear()
 
     def _rebuild_index(self) -> None:
         self.photo_index = {p["rel_path"]: p for p in self.data.get("photos", [])}
@@ -873,6 +880,31 @@ class AppContext:
         if photo.get("type") == "raw" and not photo.get("full_size"):
             photo["full_size"] = list(raw.output_size(self.source_path(rel_path)))
         return pixel_size(photo)
+
+    def measure_base(self, rel_path: str) -> np.ndarray:
+        """The photo at presets.KEEP_EDGE, for Keep brightness to measure. From
+        the file its thumbnail comes from, a RAW's cached preview or the photo's
+        own JPEG, decoded at a reduced size: a RAW decode is a third of a second
+        or more, and Apply to more measures every photo it touches."""
+        with self.measure_lock:
+            if rel_path in self.measure_cache:
+                self.measure_cache.move_to_end(rel_path)
+                return self.measure_cache[rel_path]
+        src = _thumb_source(self, rel_path, self.photo_index.get(rel_path))
+        if not src.is_file():
+            raise OriginalMissing(str(src))
+        edge = presets_mod.KEEP_EDGE
+        with Image.open(src) as im:
+            im.draft("RGB", (edge * 2, edge * 2))   # a no-op for anything but JPEG
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((edge, edge), Image.Resampling.LANCZOS)
+            arr = np.ascontiguousarray(np.asarray(im))
+        arr.flags.writeable = False
+        with self.measure_lock:
+            self.measure_cache[rel_path] = arr
+            while len(self.measure_cache) > MEASURE_CACHE_MAX:
+                self.measure_cache.popitem(last=False)
+        return arr
 
     def decode_full(self, rel_path: str) -> np.ndarray:
         """Full-resolution oriented RGB uint8 (used for export baking)."""
@@ -3961,9 +3993,9 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         }
 
     def _all_presets() -> list[dict[str, Any]]:
-        """The user's own presets, each in today's shape (presets.upgrade). None
-        ship with the app: the 39 that did went unused."""
-        return [presets_mod.upgrade(p) for p in userstate.list_presets()]
+        """The user's own presets, each in today's shape (presets.upgrade), then
+        the looks that ship with the app (looks.py), which are read-only."""
+        return [presets_mod.upgrade(p) for p in userstate.list_presets()] + looks_mod.LOOKS
 
     def _preset(preset_id: str) -> dict[str, Any]:
         found = next((p for p in _all_presets() if p["id"] == preset_id), None)
@@ -4000,7 +4032,23 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                 if all(float(fields[g].max()) <= 0.5 for g in editing.mask_groups(m)):
                     skipped.append(m["name"] or ", ".join(sorted(editing.mask_groups(m))))
                     out["masks"].remove(m)
+        if presets_mod.KEEP_LIGHT in preset["parts"]:
+            # The brightness kept is the photo's before this preset, with
+            # Auto light when the preset brings that too.
+            reference = base if auto is None else presets_mod.apply(
+                base, {**preset, "parts": [presets_mod.AUTO_LIGHT]}, amount, auto=auto)
+            out = presets_mod.keep_light(reference, out, lambda e: _measure_render(rel_path, e))
         return editing.normalize(out), skipped
+
+    def _measure_render(rel_path: str, edit: dict[str, Any] | None) -> np.ndarray:
+        """The photo small, under its global grade: what Keep brightness
+        measures. Layers, repairs, portrait work and the watermark are left out;
+        a preset that keeps the brightness changes none of them."""
+        e = editing.normalize(edit)
+        e = {**e, "masks": [], "healing": None, "redeye": None, "portrait": None, "watermark": None}
+        return editing.render(ctx.measure_base(rel_path), e,
+                              meta=ctx.photo_meta(rel_path), with_watermark=False,
+                              luts=_lut_tables(ctx, e), ca=ctx.ca_for(rel_path, e))
 
     @app.get("/api/film/stocks")
     def film_stocks() -> dict[str, Any]:
@@ -4044,6 +4092,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
 
     @app.delete("/api/presets/{preset_id}")
     def delete_preset(preset_id: str) -> dict[str, Any]:
+        if any(lk["id"] == preset_id for lk in looks_mod.LOOKS):
+            raise HTTPException(status_code=400, detail="a look that comes with the app cannot be deleted")
         userstate.delete_preset(preset_id)
         return {"presets": _all_presets()}
 
