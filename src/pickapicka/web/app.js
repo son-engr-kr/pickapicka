@@ -1977,12 +1977,15 @@ function scenePreviewEl(scene, photos) {
   el.innerHTML = shown.map((p) => `<img loading="lazy" alt="" src="${thumbUrl(p)}"
       data-rel="${escapeAttr(p.rel_path)}" title="${escapeAttr(basename(p.rel_path))}"
       class="${p.decision === "pick" ? "pick" : ""}${state.missing.has(p.rel_path) ? " missing" : ""}" />`).join("");
-  // A preview opens its scene with the cursor on that photo.
+  // A preview of the scene already open puts the cursor on that photo. One of
+  // a scene not open yet opens it, as a click anywhere else on its row does,
+  // on its first photo: the previews fill most of the row, and are the best
+  // of each part of the scene, so the first photo is seldom one of them, and
+  // opening a scene by them started it part way through.
   el.addEventListener("click", (e) => {
     const rel = e.target.dataset && e.target.dataset.rel;
-    if (!rel) return;
+    if (!rel || scene !== state.selectedScene) return;
     e.stopPropagation();
-    selectScene(scene);
     const i = state.filteredPhotos.findIndex((p) => p.rel_path === rel);
     if (i >= 0) {
       state.cursorIdx = i;
