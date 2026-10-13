@@ -581,6 +581,13 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
 #modal-image { display: block; flex: none; margin: auto; user-select: none; -webkit-user-drag: none; }
 #modal-image.fit { max-width: 100%; max-height: 100%; width: auto; height: auto; }
 #modal-image.zoomed { max-width: none; max-height: none; }
+/* Over the wrap, so the wrap's scroll and zoom stay the edited photo's: fitted
+   the original fills the window whole, zoomed it is placed by syncModalOriginal. */
+#modal-original { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 2;
+  display: flex; background: #000; }
+#modal-original.hidden { display: none; }
+#modal-original img { display: block; margin: auto; max-width: 100%; max-height: 100%; user-select: none; }
+#modal-original.zoomed img { position: absolute; margin: 0; max-width: none; max-height: none; }
 #modal-hud { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 5;
   padding: 4px 12px; border-radius: 999px; background: rgba(0, 0, 0, 0.7); color: #fff;
   font-size: 12px; line-height: 1.4; pointer-events: none; border: 1px solid rgba(255, 255, 255, 0.16);

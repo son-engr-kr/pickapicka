@@ -1053,6 +1053,8 @@
           <span id="loupe-label"></span>
         </div>
       </div>
+      <!-- The photo before its edit, laid over the wrap while C is held. -->
+      <div id="modal-original" class="hidden"><img alt="" draggable="false" /></div>
       <span id="modal-loading" class="hidden">Loading full size…</span>
       <span id="modal-hud" class="hidden" aria-live="polite"></span>
     </div>
@@ -1065,7 +1067,7 @@
       </div>
       <span id="modal-marks"></span>
       <span id="modal-scores"></span>
-      <button id="modal-compare" class="hidden" title="Toggle HDR merged vs 0 EV original (C)">showing: HDR merged</button>
+      <button id="modal-compare" class="hidden" title="Show the original (C)">showing: HDR merged</button>
       <button id="modal-loupe" data-icon="loupe">Loupe</button>
       <span id="loupe-scale" class="hidden">
         <button data-loupe-scale="1">1:1</button><button

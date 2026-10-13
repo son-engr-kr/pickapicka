@@ -47,6 +47,13 @@ whole job: decide, filter, move on.
   after frame at the same spot. `Tab` hides every bar, leaving only the photo
   (the keys still decide and move), which matters most for a portrait frame on
   a landscape screen.
+- **The original in the viewer** (`C`): held, it shows an edited photo as it
+  was before the edit until the key is released, as in the editor; a quick
+  tap leaves the original up until the next press. The original is the whole
+  frame, uncropped, and zoomed in it is lined up on the edited frame at the
+  same scale, so the same detail stays in the same place. On an HDR merge
+  the original is its 0 EV frame. The button next to Loupe does the same with
+  a click.
 
 - **Scoring shows how long is left**: the steps (find photos, score, group
   faces, open), how many are done, the time left, and **Stop**. Stopping a new
@@ -255,4 +262,5 @@ than on the whole frame.
 
 - **HDR bracket auto-merge**: detects auto-exposure brackets from EXIF and
   exposure-fuses each into one photo, with a tunable real-estate "look"
-  (shadow lift, local contrast, saturation) and an HDR-vs-0 EV compare toggle.
+  (shadow lift, local contrast, saturation) and an HDR-vs-0 EV compare (`C` in
+  the viewer).

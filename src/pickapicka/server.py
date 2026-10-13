@@ -4486,10 +4486,11 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
     # ----- image serving ---------------------------------------------
 
     @app.get("/img/{rel_path:path}")
-    def get_image(rel_path: str, edge: int | None = None) -> Response:
+    def get_image(rel_path: str, edge: int | None = None, original: bool = False) -> Response:
         """The viewer's full image. A RAW or edited photo is rendered: at
         `edge` (the screen's long edge in device pixels) when given, 0 meaning
-        full resolution for zooming in, else at EDIT_VIEW_EDGE."""
+        full resolution for zooming in, else at EDIT_VIEW_EDGE. `original`
+        leaves the edit out, for the viewer's C: the photo as it was shot."""
         _require_loaded()
         path = _lexical(ctx.source_path(rel_path))
         if not _within_roots(ctx, path):
@@ -4497,7 +4498,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         if not path.is_file():
             raise HTTPException(status_code=404, detail="not found")
         photo = ctx.photo_index.get(rel_path)
-        edit = photo.get("edit") if photo else None
+        edit = photo.get("edit") if photo and not original else None
         is_raw = bool(photo and photo.get("type") == "raw")
         if is_raw or (edit and not editing.is_neutral(edit)):
             # RAW isn't browser-viewable, and edits must show — render a JPEG.

@@ -644,7 +644,7 @@ const SHORTCUT_TIPS = {
   // viewer
   "#modal-close": ["Close", "Esc"],
   "#modal-edit": ["Edit this photo", "E"],
-  "#modal-compare": ["Toggle HDR merged vs the 0 EV original", "C"],
+  "#modal-compare": ["The original: an HDR merge's 0 EV frame, or the photo before its edit. Hold the key to look, or tap it to stay", "C"],
   "#modal-loupe": ["Magnify under the cursor to check detail", "L"],
   // editor
   "#edit-modal-close": ["Close the editor", "Esc"],
@@ -1299,7 +1299,9 @@ function modalRefSize() {
   // A rendered photo comes at screen size first, so only a file sent as is
   // knows its own 100%.
   if (img.src.endsWith(img.dataset.full || "\0") && !(photo && isRendered(photo))) return { w: nw, h: nh };
-  const long = Math.max(photo?.width || 0, photo?.height || 0);
+  // A crop keeps that share of the frame's pixels.
+  const c = photo?.edit?.crop || { w: 1, h: 1 };
+  const long = Math.max((photo?.width || 0) * c.w, (photo?.height || 0) * c.h);
   const k = long ? long / Math.max(nw, nh) : 1;
   return { w: nw * k, h: nh * k };
 }
@@ -1344,6 +1346,7 @@ function applyModalZoom(pin) {
   }
   syncModalBoxes();
   syncModalPeak();
+  syncModalOriginal();
   drawLoupe();
   syncModalZoomUi();
 }
@@ -1445,7 +1448,10 @@ function bindModalZoom() {
   };
   wrap.addEventListener("pointerup", end);
   wrap.addEventListener("pointercancel", end);
-  wrap.addEventListener("scroll", () => { if (state.modal.zoom) readModalCenter(); });
+  wrap.addEventListener("scroll", () => {
+    if (state.modal.zoom) readModalCenter();
+    if (state.modal.compare) syncModalOriginal();
+  });
   $("#modal-zoom").addEventListener("click", (e) => {
     const b = e.target.closest("[data-mzoom]");
     if (b) setModalZoom(parseFloat(b.dataset.mzoom));
@@ -9102,6 +9108,8 @@ function closeModal() {
   delete $("#modal-image").dataset.max;
   loupe.at = null;
   hideLoupe();
+  modalComparePressed = null;
+  dropModalOriginal();
   // The bars come back with the next photo opened, not a surprise later.
   document.body.classList.remove("viewer-bare");
   $("#modal").classList.add("hidden");
@@ -9139,21 +9147,24 @@ function syncModalBoxes() {
 function renderModal() {
   const photo = state.filteredPhotos[state.modal.idx];
   if (!photo) { closeModal(); return; }
-  const isHdr = photo.type === "hdr" && !!photo.base;
-  const comparing = isHdr && state.modal.compare;
-  const shownRel = comparing ? photo.base : photo.rel_path;
+  const kind = compareKind(photo);
+  const comparing = !!kind && state.modal.compare;
+  const shownRel = comparing && kind === "hdr" ? photo.base : photo.rel_path;
   const img = $("#modal-image");
   showModalImage(photo, shownRel);
+  syncModalOriginal();
   $("#modal-title").textContent = basename(shownRel);
   $("#modal-title").title = shownRel;
   $("#modal-meta").textContent = `${state.modal.idx + 1} of ${state.filteredPhotos.length} · ${photo.scene}`;
   const cmp = $("#modal-compare");
-  cmp.classList.toggle("hidden", !isHdr);
+  cmp.classList.toggle("hidden", !kind);
   cmp.classList.toggle("active", comparing);
-  cmp.textContent = comparing ? "showing: 0 EV original" : "showing: HDR merged";
-  if (isHdr) {
+  cmp.textContent = kind === "hdr"
+    ? (comparing ? "showing: 0 EV original" : "showing: HDR merged")
+    : (comparing ? "showing: original" : "showing: edited");
+  if (kind === "hdr") {
     // Preload the other version so the toggle is instant.
-    new Image().src = "/img/" + enc(comparing ? photo.rel_path : photo.base);
+    new Image().src = "/img/" + enc(comparing ? photo.rel_path : photo.base) + `?edge=${screenEdge()}`;
   }
   $$("#modal-decide .btn-decision").forEach((b) =>
     b.classList.toggle("active", b.dataset.decision === photo.decision));
@@ -9265,6 +9276,9 @@ function showModalImage(photo, rel) {
     img.src = full;
     note.classList.add("hidden");
     upgradeModalImage();
+    // Fetched behind the photo rather than alongside it, so C is instant
+    // without slowing the photo down.
+    if (compareKind(photo) === "edit") loadModalOriginal(photo);
   };
   loader.onerror = () => {
     if (seq !== modalLoadSeq) return;
@@ -9287,11 +9301,120 @@ function modalNav(delta) {
   scheduleViewSave();
 }
 
+// What C compares a photo with in the viewer: an HDR merge with its 0 EV
+// frame, an edited photo with itself before the edit. null when there is
+// nothing to compare, the photo on screen being the original.
+function compareKind(photo) {
+  if (photo.type === "hdr" && photo.base) return "hdr";
+  return photo.edited_at ? "edit" : null;
+}
+
 function toggleCompare() {
   const photo = state.filteredPhotos[state.modal.idx];
-  if (!photo || photo.type !== "hdr" || !photo.base) return;
+  if (!photo || !compareKind(photo)) return;
   state.modal.compare = !state.modal.compare;
   renderModal();
+}
+
+// C as the editor has it, held to look; a tap leaves the original up until
+// the next press, which is how the HDR toggle has always worked.
+const MODAL_COMPARE_HOLD_MS = 300;
+let modalComparePressed = null;
+
+function modalComparePress() {
+  const photo = state.filteredPhotos[state.modal.idx];
+  if (!photo) return;
+  if (!compareKind(photo)) { showModalHud("Not edited: this is the original", 1400); return; }
+  if (state.modal.compare) { modalComparePressed = null; toggleCompare(); return; }
+  modalComparePressed = performance.now();
+  toggleCompare();
+}
+
+function modalCompareRelease() {
+  if (modalComparePressed === null) return;
+  const held = performance.now() - modalComparePressed;
+  modalComparePressed = null;
+  if (!state.modal.compare) return;   // moved to another photo meanwhile
+  if (held >= MODAL_COMPARE_HOLD_MS) toggleCompare();
+  else showModalHud("Original: C again to go back", 1600);
+}
+
+// The photo before its edit, fetched once per photo as a blob: the edited
+// render is sent no-store, so swapping the <img> back and forth would render
+// it again each time. It is laid over the wrap instead, leaving the edited
+// photo, its zoom and its scroll where they were.
+const modalOrig = { rel: null, edge: null, url: null, urlRel: null, seq: 0 };
+
+// A RAW is rendered for the original too, at the screen's size until it is
+// zoomed into; any other file comes whole, at whatever edge is asked for.
+function modalOriginalEdge(photo) {
+  return photo.type === "raw" && state.modal.zoom ? 0 : screenEdge();
+}
+
+async function loadModalOriginal(photo) {
+  const rel = photo.rel_path, edge = modalOriginalEdge(photo);
+  if (modalOrig.rel === rel && (modalOrig.edge === edge || modalOrig.edge === 0)) return;
+  const seq = ++modalOrig.seq;
+  modalOrig.rel = rel;
+  modalOrig.edge = edge;
+  const res = await fetch("/img/" + enc(rel) + `?original=1&edge=${edge}`);
+  if (seq !== modalOrig.seq) return;
+  if (!res.ok) {
+    modalOrig.rel = null;
+    showModalHud(`The original could not be loaded: ${res.status}`, 2400);
+    return;
+  }
+  const blob = await res.blob();
+  if (seq !== modalOrig.seq) return;
+  if (modalOrig.url) URL.revokeObjectURL(modalOrig.url);
+  modalOrig.url = URL.createObjectURL(blob);
+  modalOrig.urlRel = rel;
+  syncModalOriginal();
+}
+
+function dropModalOriginal() {
+  modalOrig.seq++;
+  if (modalOrig.url) URL.revokeObjectURL(modalOrig.url);
+  Object.assign(modalOrig, { rel: null, edge: null, url: null, urlRel: null });
+  $("#modal-original img").removeAttribute("src");
+  $("#modal-original").classList.add("hidden");
+}
+
+// Fitted, the original fills the window whole, as the editor shows it. Zoomed,
+// it is drawn at the edited photo's scale with the crop lined up on the edited
+// frame, so the same detail is under the same spot. The crop is of the
+// straightened frame, so a tilt, lens or perspective edit makes that only
+// close.
+function syncModalOriginal() {
+  const view = $("#modal-original"), oimg = view.firstElementChild;
+  const photo = state.modal.open ? state.filteredPhotos[state.modal.idx] : null;
+  const on = !!photo && state.modal.compare && compareKind(photo) === "edit";
+  if (on) loadModalOriginal(photo);
+  const ready = on && modalOrig.urlRel === photo.rel_path;
+  const note = $("#modal-loading");
+  if (on && !ready) {
+    note.textContent = "Loading the original…";
+    note.classList.remove("hidden", "error");
+  } else if (note.textContent === "Loading the original…") {
+    note.classList.add("hidden");
+  }
+  view.classList.toggle("hidden", !ready);
+  if (!ready) return;
+  if (oimg.getAttribute("src") !== modalOrig.url) {
+    oimg.onload = syncModalOriginal;
+    oimg.src = modalOrig.url;
+  }
+  const z = state.modal.zoom;
+  view.classList.toggle("zoomed", !!z);
+  if (!z) { oimg.style.cssText = ""; return; }
+  const img = $("#modal-image"), wrap = $("#modal-image-wrap");
+  if (!oimg.naturalWidth || !img.offsetWidth) return;
+  const c = photo.edit?.crop || { x: 0, y: 0, w: 1, h: 1 };
+  const w = img.offsetWidth / c.w, h = w * oimg.naturalHeight / oimg.naturalWidth;
+  oimg.style.width = `${w}px`;
+  oimg.style.height = `${h}px`;
+  oimg.style.left = `${img.offsetLeft - wrap.scrollLeft - c.x * w}px`;
+  oimg.style.top = `${img.offsetTop - wrap.scrollTop - c.y * h}px`;
 }
 
 // ---------- keyboard ----------
@@ -9546,7 +9669,7 @@ function bindKeys() {
       if (k === "+" || k === "=") { zoomModalBy(MODAL_ZOOM_STEP); e.preventDefault(); return; }
       if (k === "-" || k === "_") { zoomModalBy(1 / MODAL_ZOOM_STEP); e.preventDefault(); return; }
       if (k === "Tab") { toggleViewerBars(); e.preventDefault(); return; }
-      if (k === "c" || k === "C") { toggleCompare(); e.preventDefault(); return; }
+      if (k === "c" || k === "C") { if (!e.repeat) modalComparePress(); e.preventDefault(); return; }
       if (k === "b" || k === "B") { toggleBoxes(); e.preventDefault(); return; }
       if (k === "k" || k === "K") { togglePeak(); e.preventDefault(); return; }
       if (k === "l" || k === "L") { toggleLoupe(); e.preventDefault(); return; }
@@ -9604,11 +9727,11 @@ function bindKeys() {
     }
   });
 
-  // Release hold-to-compare in the editor.
+  // Release hold-to-compare in the editor and the viewer.
   document.addEventListener("keyup", (e) => {
-    if ((e.key === "c" || e.key === "C") && !$("#edit-modal").classList.contains("hidden")) {
-      editCompareOff();
-    }
+    if (e.key !== "c" && e.key !== "C") return;
+    if (!$("#edit-modal").classList.contains("hidden")) editCompareOff();
+    else if (state.modal.open) modalCompareRelease();
   });
 }
 
@@ -12423,7 +12546,7 @@ const KEYMAP = {
       { k: ["L"], label: "Loupe", bar: "Loupe" },
       { k: ["K"], label: "Focus peaking" },
       { k: ["B"], label: "Subject boxes" },
-      { k: ["C"], label: "HDR merge or its 0 EV frame" },
+      { k: ["C"], label: "The original while held, or until pressed again after a tap" },
     ]},
     { group: "Leave", keys: [
       { k: ["E"], label: "Edit this photo", bar: "Edit" },
