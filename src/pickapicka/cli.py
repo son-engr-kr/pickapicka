@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import click
+import truststore
 
 from . import paths
 
@@ -11,6 +12,15 @@ from . import paths
 @click.group()
 def main() -> None:
     """Pickapicka — score, cull and edit a shoot in a local web viewer."""
+    # HTTPS certificates are checked by the system's own verifier, as the
+    # browser's are. Python's default on Windows reads only the roots already
+    # in the Windows store, and Windows adds a missing root only when its own
+    # verifier asks for one, which browsers with their own root stores never
+    # do. The update check and the model downloads can then fail with
+    # CERTIFICATE_VERIFY_FAILED on a machine whose browser reaches GitHub
+    # without trouble. It patches the ssl module (and urllib3's copy) in place,
+    # so the libraries imported before this point are covered too.
+    truststore.inject_into_ssl()
     # One-shot, on whichever subcommand runs first after an upgrade.
     for note in paths.migrate_legacy():
         click.echo(f"Moved app data: {note}")

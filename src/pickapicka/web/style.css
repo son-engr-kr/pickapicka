@@ -1847,6 +1847,7 @@ input[type="range"] { accent-color: var(--accent); }
 #update-btn { height: 26px; padding: 0 10px; border-radius: 999px; font-size: var(--fs-xs);
   font-weight: 600; white-space: nowrap; }
 #update-btn.ready { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+#update-btn.failed { border-color: var(--reject); color: var(--reject); }
 #update-btn.hidden { display: none; }
 
 /* One line of news, bottom centre: how an update went. */

@@ -11840,6 +11840,8 @@ const update = { state: null, timer: 0, later: null };
 const UPDATE_POLL_BUSY = 2000;       // while checking or downloading
 const UPDATE_POLL_IDLE = 60000;
 const UPDATE_WAIT_MS = 10 * 60 * 1000;   // then the restart screen says to open the app by hand
+const UPDATE_FAILURES_SHOWN = 3;          // updater.FAILURES_SHOWN
+const UPDATE_RELEASES_URL = "https://github.com/son-engr-kr/pickapicka/releases";
 
 async function refreshUpdate() {
   clearTimeout(update.timer);
@@ -11872,19 +11874,32 @@ function updateStatusText(s) {
     case "ready": return `${v} is downloaded. Update to ${v}, in the top bar, installs it.`;
     case "available": return s.command ? `${v} is out. Update with: ${s.command}` : `${v} is out.`;
     case "installing": return `Installing ${v}…`;
-    case "error": return s.error;
+    case "error": return s.auto ? `${s.error} Tries again in a quarter of an hour.` : s.error;
     default: return s.auto ? "Checks a little after the app opens, and every few hours." : "Automatic checks are off.";
   }
+}
+
+// A failure is shown once it means something: a newer version the download
+// of failed, or checks failing for half an hour (updater.FAILURES_SHOWN). One
+// failed check is a moment offline, and the server tries again shortly.
+function updateFailed(s) {
+  return s.status === "error" && (s.newer || s.failures >= UPDATE_FAILURES_SHOWN);
 }
 
 function renderUpdate() {
   const s = update.state;
   const v = s.latest?.version;
-  const offer = (s.status === "ready" || s.status === "available") && v !== update.later;
+  const failed = updateFailed(s);
+  const offer = (s.status === "ready" || s.status === "available" || failed)
+    && (failed ? "failed" : v) !== update.later;
   const btn = $("#update-btn");
   btn.classList.toggle("hidden", !offer);
   btn.classList.toggle("ready", s.status === "ready");
-  if (offer) {
+  btn.classList.toggle("failed", failed);
+  if (offer && failed) {
+    btn.textContent = s.newer ? `${v}: download failed` : "Update check failed";
+    btn.title = s.error;
+  } else if (offer) {
     btn.textContent = s.status === "ready" ? `Update to ${v}` : `${v} is out`;
     btn.title = s.status === "ready" ? "Downloaded and checked. Restart Pickapicka to install it."
       : (s.command ? `Update with: ${s.command}` : "A new version is out");
@@ -11897,6 +11912,21 @@ function renderUpdate() {
 
 async function onUpdateClick() {
   const s = update.state;
+  if (updateFailed(s)) {
+    const what = s.newer ? `Pickapicka ${s.latest.version} is out, but downloading it failed.`
+      : "Pickapicka has not been able to check for updates.";
+    const pick = await askChoice(s.newer ? "The update did not download" : "Updates could not be checked",
+      `${what}\n\n${s.error}\n\nIt tries again by itself every quarter of an hour. `
+      + "The Releases page has every version to download by hand.", [
+        { id: "later", label: "Later" },
+        { id: "releases", label: "Open the Releases page" },
+        { id: "retry", label: "Try again", primary: true },
+      ]);
+    if (pick === "retry") await checkUpdateNow();
+    else if (pick === "releases") window.open(s.latest?.url || UPDATE_RELEASES_URL, "_blank", "noopener");
+    else { update.later = "failed"; renderUpdate(); }
+    return;
+  }
   const v = s.latest.version;
   if (s.status === "ready") {
     const consent = s.kind === "macos-app"
@@ -12014,14 +12044,16 @@ function bindUpdates() {
     if (!res.ok) throw new Error(`update setting failed: ${res.status}`);
     await refreshUpdate();
   });
-  $("#pref-update-check").addEventListener("click", async () => {
-    const res = await fetch("/api/update/check", { method: "POST" });
-    if (!res.ok) throw new Error(`update check failed: ${res.status}`);
-    $("#pref-update-status").textContent = "Checking…";
-    $("#pref-update-check").disabled = true;
-    clearTimeout(update.timer);
-    update.timer = setTimeout(pollUpdate, 800);
-  });
+  $("#pref-update-check").addEventListener("click", checkUpdateNow);
+}
+
+async function checkUpdateNow() {
+  const res = await fetch("/api/update/check", { method: "POST" });
+  if (!res.ok) throw new Error(`update check failed: ${res.status}`);
+  $("#pref-update-status").textContent = "Checking…";
+  $("#pref-update-check").disabled = true;
+  clearTimeout(update.timer);
+  update.timer = setTimeout(pollUpdate, 800);
 }
 
 

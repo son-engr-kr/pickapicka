@@ -198,6 +198,62 @@ def test_being_offline_is_an_error_to_show_not_a_crash(tmp_path) -> None:
     u.check()
     s = u.snapshot()
     assert s["status"] == "error" and s["error"].startswith("Could not reach GitHub")
+    assert s["failures"] == 1 and not s["newer"]
+
+
+def test_failed_checks_are_counted_until_one_works(tmp_path, github) -> None:
+    gh = github()
+    u = _updater(tmp_path, gh)
+    good = u.latest_url
+    u.latest_url = "http://127.0.0.1:9/latest"
+    for n in (1, 2, updater.FAILURES_SHOWN):
+        u.check()
+        assert u.snapshot()["failures"] == n
+    u.latest_url = good
+    u.check()
+    s = u.snapshot()
+    assert s["status"] == "ready" and s["failures"] == 0 and s["newer"]
+
+
+def test_a_failed_download_still_says_a_newer_version_is_out(tmp_path, github) -> None:
+    """What the top bar shows it by: without `newer` a failed download looked
+    exactly like being up to date."""
+    gh = github(digest="sha256:" + "ab" * 32)
+    u = _updater(tmp_path, gh)
+    u.check()
+    s = u.snapshot()
+    assert s["status"] == "error" and s["newer"] and s["latest"]["version"] == "0.11.0"
+
+
+def test_an_installer_that_cannot_be_put_in_place_is_a_failure_to_show(tmp_path, github, monkeypatch) -> None:
+    """A virus scanner holding the new installer on Windows: the rename fails.
+    That ended the background thread, so the app never checked again."""
+    def held(src, dst) -> None:
+        raise PermissionError(13, "The process cannot access the file", str(dst))
+    monkeypatch.setattr(updater.fsutil, "replace", held)
+    u = _updater(tmp_path, github())
+    u.check()
+    s = u.snapshot()
+    assert s["status"] == "error" and s["error"].startswith("The installer could not be saved")
+    assert s["newer"] and s["failures"] == 1
+
+
+def test_a_failed_check_is_tried_again_soon_not_hours_later(tmp_path, monkeypatch) -> None:
+    u = updater.Updater(latest_url="http://127.0.0.1:9/latest", update_dir=tmp_path / "u",
+                        pending_file=tmp_path / "p.json", kind="macos-app", current="0.10.0")
+    slept: list[float] = []
+
+    class Done(Exception):
+        pass
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        if len(slept) == 3:
+            raise Done
+    monkeypatch.setattr(updater.time, "sleep", sleep)
+    with pytest.raises(Done):
+        u.run(lambda: True)
+    assert slept == [updater.FIRST_CHECK_DELAY, updater.RETRY_INTERVAL, updater.RETRY_INTERVAL]
 
 
 # ----- after the install ---------------------------------------------------------

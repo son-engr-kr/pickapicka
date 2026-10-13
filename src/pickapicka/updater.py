@@ -21,7 +21,13 @@ notes how that went and opens the app again. The page, which stays open, finds
 the new server and reloads.
 
 Every download is checked against the SHA-256 digest GitHub publishes for the
-release asset, and a file that does not match is thrown away, never run.
+release asset, and a file that does not match is thrown away, never run. The
+connection itself is checked by the system's certificate verifier (truststore,
+set up in cli.main), not by Python's own reading of the Windows store.
+
+A check that fails is tried again a quarter of an hour later, not at the next
+six-hourly one, and one that keeps failing is shown in the top bar: an update
+the app silently cannot fetch looks to the user exactly like no update at all.
 
 Other installs (uv tool, Homebrew, a checkout) are told of a new version and
 given the command that updates them.
@@ -50,6 +56,14 @@ REPO = "son-engr-kr/pickapicka"
 LATEST_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 FIRST_CHECK_DELAY = 10.0        # seconds after starting: after the intro, not during it
 CHECK_INTERVAL = 6 * 3600.0     # and again while it keeps running
+# After a failed check. A start before the network is up (a laptop just woken)
+# heals in minutes, and GitHub's limit of 60 unauthenticated API calls an hour
+# per address, which a shared office or campus address can use up, resets
+# within the hour; four tries an hour stay far below it.
+RETRY_INTERVAL = 15 * 60.0
+# Failed checks in a row before the top bar says so. One or two is a moment
+# offline, which is ordinary; three is half an hour of not knowing.
+FAILURES_SHOWN = 3
 UPDATE_DIR = paths.CACHE_DIR / "updates"
 # Written as the app hands over to the installer, read by the version that
 # comes up afterwards: whether it is that new version is the answer.
@@ -221,6 +235,8 @@ class Updater:
             "latest": None,           # {"version", "url", "published"}
             "progress": None,         # {"done", "total"} bytes, while downloading
             "error": None,
+            "failures": 0,            # failed checks in a row
+            "newer": False,           # `latest` is newer than this version
             "checked_at": None,
             "result": read_result(pending_file, self.exit_file, current),
         }
@@ -256,61 +272,80 @@ class Updater:
             with urllib.request.urlopen(req, timeout=API_TIMEOUT) as r:
                 release = json.loads(r.read().decode("utf-8"))
         except (urllib.error.URLError, OSError) as exc:
-            # Offline is ordinary; the next check tries again.
-            self._set(status="error", error=f"Could not reach GitHub: {exc}",
-                      checked_at=datetime.now().isoformat(timespec="seconds"))
+            # Offline is ordinary; the check after RETRY_INTERVAL tries again.
+            self._fail(f"Could not reach GitHub: {exc}")
             return
         tag = release["tag_name"]
         latest = {"version": tag.lstrip("v"), "url": release["html_url"],
                   "published": release.get("published_at")}
-        self._set(latest=latest, checked_at=datetime.now().isoformat(timespec="seconds"))
-        if parse_version(tag) <= parse_version(self.current):
-            self._set(status="current")
+        newer = parse_version(tag) > parse_version(self.current)
+        self._set(latest=latest, newer=newer, checked_at=datetime.now().isoformat(timespec="seconds"))
+        if not newer:
+            self._set(status="current", failures=0)
             return
         asset = pick_asset(self.kind, release["assets"])
         if asset is None:
-            self._set(status="available")
+            self._set(status="available", failures=0)
             return
         self._download(asset)
+
+    def _fail(self, error: str) -> None:
+        with self._lock:
+            self.state.update(status="error", progress=None, error=error,
+                              failures=self.state["failures"] + 1,
+                              checked_at=datetime.now().isoformat(timespec="seconds"))
 
     def _download(self, asset: dict[str, Any]) -> None:
         digest = asset.get("digest") or ""
         assert digest.startswith("sha256:"), f"{asset['name']} has no sha256 digest to check it against"
         expected = digest.split(":", 1)[1].lower()
-        self.update_dir.mkdir(parents=True, exist_ok=True)
         target = self.update_dir / asset["name"]
-        # Fetched on an earlier run and never installed: no need to fetch again.
-        if not (target.is_file() and sha256_of(target) == expected):
-            self._set(status="downloading", progress={"done": 0, "total": asset["size"]})
-            part = target.with_name(target.name + ".part")
-            h = hashlib.sha256()
-            done = 0
-            try:
-                req = urllib.request.Request(asset["browser_download_url"],
-                                             headers={"User-Agent": f"Pickapicka/{self.current}"})
-                with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as r, part.open("wb") as out:
-                    while chunk := r.read(CHUNK):
-                        out.write(chunk)
-                        h.update(chunk)
-                        done += len(chunk)
-                        self._set(progress={"done": done, "total": asset["size"]})
-            except (urllib.error.URLError, OSError) as exc:
-                part.unlink(missing_ok=True)
-                self._set(status="error", progress=None, error=f"The download stopped: {exc}")
-                return
-            if h.hexdigest() != expected:
-                part.unlink()
-                self._set(status="error", progress=None,
-                          error="The download did not match the checksum GitHub publishes for it, "
-                                "so it was thrown away.")
-                return
-            fsutil.replace(part, target)
-        # Only the newest installer is worth its disk space.
-        for old in self.update_dir.iterdir():
-            if old.is_file() and old != target and old.name != EXIT_FILE_NAME:
-                old.unlink()
+        try:
+            self.update_dir.mkdir(parents=True, exist_ok=True)
+            # Fetched on an earlier run and never installed: no need to fetch again.
+            if not (target.is_file() and sha256_of(target) == expected):
+                if not self._fetch(asset, target, expected):
+                    return
+            # Only the newest installer is worth its disk space.
+            for old in self.update_dir.iterdir():
+                if old.is_file() and old != target and old.name != EXIT_FILE_NAME:
+                    old.unlink()
+        except OSError as exc:
+            # On Windows a virus scanner reading the new installer can hold it
+            # for longer than fsutil.replace waits. Raised, this ended the
+            # updater's thread, and with it every later check, without a word.
+            self._fail(f"The installer could not be saved: {exc}")
+            return
         self._installer = target
-        self._set(status="ready", progress=None)
+        self._set(status="ready", progress=None, failures=0)
+
+    def _fetch(self, asset: dict[str, Any], target: Path, expected: str) -> bool:
+        """Download `asset` to `target` through a .part file, kept only if it
+        matches `expected`. False, with the failure set, when it did not."""
+        self._set(status="downloading", progress={"done": 0, "total": asset["size"]})
+        part = target.with_name(target.name + ".part")
+        h = hashlib.sha256()
+        done = 0
+        try:
+            req = urllib.request.Request(asset["browser_download_url"],
+                                         headers={"User-Agent": f"Pickapicka/{self.current}"})
+            with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as r, part.open("wb") as out:
+                while chunk := r.read(CHUNK):
+                    out.write(chunk)
+                    h.update(chunk)
+                    done += len(chunk)
+                    self._set(progress={"done": done, "total": asset["size"]})
+        except (urllib.error.URLError, OSError) as exc:
+            part.unlink(missing_ok=True)
+            self._fail(f"The download stopped: {exc}")
+            return False
+        if h.hexdigest() != expected:
+            part.unlink()
+            self._fail("The download did not match the checksum GitHub publishes for it, "
+                       "so it was thrown away.")
+            return False
+        fsutil.replace(part, target)
+        return True
 
     # -- installing
 
@@ -356,13 +391,14 @@ class Updater:
     # -- the background loop
 
     def run(self, enabled) -> None:
-        """Check a little after starting and then every CHECK_INTERVAL, while
-        `enabled()` says automatic checks are on. Runs on a daemon thread."""
+        """Check a little after starting and then every CHECK_INTERVAL, or
+        RETRY_INTERVAL after a check that failed, while `enabled()` says
+        automatic checks are on. Runs on a daemon thread."""
         time.sleep(FIRST_CHECK_DELAY)
         while True:
             if enabled():
                 self.check()
-            time.sleep(CHECK_INTERVAL)
+            time.sleep(RETRY_INTERVAL if self.snapshot()["status"] == "error" else CHECK_INTERVAL)
 
     def start_background(self, enabled) -> None:
         threading.Thread(target=self.run, args=(enabled,), daemon=True, name="updater").start()
