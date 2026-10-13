@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from . import db
-from .projects import PHOTOS_SUBDIR
+from .projects import PHOTOS_SUBDIR, is_export_dir
 
 
 def _basename_index(root: Path) -> dict[str, list[Path]]:
@@ -20,8 +20,9 @@ def _basename_index(root: Path) -> dict[str, list[Path]]:
     if not root.is_dir():
         return idx
     for dirpath, dirs, files in root.walk():
-        # Thumbnails in a project kept with the photos share the photos' names.
-        dirs[:] = [d for d in dirs if d != PHOTOS_SUBDIR]
+        # Thumbnails in a project kept with the photos share the photos' names,
+        # and so do the exports written in among them.
+        dirs[:] = [d for d in dirs if d != PHOTOS_SUBDIR and not is_export_dir(dirpath / d)]
         for fn in files:
             if fn.startswith("._"):
                 continue

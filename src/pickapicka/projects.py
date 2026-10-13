@@ -28,6 +28,25 @@ FILLS_DIR = "fills"
 
 LOCATIONS = ("workspace", "photos")
 
+# An export written inside a photo folder: where the export dialog's "Photo
+# folder" puts one (EXPORTS_DIR), or any folder chosen in there. The marker
+# file in it is the rule that keeps its photos out of every scan, of this
+# project and of any other made from the folder, wherever it is moved to or
+# whatever it is renamed: without it the next open would find the exports and
+# offer to score them in beside their own originals.
+EXPORTS_DIR = "Exports"
+EXPORT_MARK = ".pickapicka-export"
+_EXPORT_NOTE = ("Pickapicka exported these photos here. Projects leave this folder out\n"
+                "when they scan the photos around it. Delete this file to have it scanned.\n")
+
+
+def is_export_dir(d: Path) -> bool:
+    return (d / EXPORT_MARK).is_file()
+
+
+def mark_export_dir(d: Path) -> None:
+    (d / EXPORT_MARK).write_text(_EXPORT_NOTE, encoding="utf-8")
+
 
 def is_with_photos(project_dir: Path) -> bool:
     """A project kept inside its photo folder's `.pickapicka/`."""

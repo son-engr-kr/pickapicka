@@ -2535,7 +2535,7 @@ const exportUi = { pollTimer: null, nameTimer: null };
 // which of their photos. The target folder follows the choice until it is
 // typed into or browsed to, then it is left alone.
 const exportPick = { scope: "all", which: "picks", chosen: new Set(), targetTouched: false,
-                     count: 0, versions: 0 };
+                     count: 0, versions: 0, dest: null, targets: null };
 
 function exportScenes() {
   if (exportPick.scope === "this") return state.selectedScene ? [state.selectedScene] : [];
@@ -2586,14 +2586,18 @@ async function refreshExportPreview() {
   const info = await res.json();
   exportPick.count = info.count;
   exportPick.versions = info.versions;
+  exportPick.targets = info.targets;
   showExportCount();
-  if (!exportPick.targetTouched) $("#export-target").value = info.default_target;
+  // On opening the dialog the destination is not set yet: the saved settings
+  // set it, and with it the field.
+  if (!exportPick.targetTouched && exportPick.dest) $("#export-target").value = info.targets[exportPick.dest];
   $("#export-confirm").disabled = info.count === 0;
   return info;
 }
 
 async function openExportModal() {
   exportPick.targetTouched = false;
+  exportPick.dest = null;
   if (exportPick.scope === "this" && !state.selectedScene) exportPick.scope = "all";
   renderExportScope();
   const info = await refreshExportPreview();
@@ -2624,6 +2628,7 @@ function closeExportModal() {
 }
 
 function applyExportSettings(st) {
+  setExportDest(st.destination);
   $$("#export-format button").forEach((b) =>
     b.classList.toggle("active", b.dataset.format === st.format));
   $("#export-quality").value = st.quality;
@@ -2641,6 +2646,18 @@ function applyExportSettings(st) {
 
 function exportFormat() {
   return $("#export-format button.active")?.dataset.format || "jpeg";
+}
+
+// Downloads, or the photo folder's Exports/. Choosing one puts its dated
+// folder in the field; a folder typed or browsed to instead is used as it is.
+function setExportDest(dest) {
+  exportPick.dest = dest;
+  exportPick.targetTouched = false;
+  $$("#export-dest button").forEach((b) => b.classList.toggle("active", b.dataset.dest === dest));
+  if (exportPick.targets) $("#export-target").value = exportPick.targets[dest];
+  $("#export-dest-note").textContent = dest === "photos"
+    ? "In Exports inside the photo folder. Projects leave an export there out when they scan, so it never comes back in as photos."
+    : "";
 }
 
 function syncExportForm() {
@@ -2670,6 +2687,7 @@ function readExportSettings() {
     metadata: $("#export-metadata").value,
     name_template: $("#export-name").value,
     versions: $("#export-versions").checked,
+    destination: exportPick.dest || "downloads",
   };
 }
 
@@ -2717,6 +2735,7 @@ function bindExportForm() {
   });
   $("#export-name").addEventListener("input", previewExportName);
   $("#export-versions").addEventListener("change", showExportCount);
+  $$("#export-dest button").forEach((b) => b.addEventListener("click", () => setExportDest(b.dataset.dest)));
 }
 
 async function confirmExport() {

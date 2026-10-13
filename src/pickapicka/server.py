@@ -277,6 +277,9 @@ class ExportSettings(BaseModel):
     # Each photo's saved edit slots too, a file each beside the photo's own
     # (`_export_versions`).
     versions: bool = False
+    # Where the dialog offers to put the next one: a dated folder in Downloads,
+    # or in the photo folder's Exports/ (`projects.EXPORTS_DIR`).
+    destination: Literal["downloads", "photos"] = "downloads"
 
 
 ExportWhich = Literal["picks", "kept", "all"]
@@ -2138,14 +2141,43 @@ def _downloads_folder(name: str) -> Path:
     """A dated folder in Downloads that does not exist yet, for a batch of
     photos to land in together: where both an export and a quick download put
     them unless told otherwise, so there is one place to look."""
-    downloads = Path.home() / "Downloads"
+    return _dated_folder(Path.home() / "Downloads", name)
+
+
+def _dated_folder(parent: Path, name: str) -> Path:
+    """`parent`/<name>_<stamp>, numbered on when that is taken."""
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
-    target = downloads / f"{_sanitize_segment(name)}_{stamp}"
+    target = parent / f"{_sanitize_segment(name)}_{stamp}"
     n = 2
     while target.exists():
-        target = downloads / f"{_sanitize_segment(name)}_{stamp}-{n}"
+        target = parent / f"{_sanitize_segment(name)}_{stamp}-{n}"
         n += 1
     return target
+
+
+def _check_export_target(ctx: "AppContext", target: Path) -> bool:
+    """Whether `target` is inside the photo folder, where an export is marked
+    to be left out of scans (`projects.mark_export_dir`). Refused there: the
+    photo folder itself, whose scan the exports would join, and a folder that
+    already holds photos and is not an earlier export, whose photos the mark
+    would take out of the project."""
+    assert ctx.photo_root is not None
+    roots = {r.resolve() for r in (ctx.photo_root, ctx.jpeg_root, ctx.raw_root) if r is not None}
+    if not any(target.is_relative_to(r) for r in roots):
+        return False
+    if target in roots:
+        raise HTTPException(
+            status_code=400,
+            detail="not the photo folder itself: the exports would be scanned in as photos. "
+                   "Choose a folder inside it, or Photo folder")
+    if target.is_dir() and not projects_mod.is_export_dir(target):
+        held = next((f for f in walk_files(target) if _is_supported(f) or raw.is_raw(f)), None)
+        if held is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{target.name} holds photos ({held.name}), which an export there "
+                       "would take out of the project. Choose a new folder")
+    return True
 
 
 def _autodetect_jpeg_subdir(photo_dir: Path) -> str:
@@ -4400,11 +4432,15 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         return [p for p in ctx.data["photos"]
                 if (wanted is None or p.get("scene") in wanted) and keep(p)]
 
-    def _export_folder_name(scenes: list[str] | None) -> Path:
-        """Downloads/<project>[_<scene>]_<stamp>: the scene's name when it is one."""
+    def _export_folder_name(scenes: list[str] | None, destination: str = "downloads") -> Path:
+        """<project>[_<scene>]_<stamp>, the scene's name when it is one, in
+        Downloads or in the photo folder's Exports/."""
         name = ctx.project_dir.name if ctx.project_dir else ctx.db_path.stem
         if scenes is not None and len(scenes) == 1:
             name = f"{name}_{scenes[0]}"
+        if destination == "photos":
+            assert ctx.photo_root is not None
+            return _dated_folder(ctx.photo_root / projects_mod.EXPORTS_DIR, name)
         return _downloads_folder(name)
 
     @app.get("/api/export/picks/preview")
@@ -4412,10 +4448,13 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                              scenes: list[str] | None = Query(None)) -> dict[str, Any]:
         _require_loaded()
         chosen = _export_selection(scenes, which)
+        settings = ExportSettings(**userstate.get_export_settings())
+        targets = {d: str(_export_folder_name(scenes, d)) for d in ("downloads", "photos")}
         return {"count": len(chosen),
                 "versions": sum(len(_export_versions(p)) for p in chosen),
-                "default_target": str(_export_folder_name(scenes)),
-                "settings": ExportSettings(**userstate.get_export_settings()).model_dump()}
+                "targets": targets,
+                "default_target": targets[settings.destination],
+                "settings": settings.model_dump()}
 
     @app.post("/api/export/name-preview")
     def export_name_preview(payload: NamePreviewPayload) -> dict[str, Any]:
@@ -4448,15 +4487,20 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         target = (
             Path(payload.target_dir).expanduser()
             if payload.target_dir
-            else _export_folder_name(payload.scenes)
+            else _export_folder_name(payload.scenes, settings.destination)
         )
         if not target.is_absolute():
             raise HTTPException(status_code=400, detail="the target folder must be a full path")
         target = target.resolve()
+        among_photos = _check_export_target(ctx, target)
         try:
             target.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise HTTPException(status_code=400, detail=f"cannot use that folder: {exc}") from exc
+        if among_photos:
+            # Before the first photo, so an export stopped half way is left
+            # out of the next scan as well.
+            projects_mod.mark_export_dir(target)
         userstate.set_export_settings(settings.model_dump())
         # Nothing between claiming the run and starting its thread may fail, or
         # the run would stay marked as running with nothing behind it.

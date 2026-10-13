@@ -15,6 +15,7 @@ from PIL import Image
 
 from . import db, exifinfo, fsutil, hdr, raw, scenes
 from .projects import PHOTOS_SUBDIR as PROJECTS_SUBDIR
+from .projects import is_export_dir
 from .scoring import blur as blur_mod
 from .scoring import exposure as exp_mod
 from .scoring import faces as faces_mod
@@ -156,9 +157,13 @@ def walk_files(root: Path, exclude_dirs: Iterable[Path] = ()) -> Iterator[Path]:
     for dirpath, dirnames, filenames in root.walk():
         # A `.pickapicka/` holds projects kept with their photos (projects.py),
         # whichever project is being scanned: their caches are not photos.
+        # Nor is an export written in among the photos (`is_export_dir`). The
+        # root itself is walked whatever it is, so a project can still be made
+        # of an export folder.
         dirnames[:] = [
             d for d in dirnames
-            if d != PROJECTS_SUBDIR and (dirpath / d).resolve() not in excluded
+            if d != PROJECTS_SUBDIR and not is_export_dir(dirpath / d)
+            and (dirpath / d).resolve() not in excluded
         ]
         for fn in filenames:
             yield dirpath / fn

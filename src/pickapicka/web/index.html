@@ -780,9 +780,20 @@
           <span class="export-note" id="export-versions-note"></span>
         </div>
         <div class="export-row">
+          <label>Save to</label>
+          <span class="export-seg" id="export-dest">
+            <button type="button" data-dest="downloads">Downloads</button><button
+                    type="button" data-dest="photos" title="An Exports folder inside the photo folder">Photo folder</button>
+          </span>
+        </div>
+        <div class="export-row">
           <label for="export-target">Target folder</label>
           <input type="text" id="export-target" placeholder="/absolute/path/to/output" spellcheck="false" />
           <button type="button" class="browse-btn" id="export-browse">Browse…</button>
+        </div>
+        <div class="export-row export-sub">
+          <label></label>
+          <span class="export-note" id="export-dest-note"></span>
         </div>
         <div class="export-row" style="align-items:flex-start;">
           <label>Layout</label>
