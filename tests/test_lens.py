@@ -512,5 +512,106 @@ def test_vignetting_does_not_resample() -> None:
         assert np.allclose(out[..., ch], img[..., ch] * ratio, atol=1e-6)
 
 
+
+# ----- reading a vignette off the photo -----------------------------------
+#
+# A soft random texture: its radial gradients are symmetric about zero, which is
+# the premise `estimate_vignetting` rests on, so a vignette multiplied into it is
+# the only radial structure there is. Its own reading is not exactly zero (the
+# medians of a finite texture wander); across seeds 1 to 8 it stayed within
+# 0.23 stops of the truth, which is what the tolerances below allow for.
+
+def _texture(w: int, h: int, seed: int) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    t = cv2.GaussianBlur(rng.standard_normal((h, w)).astype(np.float32), (0, 0), 0.003 * max(w, h))
+    base = 0.45 * np.exp(0.15 * t / t.std())
+    img = np.stack([base * 0.9, base, base * 0.8], axis=2) + rng.normal(0.0, 0.01, (h, w, 3))
+    return np.clip(img, 0.0, 1.0).astype(np.float32)
+
+
+def _vignetted(img: np.ndarray, amount: float, midpoint: float) -> np.ndarray:
+    """`img` seen through exactly the vignette these sliders would undo."""
+    h, w = img.shape[:2]
+    gain = lens._vignette_gain(h, w, {"vignette_amount": amount, "vignette_midpoint": midpoint},
+                               lens.FULL_ROI)
+    return (img / gain[..., None]).astype(np.float32)
+
+
+def test_auto_vignetting_leaves_a_clean_frame_alone() -> None:
+    for seed in (1, 2, 3):
+        got = lens.estimate_vignetting(_texture(900, 600, seed))
+        assert not got["found"], (seed, got)
+        assert got["vignette_amount"] == 0 and got["vignette_midpoint"] == 50
+
+
+def test_auto_vignetting_finds_a_known_vignette() -> None:
+    for seed in (1, 2, 3):
+        clean = _texture(900, 600, seed)
+        for amount, midpoint in ((30, 50), (60, 50), (90, 50), (60, 20), (60, 80)):
+            got = lens.estimate_vignetting(_vignetted(clean, amount, midpoint))
+            assert got["found"], (seed, amount, midpoint, got)
+            truth = amount / 100.0 * lens._VIG_MAX_STOPS
+            assert abs(got["stops"] - truth) < 0.3, (seed, amount, midpoint, got)
+
+
+def test_auto_vignetting_tells_a_wide_falloff_from_a_tight_one() -> None:
+    """The midpoint is the weaker half of the reading, but it has to point the
+    right way: a falloff that reaches far in reads lower than one that clings
+    to the corners."""
+    for seed in (1, 2, 3):
+        clean = _texture(900, 600, seed)
+        wide = lens.estimate_vignetting(_vignetted(clean, 70, 0))
+        tight = lens.estimate_vignetting(_vignetted(clean, 70, 100))
+        assert wide["vignette_midpoint"] < tight["vignette_midpoint"], (seed, wide, tight)
+
+
+def test_auto_vignetting_sets_sliders_that_undo_it() -> None:
+    clean = _texture(900, 600, 2)
+    seen = _vignetted(clean, 70, 40)
+    got = lens.estimate_vignetting(seen)
+    fixed = lens.apply_lens(seen, {"vignette_amount": got["vignette_amount"],
+                                   "vignette_midpoint": got["vignette_midpoint"]})
+    px, py = _norm_axes(900, 600)
+    corners = np.hypot(px, py) > 0.85
+    before = abs(float(np.log(np.median(seen[..., 1][corners] / clean[..., 1][corners]))))
+    after = abs(float(np.log(np.median(fixed[..., 1][corners] / clean[..., 1][corners]))))
+    assert after < 0.35 * before, (before, after)
+
+
+def test_auto_vignetting_agrees_across_render_sizes() -> None:
+    big = _vignetted(_texture(2000, 1334, 7), 60, 50)
+    small = cv2.resize(big, (1000, 667), interpolation=cv2.INTER_AREA)
+    a = lens.estimate_vignetting(big)["stops"]
+    b = lens.estimate_vignetting(small)["stops"]
+    assert abs(a - b) < 0.03, (a, b)
+
+
+def test_brighter_corners_are_not_a_vignette() -> None:
+    got = lens.estimate_vignetting(_vignetted(_texture(900, 600, 1), -60, 50))
+    assert not got["found"] and got["stops"] < 0.0, got
+    assert got["vignette_amount"] == 0
+
+
+def test_auto_vignetting_says_when_the_slider_cannot_reach() -> None:
+    clean = _texture(900, 600, 3)
+    px, py = _norm_axes(900, 600)
+    seen = (clean * (2.0 ** (-2.5 * (px * px + py * py)))[..., None]).astype(np.float32)
+    got = lens.estimate_vignetting(seen)
+    assert got["found"] and got["vignette_amount"] == 100
+    assert got["stops"] > lens._VIG_MAX_STOPS, got
+
+
+def test_auto_vignetting_with_nothing_to_read() -> None:
+    for frame in (np.zeros((400, 600, 3), np.float32), np.ones((400, 600, 3), np.float32)):
+        got = lens.estimate_vignetting(frame)
+        assert not got["found"] and got["vignette_amount"] == 0, got
+
+
+def test_auto_vignetting_gives_values_the_sliders_hold() -> None:
+    got = lens.estimate_vignetting(_vignetted(_texture(900, 600, 1), 50, 30))
+    params = {"vignette_amount": got["vignette_amount"], "vignette_midpoint": got["vignette_midpoint"]}
+    assert lens.normalize(params) == {**lens.DEFAULT_LENS, **params}
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

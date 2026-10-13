@@ -82,7 +82,8 @@ const EDIT_SCHEMA = {
       hint: "How much of the finest structure comes up with it. High also brings up noise." },
     { k: "sharpen_masking", label: "\u00b7 masking", min: 0, max: 100, step: 1, fmt: 0,
       hint: "Hold sharpening off flat areas \u2014 skies and skin keep their noise unamplified." },
-    { k: "vignette",   label: "Vignette",    min: -100, max: 100, step: 1, fmt: 0 },
+    { k: "vignette",   label: "Vignette",    min: -100, max: 100, step: 1, fmt: 0,
+      hint: "A look: \u2212 darkens the corners of the crop. To take out a vignette the photo already has, use Remove vignetting in Geometry, under Lens & perspective." },
   ]},
   creative: { title: "Creative", fields: [
     { k: "blur",         label: "Defocus",   min: 0,    max: 100, step: 1, fmt: 0,
@@ -5170,6 +5171,7 @@ function bindModels() {
 // frame they produce, which is the frame on screen.
 const LENS_DEFAULT = { distortion: 0, ca_red_cyan: 0, ca_blue_yellow: 0, ca_auto: false,
                        vignette_amount: 0, vignette_midpoint: 50 };
+const LENS_VIGNETTE_MAX_STOPS = 1.5;   // lens._VIG_MAX_STOPS: Vignetting at 100
 const TRANSFORM_DEFAULT = { vertical: 0, horizontal: 0, rotate: 0, aspect: 0, scale: 100,
                             offset_x: 0, offset_y: 0, upright: "off" };
 const LENS_FIELDS = [
@@ -5279,6 +5281,30 @@ async function applyUpright(mode) {
   fetchEditPreview(true);
 }
 
+// Measured once, from the photo as the sensor saw it, and put on the two
+// sliders it is made of, so it can be checked and nudged like any other.
+async function removeVignetting() {
+  const status = $("#optics-status");
+  status.textContent = "measuring the corners…";
+  const res = await fetch("/api/edit/vignette", { ...JSON_POST, body: JSON.stringify({ rel_path: editSession.relPath }) });
+  if (!res.ok) { status.textContent = `measuring failed: ${res.status}`; return; }
+  const d = await res.json();
+  if (!d.found) {
+    status.textContent = "The corners are not darker than the photo explains; nothing to remove. Set Vignetting by hand to brighten them anyway.";
+    return;
+  }
+  setOptic("lens", "vignette_amount", d.vignette_amount);
+  setOptic("lens", "vignette_midpoint", d.vignette_midpoint);
+  // lens.estimate_vignetting errs towards too little: a scene can be darker
+  // towards its edges on its own, and it is not told which is which.
+  status.textContent = d.stops > LENS_VIGNETTE_MAX_STOPS
+    ? `The corners read about ${d.stops.toFixed(1)} stops darker, more than Vignetting takes out at its most.`
+    : `The corners read about ${d.stops.toFixed(1)} stops darker. If they still look dark, raise Vignetting.`;
+  renderOpticsPanel();
+  setEditDirty();
+  fetchEditPreview(true);
+}
+
 function bindOpticsPanel() {
   const body = $("#edit-optics-group");
   body.addEventListener("input", (e) => {
@@ -5299,6 +5325,7 @@ function bindOpticsPanel() {
   });
   $$("#optics-upright [data-upright]").forEach((b) =>
     b.addEventListener("click", () => applyUpright(b.dataset.upright)));
+  $("#lens-vignette-auto").addEventListener("click", removeVignetting);
   $("#optics-reset").addEventListener("click", () => {
     editSession.edit.lens = null;
     editSession.edit.transform = null;

@@ -13,7 +13,8 @@ the *optics*, not creative effects. They undo what the glass did:
                          frame (`ca_auto`).
   3. lens vignetting     glass and the aperture pass less light towards the
                          corners. `vignette_amount` / `vignette_midpoint` add it
-                         back.
+                         back, set by hand or read off the frame
+                         (`estimate_vignetting`).
 
 Only numpy + OpenCV, like the rest of the pipeline.
 
@@ -106,6 +107,14 @@ _CA_AUTO_LIMIT = 0.008   # nothing beyond this is lateral CA; refuse to "fix" it
 _CA_AUTO_MIN_R = 0.25    # ignore the middle of the frame: no radius, no signal
 _CA_AUTO_MARGIN = 0.02   # ...and the outermost band, which has no neighbours
 _CA_AUTO_BAND = (1.5, 6.0)  # the scales the estimate is made at; see `_bandpass`
+
+# Reading a vignette off the photo. See `estimate_vignetting` for each one.
+_VIG_AUTO_EDGE = 512        # the working copy's long edge
+_VIG_AUTO_BINS = 24         # annuli between the centre and the corner
+_VIG_AUTO_DARK = 0.02       # below this luminance a gradient is quantization
+_VIG_AUTO_CLIP = 0.98       # at or above this in any channel the value was clipped
+_VIG_AUTO_MIN_PIXELS = 50   # fewer usable pixels in an annulus: no median
+_VIG_AUTO_FOUND = 0.15      # stops at the corner below which there is nothing to remove
 
 _EPS = 1e-5
 
@@ -438,6 +447,148 @@ def _vignette_gain(h: int, w: int, params: dict[str, Any],
     n = _VIG_EXP_MID ** (1.0 + (params["vignette_midpoint"] - 50.0) / 50.0)
     stops = (params["vignette_amount"] / 100.0) * _VIG_MAX_STOPS
     return np.exp2(np.float32(stops) * np.power(u2, np.float32(n / 2.0)))
+
+
+def estimate_vignetting(rgb: np.ndarray) -> dict[str, Any]:
+    """Read the vignette a WHOLE uncorrected frame already has, as the two
+    sliders that take it out.
+
+    `rgb` is float32 RGB in [0,1], the encoded values `apply_lens` multiplies,
+    of the frame as it was decoded. Returns `vignette_amount` and
+    `vignette_midpoint` (0 and 50 when there is nothing to remove), `stops` and
+    `n` as measured (`stops` before the slider's limit, so a caller can tell
+    when the slider cannot reach it), and `found`.
+
+    The method is Zheng, Yu, Kang, Lin and Kambhamettu, "Single-Image
+    Vignetting Correction Using Radial Gradient Symmetry" (CVPR 2008). Their
+    observation: in the log of an image, a vignette V(u) adds the same
+    d ln V / du to the radial gradient of every pixel at radius u (their Eq.
+    10), while in a photo without one the radial gradients are distributed
+    symmetrically about zero. So the vignette is whatever shifts that
+    distribution off zero. They measure the asymmetry with a weighted KL
+    divergence whose weights the paper never gives; this keeps their premise
+    and reads the shift directly instead. In each annulus the median radial
+    gradient is the estimate of d ln V / du there: a median, because the tails
+    are where the scene's own edges are and the paper puts its trust in the
+    centre of the distribution for the same reason. Then the slider's own
+    shape, ln V = -stops ln2 u^n, is fitted to those medians by weighted least
+    squares, which for each n is closed form in `stops`; n is searched on the
+    midpoint slider's steps. Each median is weighted by the inverse of its
+    variance, N / sigma^2 up to a constant, with sigma from the annulus' MAD.
+
+    Measured on 66 RAW files from one lens (a 35 mm f/1.8 wide open, indoors),
+    against its lensfun profile applied in linear light:
+      - with the vignette there (1.2 to 2.3 stops at the corner in encoded
+        values, past the slider's 1.5 on half of them), it was found on all
+        66. Against what the slider can reach, it came out short by 0.36 stops
+        on average (median 0.23, the worst tenth 0.96 or more) and over by at
+        most 0.09: it errs towards doing too little.
+      - on the same frames once the profile had removed the vignette, 6 of 66
+        still read as vignetted, at 0.31 to 0.45 stops.
+      - a known vignette of 0.3, 0.6, 0.9 and 1.2 stops multiplied into those
+        cleaned frames raised the reading by 0.36, 0.54, 1.05 and 1.39 (the
+        medians): the method sees a vignette for what it is, and what limits
+        it is the scene.
+    That last point is the whole story. A room lit from its edges, or a
+    subject brighter than its surroundings, has radial structure of its own,
+    and on these photos it was as large as a 1-stop vignette's. Nothing in a
+    single frame tells the two apart, so this is a starting point for the
+    sliders rather than a measurement of the lens. The paper's KL measure
+    (their Eq. 7, alone) was tried too: it found the vignette better (mean
+    absolute error 0.21 stops) but also put 1.4 stops or more on a tenth of
+    the cleaned frames and up to the slider's limit on ordinary in-camera
+    JPEGs, which is the worse way to be wrong. The optical centre is taken to
+    be the frame's centre, as the paper does; a photo cropped off-centre
+    elsewhere breaks that.
+
+    Costs a few tens of milliseconds whatever the input size: everything is
+    done on a copy no longer than `_VIG_AUTO_EDGE`. That size is the paper's
+    own (450 x 600); 256 to 1024 measured the same within noise on the frames
+    above, and 1024 slightly worse.
+    """
+    assert rgb.ndim == 3 and rgb.shape[2] == 3, "estimate_vignetting wants an RGB frame"
+    fit = _fit_vignette(rgb)
+    # The threshold sits just above the cleaned frames' 90th percentile
+    # (0.13 stops), so nine in ten photos without a vignette are left alone.
+    if fit is None or fit[0] < _VIG_AUTO_FOUND:
+        stops, n = fit if fit is not None else (0.0, _VIG_EXP_MID)
+        return {"vignette_amount": 0, "vignette_midpoint": 50,
+                "stops": stops, "n": n, "found": False}
+    stops, n = fit
+    return {"vignette_amount": tenth(min(stops, _VIG_MAX_STOPS) / _VIG_MAX_STOPS * 100.0),
+            "vignette_midpoint": tenth(50.0 * math.log2(n)),
+            "stops": stops, "n": n, "found": True}
+
+
+def _fit_vignette(rgb: np.ndarray) -> tuple[float, float] | None:
+    """(stops, n) of the slider shape fitted to the frame's radial gradients,
+    or None when too little of the frame is usable. `stops` is signed: below
+    zero, the frame gets brighter outwards. See `estimate_vignetting`."""
+    h, w = rgb.shape[:2]
+    scale = _VIG_AUTO_EDGE / max(h, w)
+    if scale < 1.0:
+        # INTER_AREA averages the source pixels each destination one covers,
+        # which also averages the 8-bit steps of a smooth area into a slope.
+        small = cv2.resize(rgb, (max(8, int(round(w * scale))), max(8, int(round(h * scale)))),
+                           interpolation=cv2.INTER_AREA)
+    else:
+        small = rgb
+    small = np.asarray(small, dtype=np.float32)
+    sh, sw = small.shape[:2]
+
+    # A vignette multiplies all three channels alike, so any fixed mix of them
+    # carries it; luminance is the mix with the least noise.
+    y = small[..., 0] * 0.2126 + small[..., 1] * 0.7152 + small[..., 2] * 0.0722
+    # Near black, one 8-bit level is 20% or more of the value, so the log's
+    # gradient there is quantization. A clipped value never saw the falloff.
+    # Moving either limit (0.008 and 0.995 were tried) changed nothing measurable.
+    usable = (y > _VIG_AUTO_DARK) & (small.max(axis=2) < _VIG_AUTO_CLIP)
+    gy, gx = np.gradient(np.log(np.maximum(y, _VIG_AUTO_DARK)))
+    # A central difference reads both neighbours, so both must be usable.
+    usable = cv2.erode(usable.astype(np.uint8), np.ones((3, 3), np.uint8),
+                       borderType=cv2.BORDER_CONSTANT, borderValue=0).astype(bool)
+    cx, cy, r = _centre(sw, sh)
+    px = np.broadcast_to(((np.arange(sw, dtype=np.float32) - np.float32(cx)) / np.float32(r))[None, :], (sh, sw))
+    py = np.broadcast_to(((np.arange(sh, dtype=np.float32) - np.float32(cy)) / np.float32(r))[:, None], (sh, sw))
+    u = np.sqrt(px * px + py * py)
+    usable &= u > 0.0
+    uu = u[usable]
+    # d ln Y / du: the gradient along the outward direction, per half-diagonal
+    # rather than per pixel, which is what makes it the same at any size.
+    radial = (gx[usable] * px[usable] + gy[usable] * py[usable]) / uu * np.float32(r)
+
+    # Annuli by u. 16 and 32 measured the same as 24.
+    ring = np.minimum((uu * _VIG_AUTO_BINS).astype(np.int64), _VIG_AUTO_BINS - 1)
+    order = np.argsort(ring, kind="stable")
+    ring, radial = ring[order], radial[order].astype(np.float64)
+    cuts = np.searchsorted(ring, np.arange(_VIG_AUTO_BINS + 1))
+    centres, medians, weights = [], [], []
+    for j in range(_VIG_AUTO_BINS):
+        vals = radial[cuts[j]:cuts[j + 1]]
+        # The last annuli are slivers of the corners; a median of a handful of
+        # pixels would carry a weight it has not earned.
+        if vals.size < _VIG_AUTO_MIN_PIXELS:
+            continue
+        med = float(np.median(vals))
+        mad = float(np.median(np.abs(vals - med)))
+        centres.append((j + 0.5) / _VIG_AUTO_BINS)
+        medians.append(med)
+        # var(median) = pi sigma^2 / (2 N) for a Gaussian core; the constant
+        # cancels. A MAD of zero is a perfectly flat 8-bit area, whose median
+        # is pinned at zero by its quantization, and it then rightly wins.
+        weights.append(vals.size / max(mad, _EPS) ** 2)
+    if len(centres) < 3:
+        # Next to nothing usable: a night sky, a blown-out frame.
+        return None
+    uc, med, wt = np.array(centres), np.array(medians), np.array(weights)
+
+    # n on the midpoint slider's steps: n = 2 ** (midpoint / 50).
+    n_grid = _VIG_EXP_MID ** (np.arange(101) / 50.0)
+    g = n_grid[:, None] * uc[None, :] ** (n_grid[:, None] - 1.0)     # -d lnV/du per unit k
+    k = -np.sum(wt * med * g, axis=1) / np.sum(wt * g * g, axis=1)
+    resid = np.sum(wt * np.square(med[None, :] + k[:, None] * g), axis=1)
+    best = int(np.argmin(resid))
+    return float(k[best]) / math.log(2.0), float(n_grid[best])
 
 
 # ----- top level ----------------------------------------------------------

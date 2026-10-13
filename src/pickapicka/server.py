@@ -350,6 +350,10 @@ class UprightPayload(BaseModel):
     edit: dict[str, Any] | None = None   # its lens correction is applied first
 
 
+class VignettePayload(BaseModel):
+    rel_path: str
+
+
 class QuitPayload(BaseModel):
     force: bool = False   # quit even with a task still running
 
@@ -3645,6 +3649,22 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
                     "found": abs(est["rotate"]) > 1e-3}
         found = not transform_mod.is_neutral({**est, "scale": 100.0})
         return {"tilt": None, "transform": transform_mod.normalize(est), "found": found}
+
+    @app.post("/api/edit/vignette")
+    def estimate_vignette(payload: VignettePayload) -> dict[str, Any]:
+        """Measure the vignette the photo already has (lens.estimate_vignetting),
+        once, and return the Vignetting and Midpoint that undo it.
+
+        Read off the preview decode, the frame the lens correction itself is
+        applied to, before any of the edit: a vignette is a falloff of the light
+        that reached the sensor. As with Upright, the editor puts the numbers on
+        the sliders and the edit stores them, so every render agrees.
+        """
+        _require_loaded()
+        if ctx.photo_index.get(payload.rel_path) is None:
+            raise HTTPException(status_code=404, detail="photo not found")
+        base = ctx.get_decoded_base(payload.rel_path)
+        return lens_mod.estimate_vignetting(base.astype(np.float32) / 255.0)
 
     @app.post("/api/edit")
     def save_edit(payload: EditSavePayload) -> dict[str, Any]:
