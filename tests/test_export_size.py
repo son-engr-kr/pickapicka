@@ -18,7 +18,7 @@ from PIL import Image
 
 from pickapicka import exporting
 from pickapicka.server import ExportPayload, ExportSettings
-from test_versions import _app, _export, _route, _wait
+from test_versions import A0, A1, _app, _export, _route, _wait
 
 NOISE = np.random.default_rng(0).integers(0, 256, (300, 400, 3), dtype=np.uint8)
 
@@ -77,7 +77,7 @@ def test_an_export_names_what_it_left_out(tmp_path) -> None:
     app, _ = _app(tmp_path, {})
     tiny = ExportSettings(metadata="none", max_mb=100 / exporting.MB)      # 100 bytes
     r = _export_with(app, tmp_path / "out", tiny)
-    assert r["copied"] == 0 and sorted(r["too_large"]) == ["a/a0.jpg", "a/a1.jpg"]
+    assert r["copied"] == 0 and sorted(r["too_large"]) == [A0, A1]
     assert not [f for f in (tmp_path / "out").rglob("*") if f.is_file()]
     r = _export(app, tmp_path / "ok", "folder", versions=False)
     assert r["copied"] == 2 and r["too_large"] == [] and r["lowered"] == 0

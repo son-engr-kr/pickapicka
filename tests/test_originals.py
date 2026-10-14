@@ -11,7 +11,6 @@ is a folder of the test's own, so nothing reaches the real one.
 from __future__ import annotations
 
 import json
-import shutil
 import time
 from pathlib import Path
 
@@ -43,8 +42,10 @@ def trash(tmp_path, monkeypatch) -> Path:
     bin_.mkdir()
 
     def send(path) -> None:
+        # A rename, which a busy file on Windows refuses whole. shutil.move
+        # copied first, and its retry after a refused delete trashed it twice.
         path = Path(path)
-        shutil.move(str(path), str(bin_ / f"{len(list(bin_.iterdir()))}-{path.name}"))
+        path.rename(bin_ / f"{len(list(bin_.iterdir()))}-{path.name}")
     monkeypatch.setattr(originals, "send2trash", send)
     return bin_
 

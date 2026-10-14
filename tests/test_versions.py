@@ -18,6 +18,8 @@ from pickapicka.server import (EditBulkPayload, EditSlotPayload, ExportPayload, 
 
 BRIGHT = {"exposure": 1.0}
 GREY = {"saturation": -100}
+# The photos as the scan names them, with the system's separator.
+A0, A1 = str(Path("a", "a0.jpg")), str(Path("a", "a1.jpg"))
 
 
 def _route(app, path: str, method: str):
@@ -77,7 +79,7 @@ def test_the_versions_are_the_slots_that_differ() -> None:
 
 
 def test_an_export_writes_each_version_beside_its_photo(tmp_path) -> None:
-    app, _ = _app(tmp_path, {"a/a0.jpg": [_slot(GREY, "bw"), _slot(BRIGHT)]})
+    app, _ = _app(tmp_path, {A0: [_slot(GREY, "bw"), _slot(BRIGHT)]})
     preview = _route(app, "/api/export/picks/preview", "GET")(which="picks", scenes=None)
     assert preview["count"] == 2 and preview["versions"] == 2
 
@@ -95,7 +97,7 @@ def test_an_export_writes_each_version_beside_its_photo(tmp_path) -> None:
 
 
 def test_a_version_never_lands_on_another_file(tmp_path) -> None:
-    app, _ = _app(tmp_path, {"a/a0.jpg": [_slot(GREY, "bw")]})
+    app, _ = _app(tmp_path, {A0: [_slot(GREY, "bw")]})
     out = tmp_path / "out"
     _export(app, out, "flat", versions=True)
     _export(app, out, "flat", versions=True)
@@ -104,28 +106,28 @@ def test_a_version_never_lands_on_another_file(tmp_path) -> None:
 
 
 def test_apply_to_many_can_fill_a_slot_and_leave_the_edits(tmp_path) -> None:
-    app, proj = _app(tmp_path, {"a/a1.jpg": [_slot(BRIGHT, "old")]})
+    app, proj = _app(tmp_path, {A1: [_slot(BRIGHT, "old")]})
     bulk = _route(app, "/api/edit/bulk", "POST")
-    r = bulk(EditBulkPayload(rel_paths=["a/a0.jpg", "a/a1.jpg"], edit=GREY, mode="add",
+    r = bulk(EditBulkPayload(rel_paths=[A0, A1], edit=GREY, mode="add",
                              slot=0, slot_name="bw"))
     photos = {p["rel_path"]: p for p in db.load(proj / "picks.json")["photos"]}
-    for rel in ("a/a0.jpg", "a/a1.jpg"):
+    for rel in (A0, A1):
         assert "edit" not in photos[rel]                              # renders as before
         assert photos[rel]["edit_slots"][0]["name"] == "bw"
         assert photos[rel]["edit_slots"][0]["edit"]["saturation"] == -100
         assert r["photos"][rel]["edit_slots"][0]["name"] == "bw"
 
-    bulk(EditBulkPayload(rel_paths=["a/a0.jpg", "a/a1.jpg"], edit={}, mode="replace", slot=0))
+    bulk(EditBulkPayload(rel_paths=[A0, A1], edit={}, mode="replace", slot=0))
     photos = {p["rel_path"]: p for p in db.load(proj / "picks.json")["photos"]}
     assert all("edit_slots" not in p for p in photos.values())
 
 
 def test_naming_a_slot_keeps_when_it_was_filled(tmp_path) -> None:
-    app, proj = _app(tmp_path, {"a/a0.jpg": [_slot(GREY)]})
+    app, proj = _app(tmp_path, {A0: [_slot(GREY)]})
     save = _route(app, "/api/edit/slot", "POST")
     stored = db.load(proj / "picks.json")["photos"][0]["edit_slots"][0]
-    first = save(EditSlotPayload(rel_path="a/a0.jpg", slot=0, edit=stored["edit"]))["slots"][0]
-    named = save(EditSlotPayload(rel_path="a/a0.jpg", slot=0, edit=first["edit"], name="bw"))["slots"][0]
+    first = save(EditSlotPayload(rel_path=A0, slot=0, edit=stored["edit"]))["slots"][0]
+    named = save(EditSlotPayload(rel_path=A0, slot=0, edit=first["edit"], name="bw"))["slots"][0]
     assert named["name"] == "bw" and named["saved_at"] == first["saved_at"]
-    moved = save(EditSlotPayload(rel_path="a/a0.jpg", slot=0, edit=BRIGHT, name="bw"))["slots"][0]
+    moved = save(EditSlotPayload(rel_path=A0, slot=0, edit=BRIGHT, name="bw"))["slots"][0]
     assert moved["saved_at"] != first["saved_at"]
