@@ -4779,10 +4779,10 @@ function buildFilmFields() {
 const portraitState = { faces: null, rel: null, key: "", selected: null };
 // Mirrors portrait.DEFAULT_PORTRAIT, every one neutral at 0: the skin, eyes and
 // teeth are 0..100, the face's shape -100..100 (reshape.SHAPE_KEYS).
-const PORTRAIT_KEYS = ["smooth", "wrinkles", "dark_circles", "neck", "teeth", "eyes",
+const PORTRAIT_KEYS = ["skin_tone", "smooth", "wrinkles", "dark_circles", "neck", "teeth", "eyes",
                        "eye_size", "face_width", "jaw_width", "chin_length", "nose_width", "mouth_width"];
 // What the panel's summary calls each, when it is set.
-const PORTRAIT_SHORT = { smooth: "smooth", wrinkles: "wrinkles", dark_circles: "circles",
+const PORTRAIT_SHORT = { skin_tone: "skin tone", smooth: "smooth", wrinkles: "wrinkles", dark_circles: "circles",
                          neck: "neck", teeth: "teeth", eyes: "eyes", eye_size: "eye size",
                          face_width: "face", jaw_width: "jaw", chin_length: "chin",
                          nose_width: "nose", mouth_width: "mouth" };

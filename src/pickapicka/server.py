@@ -924,7 +924,8 @@ class AppContext:
 
     def auto_fields(self, rel_path: str,
                     edit: dict[str, Any] | None) -> dict[str, np.ndarray] | None:
-        """Segmentation fields for whatever automatic masks `edit` actually uses.
+        """Segmentation fields for whatever automatic masks `edit` actually
+        uses, and the body skin when its portrait panel holds skin tones.
 
         This exists here rather than in `editing` because of two constraints that
         module cannot satisfy from the inside (see its note on MASK_TYPES). The
@@ -933,12 +934,10 @@ class AppContext:
         the *original* pixels, or the mask would crawl every time a slider moved.
         The cached preview decode is both of those things.
 
-        Returns None when no automatic mask is active, so a photo without one
-        never pays for the model, not even to check whether it is downloaded.
+        Returns None when nothing reads a field, so a photo without one never
+        pays for the model, not even to check whether it is downloaded.
         """
-        # A mask's own shape and every part stacked on it may each read a group.
-        groups = {g for m in editing.normalize(edit)["masks"]
-                  if editing.mask_is_active(m) for g in editing.mask_groups(m)}
+        groups = editing.auto_groups(edit)
         if not groups:
             return None
         # The corrected frame, since that is the frame the masks sit on; the

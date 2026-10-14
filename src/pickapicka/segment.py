@@ -71,6 +71,9 @@ CLASS_GROUPS: dict[str, tuple[str, ...]] = {
     "face": ("face-skin",),
     "hair": ("hair",),
     "clothes": ("clothes",),
+    # Not offered as a mask: the skin tone hold's arms and hands, beside the
+    # faces it finds on crops of their own (see portrait.skin_weights).
+    "body": ("body-skin",),
 }
 
 

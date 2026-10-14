@@ -50,6 +50,7 @@ from . import redeye as redeye_mod
 from . import reshape as reshape_mod
 from . import segment as segment_mod
 from . import sharpening as sharpening_mod
+from . import skintone as skintone_mod
 from . import sliders as sliders_mod
 from . import transform as transform_mod
 from . import watermark as watermark_mod
@@ -695,6 +696,16 @@ def mask_reads_ranges(mask: dict[str, Any]) -> bool:
     a refinement or in a part. Each needs the whole ungraded frame (`src`)."""
     return any(s["range_luma"] is not None or s["range_color"] is not None
                for s in mask_shapes(mask) if s is mask or s["type"] == "range")
+
+
+def auto_groups(edit: dict[str, Any] | None) -> set[str]:
+    """Every segmentation group a render of `edit` reads from `auto`: its
+    active masks', and the body skin when the portrait panel holds skin tones."""
+    e = normalize(edit)
+    groups = {g for m in e["masks"] if mask_is_active(m) for g in mask_groups(m)}
+    if not portrait_mod.skin_tone_is_neutral(e["portrait"]) and not _colour_is_neutral(e):
+        groups.add("body")
+    return groups
 
 
 def mask_groups(mask: dict[str, Any]) -> set[str]:
@@ -2312,6 +2323,53 @@ def _grade(img: np.ndarray, e: dict[str, Any],
     return img
 
 
+# ----- skin tone ----------------------------------------------------------
+#
+# The portrait panel's Skin tone holds each face's skin against the colour
+# edits (see the skintone module). What it holds the skin to is the same render
+# with those edits left out, and these are they: everything that decides what
+# colour a pixel is rather than how bright, the look and film included. The
+# master curve and every tonal slider stay, so the reference is lit as the
+# render is and only its colour differs.
+
+_COLOUR_SCALARS = ("temp", "tint", "vibrance", "saturation")
+_IDENTITY_CURVE = [[0.0, 0.0], [1.0, 1.0]]
+
+
+def colour_neutral(e: dict[str, Any]) -> dict[str, Any]:
+    """A normalized edit with its colour edits left out."""
+    out = {**e, **{k: 0 for k in _COLOUR_SCALARS}, "hsl": None, "grading": None,
+           "lut": None, "film": None}
+    for k in _CHANNEL_CURVES:
+        out[k] = [list(p) for p in _IDENTITY_CURVE]
+    return out
+
+
+def _colour_is_neutral(e: dict[str, Any]) -> bool:
+    return (not any(e[k] for k in _COLOUR_SCALARS)
+            and e["hsl"] is None and e["grading"] is None
+            and e["lut"] is None and e["film"] is None
+            and all(_curve_is_identity(e[k]) for k in _CHANNEL_CURVES))
+
+
+def _hold_skin(img: np.ndarray, rgb: np.ndarray, e: dict[str, Any],
+               roi: tuple[float, float, float, float], faces: list[dict[str, Any]],
+               auto: dict[str, np.ndarray] | None, cache_key: str | None, given: np.ndarray,
+               fills: dict[str, np.ndarray] | None, seed: int) -> np.ndarray:
+    """`img`, the graded frame, with each face's skin held to the reference
+    (in place: `img` is the render's own)."""
+    assert auto is not None and "body" in auto, \
+        "holding skin tones needs the caller's 'body' segmentation field: pass auto={'body': alpha}"
+    h, w = img.shape[:2]
+    held = portrait_mod.skin_weights(e["portrait"], faces, _window_of(auto["body"], h, w, roi), roi)
+    if held is None:
+        return img
+    ref_e = colour_neutral(e)
+    ref = _grade(_pregrade(rgb, ref_e, roi, faces, None, cache_key, given, fills), ref_e, roi, seed)
+    box, weight = held
+    return skintone_mod.protect(img, np.clip(ref, 0.0, 1.0), box, weight)
+
+
 def effect_padding(edit: dict[str, Any] | None, frame_long: float,
                    faces: list[dict[str, Any]] | None = None) -> float:
     """How many pixels of neighbourhood a render of one window needs.
@@ -2498,10 +2556,14 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         # Grain must be the same grain every time this photo is rendered, so it
         # is seeded from the photo rather than from chance.
         seed = film_mod.seed_for(str((meta or {}).get("file") or ""))
-        img = _pregrade(rgb, e, roi, faces, luts,
-                        None if cache_key is None else f"{cache_key}|{optics_key(e)}", given, fills)
+        pkey = None if cache_key is None else f"{cache_key}|{optics_key(e)}"
+        img = _pregrade(rgb, e, roi, faces, luts, pkey, given, fills)
         img = _grade(img, e, roi, seed)
         img = np.clip(img, 0.0, 1.0)
+        # Before the masks: what a mask does to a face is meant, and is left be.
+        if not portrait_mod.skin_tone_is_neutral(e["portrait"]) and not _colour_is_neutral(e):
+            assert faces is not None, "holding skin tones needs the caller's portrait.analyze faces"
+            img = _hold_skin(img, rgb, e, roi, faces, auto, pkey, given, fills, seed)
         if e["masks"]:
             img = _apply_masks(img, e["masks"], roi, auto, src, frame_size, process_version(e),
                                luts, seed)

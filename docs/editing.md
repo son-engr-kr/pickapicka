@@ -45,6 +45,9 @@ adjustments bake in only on export or download.
   the light itself is neutral. The **Portrait** presets are that recipe with
   numbers in it.
 
+  The other way round, warming a photo without the faces going orange with
+  it, is **Skin tone** in the Portrait panel (see below).
+
 ## Repairs
 
 Two stages that fix the captured image rather than interpret it, and they run
@@ -201,6 +204,66 @@ Two stages that fix the captured image rather than interpret it, and they run
 - The skin stages run in that order (lines and shadows on the skin as it was
   shot, then the smoothing, then the whitening), so each one sees what it was
   tuned on.
+
+### Skin tone
+
+- **Skin tone**, 0 to 100, keeps the skin natural when the photo is warmed,
+  graded or given a look. The scene takes the edit; each face's skin, its neck
+  and the arms and hands take a little of it, and an orange or yellow cast is
+  held back. The brightness is always the photo's, so exposure and contrast
+  land on the skin as they do everywhere else.
+- **Why skin needs it.** On the ColorChecker's light-skin patch, Temperature
+  +60 takes CIELAB chroma from 21.7 to 39.3 and turns the hue by only 3
+  degrees: an orange face is over-saturation more than a new hue. The looks do
+  it too, without Temperature: Peach and Golden hour raise skin chroma by over
+  a third, and Gold film and Faded 70s turn a bright cheek 20 to 32 degrees
+  towards yellow. A wall can take that; skin is judged against a narrow memory
+  of what skin looks like.
+- **What it holds the skin to.** Each skin pixel to itself, the same render
+  with the colour edits left out (white balance, vibrance and saturation, the
+  channel curves, the colour mixer, the wheels, the look and film), not to one
+  "skin colour". Measured skin is too varied for one: over the 14,533 spectra
+  of the ISSA database, ethnicity explains half the variance of lightness but
+  only 13% of hue, and the face and the arms differ by about 10 degrees.
+- **How far it lets the skin move.** The change is split into chroma and hue,
+  the hue as CIE's metric hue difference, so the same turn counts for less on
+  a paler skin. Each part goes through a curve that passes a small change
+  almost whole and eases a large one towards a limit it never passes. The
+  research on preferred skin colour shapes three of its rules: hue is
+  tolerated less than chroma, a yellowing skin loses its appeal faster than a
+  reddening one, and people prefer skin at a hue of about 46 degrees whatever
+  the skin group (Cao, Luo and Liu, and Peng et al., CIC 2020). So chroma may
+  fall freely (black and white and faded looks go through), the yellow side is
+  held twice as tightly as the red, and a turn towards 46 degrees is free: a
+  face in shade goes magenta, and warming it is the fix, not the problem.
+- **The limits were set by eye**, on fourteen portraits from a hiking shoot,
+  inside the bounds the studies give. At the half-liked boundary Cao et al.
+  measured (14.6 in chroma), a face under Temperature +80 was as orange as
+  without the hold; a chroma limit of 8 still left it peach, and 4 to 5 kept
+  it natural with the forest round it warm. It is 5, and the hue limits 2.5
+  towards yellow and 5 towards red. No study measures how far skin may move
+  from what it was before it looks wrong, so these are a choice, not a
+  finding.
+- **What each rule does**, measured by taking it out, on the same fourteen
+  frames at Temperature +80 (medians over each face's skin, averaged):
+  - The hold: skin chroma rose by 9.7 without it and by 4.8 with it.
+  - The body skin: without it, the arms and hands kept 8.9 of their 9.2 while
+    the faces beside them were held.
+  - The free turn towards 46 degrees: most of these faces were in shade and
+    magenta, and warming turned them 25 degrees. With the turn free the hold
+    let 23 of those through; without it, 15.
+  - The tighter yellow side: on these frames it changed nothing at
+    Temperature +80, since nearly every turn was the free one. On the faces
+    already past 46 degrees, Gold film and Faded 70s turned them 1.3 to 2.5
+    degrees less with it than with both sides at 5.
+  - Near grey (a specular highlight) a pixel's hue says nothing, so its whole
+    change counts as chroma. Split by hue there, a warm shift on a noisy
+    highlight scattered three times as much.
+- **Where it runs.** After every colour edit and before the masks, so what a
+  mask does to a face is left as it was meant. Faces come from the same
+  analysis as the rest of the panel, the arms and hands from the segmenter's
+  body skin, held at the All faces value. A face's own setting holds its face
+  and neck only.
 
 ### Face shape
 
@@ -797,6 +860,8 @@ knowing because they decide what a slider means:
    for the same kind of reason: it decides what each colour *is*, and those two
    then decide how much of all of them there is.
 2. **Film** — the capture medium, applied to the graded frame.
+   Then Skin tone, which needs every colour edit done before it can hold the
+   skin against them, and before the masks.
 3. **Geometry** — straighten, then crop. This comes *after* the grade, so a mask
    is measured against the original frame and cropping never drags it off the
    thing it was drawn on.

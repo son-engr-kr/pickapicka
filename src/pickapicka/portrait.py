@@ -164,17 +164,21 @@ DEFAULT_PORTRAIT: dict[str, Any] = {
     "wrinkles": 0,     # 0..100, softening the lines on the face
     "neck": 0,         # 0..100, softening the lines on the neck
     "dark_circles": 0, # 0..100, lifting the shadow under the eyes
+    "skin_tone": 0,    # 0..100, holding the skin's colour through the colour edits; see skintone
     # The face's shape, -100..100 each; see the reshape module.
     **{k: 0 for k in SHAPE_KEYS},
 }
 _RANGES = {"smooth": (0, 100), "teeth": (0, 100), "eyes": (0, 100),
            "wrinkles": (0, 100), "neck": (0, 100), "dark_circles": (0, 100),
-           **{k: SHAPE_RANGE for k in SHAPE_KEYS}}
+           "skin_tone": (0, 100), **{k: SHAPE_RANGE for k in SHAPE_KEYS}}
 # In every normalized panel. The rest appear only when set, so a panel saved
 # before they existed normalizes, and hashes into the thumbnail cache, as it did.
 _ALWAYS = ("smooth", "teeth", "eyes")
 # What `apply_portrait` does; the shape is the reshape module's, and runs later.
 TONE_KEYS = ("smooth", "teeth", "eyes", "wrinkles", "neck", "dark_circles")
+# Applied after the photo's colour edits, which it holds the skin against; see
+# `skin_weights` and the skintone module.
+SKIN_TONE_KEYS = ("skin_tone",)
 
 FULL_ROI = (0.0, 0.0, 1.0, 1.0)
 
@@ -292,6 +296,11 @@ def is_neutral(params: dict[str, Any] | None) -> bool:
 def tone_is_neutral(params: dict[str, Any] | None) -> bool:
     """Nothing for `apply_portrait` to do on any face (the shape may still be set)."""
     return not faceparams.anything(params, TONE_KEYS)
+
+
+def skin_tone_is_neutral(params: dict[str, Any] | None) -> bool:
+    """No face asks for its skin tone to be held."""
+    return not faceparams.anything(params, SKIN_TONE_KEYS)
 
 
 def tone_params(params: dict[str, Any] | None) -> dict[str, Any]:
@@ -694,6 +703,58 @@ def apply_portrait(img: np.ndarray, params: dict[str, Any] | None,
             reg = out[y0:y1, x0:x1]
             out[y0:y1, x0:x1] = _whiten(reg, alpha, p[what] / 100.0, ramp, _WHITEN[what])
     return out
+
+
+# A pixel held at under 1/32 moves by less than 1.3 in CIELAB even under a change
+# of 40, the most a look gives skin: too little to see, and too many pixels of
+# the segmenter's soft tail to spend the hold on.
+_WEIGHT_FLOOR = 1.0 / 32.0
+# The segmenter never says 0: away from any skin its body-skin probability sits
+# at 0.0168 (the median over 14 frames of a hiking shoot, on pixels 6 model
+# pixels or more from anything it called skin). That much is no skin at all,
+# and taken as a weight it would hold the whole frame a little.
+_BODY_FLOOR = 0.0168
+
+
+def skin_weights(params: dict[str, Any] | None, faces: list[dict[str, Any]],
+                 body: np.ndarray, roi: tuple[float, float, float, float] = FULL_ROI
+                 ) -> tuple[tuple[int, int, int, int], np.ndarray] | None:
+    """Where, and how firmly, `skintone.protect` holds the skin over an array
+    sitting at `roi`, whose shape `body` has: a box (x0, y0, x1, y1) and the
+    weight of each pixel in it, or None when there is nothing to hold.
+
+    Each face's skin with its neck, as `analyze` stored them, is held by that
+    face's Skin tone. The eyes, brows and lips are not cut out, as they are for
+    smoothing: a warmed photo yellows the whites of the eyes and the teeth just
+    as it does the cheeks. `body` is the segmenter's body skin over this array
+    (the arms and hands, which a face's crop mostly misses, and which would
+    stay orange beside a face that did not), held by the panel's own value.
+    """
+    if skin_tone_is_neutral(params):
+        return None
+    frame_w, frame_h, ox, oy = _frame(body.shape, roi)
+    h, w = body.shape[:2]
+    body = np.clip((body - _BODY_FLOOR) / (1.0 - _BODY_FLOOR), 0.0, 1.0)
+    weight = body * np.float32(float((params or {}).get("skin_tone", 0)) / 100.0)
+    for face in faces:
+        amount = faceparams.for_face(params, face, frame_w, frame_h).get("skin_tone", 0) / 100.0
+        if amount <= 0.0 or face["box"][2] * frame_w < 8:
+            continue
+        cx, cy, cw, ch = face["crop"]
+        region = (max(0, int(math.floor(cx * frame_w - ox))), max(0, int(math.floor(cy * frame_h - oy))),
+                  min(w, int(math.ceil((cx + cw) * frame_w - ox))), min(h, int(math.ceil((cy + ch) * frame_h - oy))))
+        if region[2] - region[0] < 1 or region[3] - region[1] < 1:
+            continue            # this face is outside the window
+        alpha = np.maximum(_stored_alpha(face, "skin", region, frame_w, frame_h, ox, oy),
+                           _stored_alpha(face, "neck", region, frame_w, frame_h, ox, oy))
+        sub = weight[region[1]:region[3], region[0]:region[2]]
+        np.maximum(sub, amount * alpha, out=sub)
+    weight = np.where(weight < _WEIGHT_FLOOR, 0.0, np.minimum(weight, 1.0)).astype(np.float32)
+    rows, cols = np.flatnonzero(weight.any(axis=1)), np.flatnonzero(weight.any(axis=0))
+    if not len(rows):
+        return None
+    y0, y1, x0, x1 = int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
+    return (x0, y0, x1, y1), np.ascontiguousarray(weight[y0:y1, x0:x1])
 
 
 def _box_round(alpha: np.ndarray, reach: float) -> tuple[int, int, int, int] | None:
