@@ -2260,6 +2260,23 @@ input[type="range"] { accent-color: var(--accent); }
 .choice-buttons.stack button { text-align: left; }
 .choice-buttons.stack button:first-child { order: 1; align-self: flex-end; text-align: center; margin-top: 6px; }
 
+/* ----- version and updates ----- */
+#about-modal { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center;
+  justify-content: center; background: var(--overlay); }
+#about-modal.hidden { display: none; }
+.about-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.about-head h2 { margin: 0; }
+.tb-mark.about-mark { width: 40px; height: 40px; }
+.about-versions { display: grid; grid-template-columns: auto 1fr; gap: 6px 18px; margin: 0 0 14px;
+  font-size: var(--fs-md); }
+.about-versions dt { color: var(--ink-faint); }
+.about-versions dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
+.about-versions small { margin-left: 8px; color: var(--ink-faint); font-size: var(--fs-xs); }
+.about-versions a { margin-left: 8px; font-size: var(--fs-sm); color: var(--accent); }
+.choice-box p#about-status.error { color: var(--reject); }
+#about-install.hidden, #about-check.hidden { display: none; }
+#about-download { display: inline-flex; align-items: center; text-decoration: none; }
+
 /* ----- an optional model's download ----- */
 #model-modal { position: fixed; inset: 0; z-index: 305; display: flex; align-items: center;
   justify-content: center; background: var(--overlay); }

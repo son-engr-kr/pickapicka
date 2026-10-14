@@ -9757,6 +9757,11 @@ function bindKeys() {
     }
     // The preset list closes on Esc before anything behind it backs out.
     if (e.key === "Escape" && presetPanelOpen()) { openPresetPanel(false); e.preventDefault(); return; }
+    // Version and updates: Esc closes it, and no key reaches the photos behind.
+    if (aboutOpen()) {
+      if (e.key === "Escape") { closeAbout(); e.preventDefault(); }
+      return;
+    }
     // A model's download dialog: Esc backs out (and stops a download).
     if (!$("#model-modal").classList.contains("hidden")) {
       if (e.key === "Escape") { modelCancel(); e.preventDefault(); }
@@ -12977,6 +12982,7 @@ function renderUpdate() {
   $("#pref-update-version").textContent = `Version ${s.current}`;
   $("#pref-update-status").textContent = updateStatusText(s);
   $("#pref-update-check").disabled = ["checking", "downloading", "installing"].includes(s.status);
+  renderAbout();
 }
 
 async function onUpdateClick() {
@@ -13114,6 +13120,12 @@ function bindUpdates() {
     await refreshUpdate();
   });
   $("#pref-update-check").addEventListener("click", checkUpdateNow);
+  $("#about-btn").addEventListener("click", openAbout);
+  $("#about-close").addEventListener("click", closeAbout);
+  $("#about-modal").addEventListener("click", (e) => { if (e.target.id === "about-modal") closeAbout(); });
+  $("#about-check").addEventListener("click", aboutCheck);
+  $("#about-install").addEventListener("click", () => { closeAbout(); installUpdate(); });
+  $("#about-download").href = DOWNLOAD_PAGE_URL;
 }
 
 async function checkUpdateNow() {
@@ -13123,6 +13135,78 @@ async function checkUpdateNow() {
   $("#pref-update-check").disabled = true;
   clearTimeout(update.timer);
   update.timer = setTimeout(pollUpdate, 800);
+}
+
+// ---------- version and updates ----------
+// What other apps keep under About: this copy's version, the newest release,
+// and the page to download it from. Opening it checks, as Check for Updates
+// does elsewhere, unless a check or a download is already under way.
+const DOWNLOAD_PAGE_URL = "https://son-engr-kr.github.io/pickapicka/#download";
+const INSTALL_KIND_LABEL = {   // updater.install_kind
+  "macos-app": "macOS app", "windows-app": "Windows app",
+  homebrew: "Homebrew", "uv-tool": "uv tool", other: "Python package",
+};
+const UPDATE_BUSY = ["checking", "downloading", "installing"];
+
+function aboutOpen() {
+  return !$("#about-modal").classList.contains("hidden");
+}
+
+async function openAbout() {
+  $("#about-modal").classList.remove("hidden");
+  $("#about-close").focus();
+  renderAbout();
+  if (!update.state || ![...UPDATE_BUSY, "ready"].includes(update.state.status)) await aboutCheck();
+}
+
+function closeAbout() {
+  $("#about-modal").classList.add("hidden");
+}
+
+async function aboutCheck() {
+  await checkUpdateNow();
+  $("#about-status").textContent = "Checking GitHub for a newer version…";
+  $("#about-status").classList.remove("error");
+  $("#about-check").disabled = true;
+}
+
+function aboutStatusText(s) {
+  const v = s.latest?.version;
+  const at = s.checked_at
+    ? ` Checked at ${new Date(s.checked_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.` : "";
+  switch (s.status) {
+    // Not newer and not the same: a copy built ahead of the release.
+    case "current": return v && v !== s.current
+      ? `This copy is newer than the latest release.${at}` : `You have the latest version.${at}`;
+    case "available": return s.command
+      ? `${v} is out. This copy updates with:\n${s.command}`
+      : `${v} is out. The download page has it.${at}`;
+    case "ready": return `${v} is downloaded and checked. Restart and update installs it and comes back here; `
+      + (s.kind === "macos-app" ? "macOS asks for your password." : "Windows asks you to allow the installer.");
+    case "error": return `${s.error}\nThe download page has the latest version to install by hand.`;
+    case "idle": return "Not checked yet.";
+    default: return updateStatusText(s);
+  }
+}
+
+function renderAbout() {
+  if (!aboutOpen() || !update.state) return;
+  const s = update.state;
+  const l = s.latest;
+  $("#about-current").innerHTML = `${escapeHtml(s.current)}<small>${escapeHtml(INSTALL_KIND_LABEL[s.kind] || s.kind)}</small>`;
+  $("#about-latest").innerHTML = l
+    ? escapeHtml(l.version)
+      + (l.published ? `<small>${escapeHtml(new Date(l.published).toLocaleDateString([], { dateStyle: "medium" }))}</small>` : "")
+      + `<a href="${escapeHtml(l.url)}" target="_blank" rel="noopener">What's new</a>`
+    : (s.status === "checking" ? "Checking…" : "Not known yet");
+  $("#about-status").textContent = aboutStatusText(s);
+  $("#about-status").classList.toggle("error", s.status === "error");
+  $("#about-check").disabled = UPDATE_BUSY.includes(s.status);
+  // With the new version downloaded there is nothing left to check for.
+  $("#about-check").classList.toggle("hidden", s.status === "ready" || s.status === "installing");
+  $("#about-install").classList.toggle("hidden", s.status !== "ready");
+  // The way to the new version is the button to press, unless it is already here.
+  $("#about-download").classList.toggle("primary", s.newer && s.status !== "ready");
 }
 
 

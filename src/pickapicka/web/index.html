@@ -52,6 +52,7 @@
       <button id="update-btn" class="hidden" type="button"></button>
       <span id="activity" class="hidden" role="status"><span class="tb-spinner"></span><span id="activity-text"></span></span>
       <button id="export-picks-btn" class="primary" title="Copy all PICK photos to a folder" disabled data-icon="folder">Export picks</button>
+      <button id="about-btn" type="button" data-icon="info" title="Version and updates" aria-label="Version and updates"></button>
       <button id="prefs-btn" type="button" data-icon="settings" title="Preferences" aria-label="Preferences"></button>
       <button id="tour-main-btn" class="tour-btn" type="button" title="Keyboard shortcuts and the guided tour (?)" aria-label="Keyboard shortcuts">?</button>
       <button type="button" class="quit-btn" data-icon="power" title="Quit Pickapicka" aria-label="Quit"></button>
@@ -729,6 +730,28 @@
       <div class="choice-buttons">
         <button type="button" id="model-cancel">Cancel</button>
         <button type="button" id="model-go" class="primary">Download</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Version and updates, what other apps keep under About: this copy's
+       version, the newest release, and the page to download it from. -->
+  <div id="about-modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="about-title">
+    <div class="choice-box about-box">
+      <div class="about-head">
+        <span class="tb-mark about-mark" aria-hidden="true"><svg class="brand-glyph"><use href="#brand-mark"/></svg></span>
+        <h2 id="about-title">Pickapicka</h2>
+      </div>
+      <dl class="about-versions">
+        <dt>This version</dt><dd id="about-current"></dd>
+        <dt>Latest version</dt><dd id="about-latest"></dd>
+      </dl>
+      <p id="about-status" aria-live="polite"></p>
+      <div class="choice-buttons">
+        <button type="button" id="about-check">Check again</button>
+        <a class="btn" id="about-download" target="_blank" rel="noopener">Download page</a>
+        <button type="button" id="about-install" class="primary hidden">Restart and update</button>
+        <button type="button" id="about-close">Close</button>
       </div>
     </div>
   </div>

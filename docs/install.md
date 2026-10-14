@@ -84,9 +84,15 @@ Because the app downloads the installer itself rather than through a browser,
 the unsigned-app warnings (Gatekeeper's right-click → Open, SmartScreen's Run
 anyway) do not come back for updates.
 
+The **ⓘ** button in the top bar shows the version you have and the newest
+release, with its date and what's new in it, and checks again as it opens, as
+Check for Updates does in other apps. Its **Download page** goes to the
+website's downloads, for installing by hand; with a new version downloaded it
+also has **Restart and update**.
+
 The check sends a request to GitHub and nothing else; nothing about your photos
 or projects leaves the machine. **Preferences → Updates** turns automatic checks
-off, and **Check now** works either way.
+off, and **Check now** and the ⓘ button work either way.
 
 A `uv tool` or Homebrew install is told when a new version is out, with the
 command that updates it (`uv tool upgrade pickapicka`, `brew upgrade
