@@ -1889,7 +1889,7 @@
         <h2>Apply adjustments to many</h2>
         <button id="bulk-modal-close" title="Esc" data-icon="close" aria-label="Close"></button>
       </header>
-      <div class="bulk-body">
+      <div class="bulk-body" id="bulk-options">
         <p class="bulk-hint">
           Apply an edit to several photos at once. Non-destructive — the
           originals are never modified.
@@ -1920,7 +1920,7 @@
             </button>
             <button class="option-card" type="button" data-value="preset">
               <span class="option-title">A preset</span>
-              <span class="option-sub">Pick one of your saved presets below.</span>
+              <span class="option-sub">One of your presets or the looks, chosen below.</span>
             </button>
             <button class="option-card" type="button" data-value="clear">
               <span class="option-title">Clear edits</span>
@@ -1948,11 +1948,19 @@
           <input type="text" id="bulk-slot-name" maxlength="40" spellcheck="false"
                  placeholder="name, e.g. bw" title="Ends the version's file name in an export" />
         </div>
-        <div id="bulk-status"></div>
       </div>
+      <!-- Before anything is saved: the photos that already have work this
+           lands on, and what it takes from each. -->
+      <div class="bulk-body hidden" id="bulk-warn">
+        <p class="bulk-hint" id="bulk-warn-msg"></p>
+        <ul class="bulk-warn-list" id="bulk-warn-list"></ul>
+        <p class="bulk-hint">Undo, in the message that follows, puts every photo back as it was.</p>
+      </div>
+      <div id="bulk-status"></div>
       <footer>
         <span id="bulk-summary"></span>
         <button id="bulk-cancel" type="button">Cancel</button>
+        <button id="bulk-skip" type="button" class="hidden">Skip them</button>
         <button id="bulk-confirm" type="button" class="primary">Apply</button>
       </footer>
     </div>

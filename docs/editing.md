@@ -762,8 +762,8 @@ and black and white say, with each look in a slot:
   version, in slot N*, with a name. The edit or preset is laid on each photo's
   own edit as usual, and the result goes into the slot, so the photos render
   as before. The dialog says how many already hold something in that slot,
-  which this replaces. **Clear edits** with a slot chosen empties that slot
-  instead.
+  which this replaces, and lists them before applying (see *Presets*).
+  **Clear edits** with a slot chosen empties that slot instead.
 
 ## Presets
 
@@ -841,7 +841,22 @@ what it is for.
   on the photo until the pointer moves off.
 - **Apply to more** takes a preset too, and lays it on each photo's own edit by
   the same rules (each with its own auto tone and its own automatic layers), and
-  can save the result as a version in a slot instead (see *Slots*).
+  can save the result as a version in a slot instead (see *Slots*). It is also
+  how a preset goes onto many photos from the grid: tick them (or `X`), then
+  **Apply edit / preset…** in the bar that appears.
+- **Before it is applied**, when any of the photos already has an edit, the
+  dialog lists them, each with what this would take from it ("replaces Tone
+  curve, Color mixer") or "on top of its edit" when it takes nothing. **Only
+  the other N** leaves them out; **Apply to all** goes ahead. The check works
+  out a preset without the photo, so Keep brightness is not counted (it only
+  bends the curve under what it lands on), and Auto light counts as replacing
+  Light wherever the photo has Exposure, Contrast, Whites or Blacks set.
+- **While it runs** the dialog counts the photos, a few to a request; a look
+  that keeps the brightness takes about half a second a photo (275 picks of a
+  hiking shoot took 136 s). **Undo** (or `⌘Z`) in the message after it puts
+  every photo back exactly as it was: its edit, when it was edited, and its
+  slots. If it fails part way, what went through stays and Undo takes that
+  back.
 
 ## Pipeline order
 

@@ -2840,7 +2840,7 @@ function decideMany(photos, decision, msg) {
   recomputeFilter();
   renderSidebar();
   renderMain();
-  showUndoToast(msg, before);
+  showUndoToast(msg, () => restoreDecisions(before));
 }
 
 const DECIDED_AS = { pick: "Picked", review: "Marked for review", reject: "Rejected" };
@@ -2869,12 +2869,12 @@ function rejectUndecidedInScene() {
 }
 
 // ---------- undo toast ----------
-// `before`: each photo's decision and its time stamp before the change.
-const undoToast = { before: null, timer: null };
+// `undo`: what puts the last bulk change back, each photo as it was.
+const undoToast = { undo: null, timer: null };
 
-function showUndoToast(msg, before) {
+function showUndoToast(msg, undo) {
   if (undoToast.timer) clearTimeout(undoToast.timer);
-  undoToast.before = before;
+  undoToast.undo = undo;
   $("#undo-toast-msg").textContent = msg;
   $("#undo-toast").classList.remove("hidden");
   undoToast.timer = setTimeout(hideUndoToast, 12000);
@@ -2882,7 +2882,7 @@ function showUndoToast(msg, before) {
 
 function hideUndoToast() {
   $("#undo-toast").classList.add("hidden");
-  undoToast.before = null;
+  undoToast.undo = null;
   if (undoToast.timer) {
     clearTimeout(undoToast.timer);
     undoToast.timer = null;
@@ -2890,9 +2890,14 @@ function hideUndoToast() {
 }
 
 function performUndo() {
-  const before = undoToast.before;
-  if (!before || !before.length) return;
+  const undo = undoToast.undo;
+  if (!undo) return;
   hideUndoToast();
+  undo();
+}
+
+// `before`: each photo's decision and its time stamp before the change.
+function restoreDecisions(before) {
   const byRel = new Map(state.photos.map((p) => [p.rel_path, p]));
   for (const b of before) {
     const photo = byRel.get(b.rel_path);
@@ -9071,7 +9076,9 @@ function renderSelectionBar() {
   bar.classList.remove("hidden");
 }
 
-const bulkState = { currentEdit: null };
+// `pending`: what Apply sends and to which photos, from the check until it is
+// sent; `running` while it is.
+const bulkState = { currentEdit: null, pending: null, running: false };
 
 function openBulkModal(opts) {
   opts = opts || {};
@@ -9090,11 +9097,15 @@ function openBulkModal(opts) {
   $("#bulk-into").value = "";
   $("#bulk-slot-name").value = "";
   $("#bulk-status").textContent = "";
+  hideBulkWarning();
   updateBulkUi();
   $("#bulk-modal").classList.remove("hidden");
 }
 
-function closeBulkModal() { $("#bulk-modal").classList.add("hidden"); }
+function closeBulkModal() {
+  if (bulkState.running) return;           // it finishes, then Undo can take it back
+  $("#bulk-modal").classList.add("hidden");
+}
 
 function updateBulkUi() {
   const source = getOptionCardValue("#bulk-source-cards");
@@ -9148,51 +9159,185 @@ function bulkMode() {
   return active ? active.dataset.bulkMode : "add";
 }
 
-async function confirmBulkApply() {
-  const scope = getOptionCardValue("#bulk-scope-cards");
+// The request Apply sends, without the photos; null when it cannot be sent
+// yet, with the reason in the status line.
+async function bulkRequest() {
   const source = getOptionCardValue("#bulk-source-cards");
-  const rels = bulkScopeRelPaths(scope);
-  if (!rels.length) return;
-  let body;
+  let body, done;
   if (source === "preset") {
     const preset = state.presets.find((p) => p.id === $("#bulk-preset-select").value);
-    if (!preset) { $("#bulk-status").textContent = "Pick a preset first."; return; }
-    if (presetHasAuto(preset) && !(await ensureSegmentModel())) return;
-    body = { rel_paths: rels, preset_id: preset.id, amount: 100 };
+    if (!preset) { $("#bulk-status").textContent = "Pick a preset first."; return null; }
+    if (presetHasAuto(preset) && !(await ensureSegmentModel())) return null;
+    body = { preset_id: preset.id, amount: 100 };
+    done = `Applied “${preset.name}” to`;
   } else {
-    body = { rel_paths: rels, edit: bulkSourceEdit(source), mode: bulkMode() };
+    body = { edit: bulkSourceEdit(source), mode: bulkMode() };
+    done = source === "clear" ? "Cleared the edits of" : "Applied the edit to";
   }
   const slot = bulkSlot();
-  if (slot !== null) Object.assign(body, { slot, slot_name: $("#bulk-slot-name").value.trim() });
+  if (slot !== null) {
+    Object.assign(body, { slot, slot_name: $("#bulk-slot-name").value.trim() });
+    done = source === "clear" ? `Cleared slot ${slot + 1} of` : `Saved a version in slot ${slot + 1} of`;
+  }
+  return { body, source, slot, done };
+}
+
+async function bulkPost(url, body) {
+  const res = await fetch(url, { ...JSON_POST, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  return res.ok ? { data } : { error: errText(data, res) };
+}
+
+// Apply, or on the warning, Apply to all. Photos that already have an edit
+// (or a version in the slot) are shown first, with what this takes from each,
+// and can be left out; when none has, it goes straight ahead.
+async function confirmBulkApply() {
+  if (bulkState.pending) { runBulkApply(bulkState.pending.rels); return; }
+  const rels = bulkScopeRelPaths(getOptionCardValue("#bulk-scope-cards"));
+  if (!rels.length) return;
+  const req = await bulkRequest();
+  if (!req) return;
   $("#bulk-confirm").disabled = true;
-  $("#bulk-status").textContent = "Applying…";
-  const res = await fetch("/api/edit/bulk", { ...JSON_POST, body: JSON.stringify(body) });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    $("#bulk-status").textContent = "Failed: " + errText(err, res);
+  $("#bulk-status").textContent = "Checking…";
+  const { data, error } = await bulkPost("/api/edit/bulk/check", { ...req.body, rel_paths: rels });
+  if (error) {
+    $("#bulk-status").textContent = "Failed: " + error;
     $("#bulk-confirm").disabled = false;
     return;
   }
-  // Each photo as the server left it (edited_at bumps the thumb cache-buster).
-  const result = await res.json();
-  for (const rel of rels) {
-    const ph = state.photos.find((p) => p.rel_path === rel);
-    const now = result.photos[rel];
-    if (!ph) continue;
-    if (now.edit) { ph.edit = now.edit; ph.edited_at = now.edited_at; }
-    else { delete ph.edit; delete ph.edited_at; }
-    if (now.edit_slots) ph.edit_slots = now.edit_slots; else delete ph.edit_slots;
+  $("#bulk-status").textContent = "";
+  bulkState.pending = { ...req, rels };
+  if (data.edited.length) showBulkWarning(data.edited);
+  else runBulkApply(rels);
+}
+
+// What a change takes from a photo, by the names the editor gives them.
+const BULK_TAKES = { ...PRESET_PART_LABELS, healing: "Heals", redeye: "Red eye" };
+
+function showBulkWarning(edited) {
+  const { rels, source, slot } = bulkState.pending;
+  bulkState.pending.edited = edited.map((e) => e.rel_path);
+  const n = rels.length, k = edited.length;
+  const clear = source === "clear";
+  let msg;
+  if (slot !== null) {
+    msg = `${pluralPhrase(k, "photo already has", "photos already have")} a version in slot ${slot + 1}, `
+      + (clear ? "which this clears." : "which this replaces.") + " Their own edits stay as they are.";
+  } else if (clear) {
+    msg = `This clears the edits of ${plural(k, "photo")}:`;
+  } else {
+    msg = `${k === n ? (k === 1 ? "It already has" : `All ${n} already have`) : `${k} of ${n} already have`} `
+      + "an edit. The settings listed are replaced; the rest of each edit stays.";
   }
-  // The editor's slot list, when it is open on one of them.
-  if (!$("#edit-modal").classList.contains("hidden") && rels.includes(editSession.relPath)) {
-    setSlots(result.photos[editSession.relPath].edit_slots);
-    renderSlots();
+  $("#bulk-warn-msg").textContent = msg;
+  $("#bulk-warn-list").innerHTML = edited.map(({ rel_path, replaces }) => {
+    const name = rel_path.split("/").pop();
+    let what, cls = "replaces";
+    if (slot !== null) what = clear ? "its version goes" : "replaces its version";
+    else if (replaces.length) what = (clear ? "" : "replaces ") + replaces.map((r) => BULK_TAKES[r]).join(", ");
+    else { what = clear ? "keeps what is its own" : "on top of its edit"; cls = ""; }
+    return `<li><span class="bulk-warn-name" title="${escapeAttr(rel_path)}">${escapeHtml(name)}</span>`
+      + `<span class="bulk-warn-what ${cls}">${escapeHtml(what)}</span></li>`;
+  }).join("");
+  $("#bulk-options").classList.add("hidden");
+  $("#bulk-warn").classList.remove("hidden");
+  // Leaving them out leaves nothing to do when it is all of them, or a clear.
+  const skip = $("#bulk-skip");
+  skip.classList.toggle("hidden", clear || k === n);
+  skip.textContent = `Only the other ${n - k}`;
+  $("#bulk-cancel").textContent = "Back";
+  $("#bulk-confirm").textContent = clear ? `Clear ${k}` : `Apply to all ${n}`;
+  $("#bulk-confirm").disabled = false;
+  $("#bulk-summary").textContent = "";
+}
+
+function hideBulkWarning() {
+  bulkState.pending = null;
+  $("#bulk-warn").classList.add("hidden");
+  $("#bulk-options").classList.remove("hidden");
+  $("#bulk-skip").classList.add("hidden");
+  $("#bulk-cancel").textContent = "Cancel";
+  $("#bulk-confirm").textContent = "Apply";
+}
+
+function bulkBack() {
+  if (bulkState.running) return;
+  if (!bulkState.pending) { closeBulkModal(); return; }
+  hideBulkWarning();
+  updateBulkUi();
+}
+
+function bulkSkipEdited() {
+  const skip = new Set(bulkState.pending.edited);
+  runBulkApply(bulkState.pending.rels.filter((r) => !skip.has(r)));
+}
+
+// A few photos a request, so the status can count them: a look that keeps the
+// photo's brightness takes about half a second each.
+const BULK_BATCH = 8;
+
+async function runBulkApply(rels) {
+  const { body, done: verb } = bulkState.pending;
+  bulkState.running = true;
+  for (const id of ["#bulk-confirm", "#bulk-skip", "#bulk-cancel", "#bulk-modal-close"]) $(id).disabled = true;
+  const before = [], skipped = {};
+  let error = null;
+  for (let i = 0; i < rels.length; i += BULK_BATCH) {
+    $("#bulk-status").textContent = `Applying… ${i} of ${rels.length}`;
+    const got = await bulkPost("/api/edit/bulk", { ...body, rel_paths: rels.slice(i, i + BULK_BATCH) });
+    if (got.error) { error = got.error; break; }
+    before.push(...got.data.before);
+    Object.assign(skipped, got.data.skipped);
+    takeEdits(got.data.photos);
   }
-  const left = Object.keys(result.skipped || {}).length;
+  bulkState.running = false;
+  for (const id of ["#bulk-confirm", "#bulk-skip", "#bulk-cancel", "#bulk-modal-close"]) $(id).disabled = false;
+  const n = before.length;
+  if (error) {
+    // What did go through stays, and Undo can take it back.
+    $("#bulk-status").textContent = `Failed after ${n} of ${rels.length}: ${error}`;
+    $("#bulk-confirm").disabled = true;
+    if (n) showUndoToast(`${verb} ${n} of ${plural(rels.length, "photo")} before it failed.`,
+                         () => restoreEdits(before));
+    renderMain();
+    return;
+  }
+  const left = Object.keys(skipped).length;
   if (left) alert(`${left} photo${left === 1 ? " had" : "s had"} nothing for some of the preset's `
                   + "automatic layers, so those layers were left out there.");
   closeBulkModal();
   clearSelection();
+  recomputeFilter();
+  renderMain();
+  showUndoToast(`${verb} ${plural(n, "photo")}.`, () => restoreEdits(before));
+}
+
+// Photos as the server now has them, into the grid's copy (`edited_at` moves
+// the thumbnail's cache-buster, `geom` its shape), and into the editor's slot
+// list when it is open on one of them.
+function takeEdits(wire) {
+  const byRel = new Map(state.photos.map((p) => [p.rel_path, p]));
+  for (const [rel, now] of Object.entries(wire)) {
+    const ph = byRel.get(rel);
+    if (!ph) continue;
+    for (const key of ["edit", "edited_at", "edit_slots", "geom"]) {
+      if (now[key]) ph[key] = now[key]; else delete ph[key];
+    }
+  }
+  const open = !$("#edit-modal").classList.contains("hidden") && wire[editSession.relPath];
+  if (open) {
+    setSlots(open.edit_slots);
+    renderSlots();
+  }
+}
+
+// Undo for Apply to many: each photo's edit, its time stamp and its slots as
+// the server handed them over before the change.
+async function restoreEdits(before) {
+  const got = await bulkPost("/api/edit/restore", { photos: before });
+  if (got.error) { alert("Undo failed: " + got.error); return; }
+  takeEdits(got.data.photos);
+  recomputeFilter();
   renderMain();
 }
 
@@ -9611,10 +9756,10 @@ function bindKeys() {
         return;
       }
     }
-    // ⌘Z (or Ctrl+Z) restores the last bulk-decide action.
+    // ⌘Z (or Ctrl+Z) undoes the last bulk change, a decision or an edit.
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey
         && (e.key === "z" || e.key === "Z")) {
-      if (undoToast.before && undoToast.before.length) {
+      if (undoToast.undo) {
         e.preventDefault();
         performUndo();
         return;
@@ -9666,9 +9811,10 @@ function bindKeys() {
       return;
     }
 
-    // The batch-apply dialog sits on top of everything; Esc only.
+    // The batch-apply dialog sits on top of everything; Esc only, which backs
+    // out of the warning first and does nothing while it runs.
     if (!$("#bulk-modal").classList.contains("hidden")) {
-      if (k === "Escape") { closeBulkModal(); e.preventDefault(); }
+      if (k === "Escape") { bulkBack(); e.preventDefault(); }
       return;
     }
 
@@ -10736,7 +10882,8 @@ function bindUi() {
   bindOriginals();
   $("#select-all-btn").addEventListener("click", selectAllShown);
   $("#bulk-modal-close").addEventListener("click", closeBulkModal);
-  $("#bulk-cancel").addEventListener("click", closeBulkModal);
+  $("#bulk-cancel").addEventListener("click", bulkBack);
+  $("#bulk-skip").addEventListener("click", bulkSkipEdited);
   $("#bulk-confirm").addEventListener("click", confirmBulkApply);
   $("#bulk-mode").addEventListener("click", (e) => {
     const b = e.target.closest("[data-bulk-mode]");

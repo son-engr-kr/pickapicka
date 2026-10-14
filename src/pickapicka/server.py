@@ -198,6 +198,19 @@ class EditBulkPayload(BaseModel):
     slot_name: str = ""
 
 
+class EditEntry(BaseModel):
+    """A photo's edit as stored, with its time stamp and its slots: what a
+    bulk change hands back, and what undoing it puts back."""
+    rel_path: str
+    edit: dict[str, Any] | None
+    edited_at: str | None
+    edit_slots: list[Any] | None
+
+
+class RestoreEditsPayload(BaseModel):
+    photos: list[EditEntry]
+
+
 class AutoTonePayload(BaseModel):
     rel_path: str
 
@@ -3851,25 +3864,70 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         _prebuild_thumbs(ctx, [payload.rel_path])
         return _photo_wire(photo)
 
-    @app.post("/api/edit/bulk")
-    def bulk_edit(payload: EditBulkPayload) -> dict[str, Any]:
+    def _bulk_photos(payload: EditBulkPayload) -> list[dict[str, Any]]:
+        """The photos a bulk change names, every one checked before any is
+        touched."""
         _require_loaded()
         if ctx.scoring_state["running"]:
             raise HTTPException(status_code=409, detail="scoring in progress; edits disabled")
         for rp in payload.rel_paths:
-            photo = ctx.photo_index.get(rp)
-            if photo is None:
+            if ctx.photo_index.get(rp) is None:
                 raise HTTPException(status_code=404, detail=f"photo not found: {rp}")
         if payload.slot is not None and not 0 <= payload.slot < EDIT_SLOTS:
             raise HTTPException(
                 status_code=400,
                 detail=f"slot must be 0..{EDIT_SLOTS - 1}, got {payload.slot}")
+        return [ctx.photo_index[rp] for rp in payload.rel_paths]
+
+    def _edit_entry(photo: dict[str, Any]) -> dict[str, Any]:
+        return {"rel_path": photo["rel_path"], "edit": photo.get("edit"),
+                "edited_at": photo.get("edited_at"), "edit_slots": photo.get("edit_slots")}
+
+    @app.post("/api/edit/bulk/check")
+    def check_bulk_edit(payload: EditBulkPayload) -> dict[str, Any]:
+        """Which of the photos a bulk change names already have work it would
+        land on, and what it takes from each, so the dialog can say so before
+        anything is saved. Into each photo's own edit: every photo with one,
+        and the parts the change replaces (`presets.replaced_parts`), none when
+        it is laid on top. Into a slot, where the photos' own edits are not
+        touched: every photo whose slot already holds a version, as "version".
+
+        A preset is worked out without the photo (`presets.replaced_by`): its
+        Auto light and Keep brightness take a decode and a dozen renders each,
+        and the check is for before Apply, not as long as it."""
+        photos = _bulk_photos(payload)
+        preset = _preset(payload.preset_id) if payload.preset_id else None
+        landed: list[dict[str, Any]] = []
+        for photo in photos:
+            if payload.slot is not None:
+                rack = list(photo.get("edit_slots") or []) + [None] * EDIT_SLOTS
+                if rack[payload.slot] is not None:
+                    landed.append({"rel_path": photo["rel_path"], "replaces": ["version"]})
+                continue
+            own = photo.get("edit")
+            if editing.is_empty(own):
+                continue
+            if preset is not None:
+                replaces = presets_mod.replaced_by(own, preset, payload.amount)
+            elif payload.mode == "add":
+                replaces = presets_mod.replaced_parts(own, editing.merge_additive(own, payload.edit))
+            else:
+                replaces = presets_mod.replaced_parts(
+                    own, _keep_own(editing.normalize(payload.edit), own))
+            landed.append({"rel_path": photo["rel_path"], "replaces": replaces})
+        return {"edited": landed}
+
+    @app.post("/api/edit/bulk")
+    def bulk_edit(payload: EditBulkPayload) -> dict[str, Any]:
+        photos = _bulk_photos(payload)
         clear_slot = (payload.slot is not None and payload.preset_id is None
                       and payload.mode == "replace" and not payload.edit)
         preset = _preset(payload.preset_id) if payload.preset_id else None
+        # Each photo as it was, for the Undo that follows.
+        before = [_edit_entry(photo) for photo in photos]
         skipped: dict[str, list[str]] = {}
-        for rp in payload.rel_paths:
-            photo = ctx.photo_index[rp]
+        for photo in photos:
+            rp = photo["rel_path"]
             if clear_slot:
                 _write_slot(photo, payload.slot, None)
                 continue
@@ -3896,8 +3954,33 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         # Each photo as it now is: a preset lands differently on each (its own
         # auto tone, the layers it has nothing for), so the grid is told rather
         # than left to work it out.
-        return {"updated": len(payload.rel_paths), "skipped": skipped,
+        return {"updated": len(payload.rel_paths), "skipped": skipped, "before": before,
                 "photos": {rp: _photo_wire(ctx.photo_index[rp]) for rp in payload.rel_paths}}
+
+    @app.post("/api/edit/restore")
+    def restore_edits(payload: RestoreEditsPayload) -> dict[str, Any]:
+        """Undo a bulk change: each photo's edit, its time stamp and its slots
+        put back exactly as `/api/edit/bulk` handed them over. Not renormalized,
+        so an edit stored in an older shape comes back in it, as it was."""
+        _require_loaded()
+        if ctx.scoring_state["running"]:
+            raise HTTPException(status_code=409, detail="scoring in progress; edits disabled")
+        for entry in payload.photos:
+            if ctx.photo_index.get(entry.rel_path) is None:
+                raise HTTPException(status_code=404, detail=f"photo not found: {entry.rel_path}")
+        for entry in payload.photos:
+            photo = ctx.photo_index[entry.rel_path]
+            for key in ("edit", "edited_at", "edit_slots"):
+                value = getattr(entry, key)
+                if value is None:
+                    photo.pop(key, None)
+                else:
+                    photo[key] = value
+        with ctx.save_lock:
+            db.save(ctx.db_path, ctx.data)
+        rels = [entry.rel_path for entry in payload.photos]
+        _prebuild_thumbs(ctx, rels)
+        return {"photos": {rp: _photo_wire(ctx.photo_index[rp]) for rp in rels}}
 
     @app.post("/api/edit/upgrade")
     def upgrade_edit(payload: EditPreviewPayload) -> dict[str, Any]:

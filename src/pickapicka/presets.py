@@ -102,6 +102,45 @@ def modified_parts(edit: dict[str, Any] | None) -> list[str]:
     return [p for p in PARTS if _part_set(e, p)]
 
 
+# Not parts a preset can carry, but work on a photo all the same, which
+# replacing or clearing its edit takes away with the rest.
+REPAIRS: tuple[str, ...] = ("healing", "redeye")
+
+
+def replaced_parts(before: dict[str, Any] | None, after: dict[str, Any] | None) -> list[str]:
+    """The parts `before` sets (`modified_parts`) that are not the same in
+    `after`, and its repairs likewise: what a change takes from a photo's edit.
+    A layer counts when one of the photo's own is gone or changed; layers
+    added beside them take nothing."""
+    b, a = editing.normalize(before), editing.normalize(after)
+    out = []
+    for part in PARTS:
+        if not _part_set(b, part):
+            continue
+        if part == "layers":
+            changed = any(m not in a["masks"] for m in b["masks"])
+        else:
+            changed = any(b[k] != a[k] for k in PARTS[part])
+        if changed:
+            out.append(part)
+    return out + [k for k in REPAIRS if b[k] is not None and b[k] != a[k]]
+
+
+def replaced_by(base: dict[str, Any] | None, preset: dict[str, Any],
+                amount: float = 100) -> list[str]:
+    """What laying `preset` on `base` replaces (`replaced_parts`), worked out
+    without the photo, as the parts with no values need it: Keep brightness
+    only bends the curve under what it lands on, and Auto light counts as
+    replacing Light wherever the edit has one of the sliders it sets."""
+    laid = {**preset, "parts": [p for p in preset["parts"] if p not in FROM_THE_PHOTO]}
+    b = editing.normalize(base)
+    out = set(replaced_parts(b, apply(b, laid, amount)))
+    if (AUTO_LIGHT in preset["parts"] and amount > 0
+            and any(b[k] != editing.DEFAULT_EDIT[k] for k in AUTO_KEYS)):
+        out.add("light")
+    return [p for p in (*PARTS, *REPAIRS) if p in out]
+
+
 def make(edit: dict[str, Any] | None, parts: list[str]) -> dict[str, Any]:
     """What is stored for a preset: the ticked parts, and the edit with only
     their keys. A face's own portrait settings and a layer's tag from another

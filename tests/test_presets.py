@@ -149,6 +149,32 @@ def test_the_process_is_the_photos_unless_it_has_none_yet() -> None:
     assert editing.process_version(presets.apply(old, p, 100)) == 1
 
 
+def test_what_a_preset_replaces_is_what_the_photo_had_and_loses() -> None:
+    # _PHOTO sets light, color, detail, layers and crop, and has a heal.
+    assert presets.replaced_by(_PHOTO, _preset(["light", "curve", "mixer"])) == ["light"]
+    # Its own layer stays beside the preset's, and a value it already had is kept.
+    assert presets.replaced_by(_PHOTO, _preset(["layers"])) == []
+    assert presets.replaced_by({"crop": _LOOK["crop"]}, _preset(["crop"])) == []
+    assert presets.replaced_by(_PHOTO, _preset(["light"]), amount=0) == []
+    assert presets.replaced_by(None, _preset(["light", "layers"])) == []
+
+
+def test_auto_light_and_keep_brightness_are_judged_without_the_photo() -> None:
+    auto = _preset([presets.AUTO_LIGHT])
+    assert presets.replaced_by(_PHOTO, auto) == ["light"]
+    assert presets.replaced_by({"highlights": -30}, auto) == [], "not a slider auto tone sets"
+    keep = _preset(["mixer", presets.KEEP_LIGHT])
+    assert presets.replaced_by({"curve": [[0, 0.1], [1, 1]]}, keep) == []
+
+
+def test_replacing_an_edit_takes_its_layers_and_repairs() -> None:
+    after = editing.normalize({"saturation": -100})
+    got = presets.replaced_parts(_PHOTO, after)
+    assert got == ["light", "color", "detail", "layers", "crop", "healing"]
+    added = editing.merge_additive(_PHOTO, {"masks": [{"type": "radial", "adj": {"blur": 10}}]})
+    assert presets.replaced_parts(_PHOTO, added) == []
+
+
 def test_a_preset_with_every_part_renders() -> None:
     parts = [p for p in presets.PARTS]
     p = _preset(parts)
@@ -221,6 +247,45 @@ def test_the_endpoints_save_apply_and_bulk_apply(tmp_path, monkeypatch) -> None:
     with pytest.raises(server.HTTPException):
         _route(app, "/api/presets/apply", "POST")(
             server.PresetApplyPayload(rel_path="a.jpg", preset_id="nope"))
+
+
+def test_apply_to_many_says_what_it_replaces_and_undoes_to_the_letter(tmp_path) -> None:
+    import json
+    from pickapicka import db, server
+    path = _project(tmp_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    own = {"exposure": 0.3, "clarity": 10}                       # stored as an older shape would be
+    data["photos"][0].update(edit=own, edited_at="2026-10-01T09:00:00",
+                             edit_slots=[{"edit": {"saturation": -100}, "saved_at": "x", "name": "bw"}])
+    path.write_text(json.dumps(data), encoding="utf-8")
+    app = server.create_app(path)
+    pid = _route(app, "/api/presets", "POST")(server.PresetSavePayload(
+        name="Look", edit={"exposure": 0.5, "contrast": 20}, parts=["light"]))["preset"]["id"]
+    check = _route(app, "/api/edit/bulk/check", "POST")
+    both = ["a.jpg", "b.jpg"]
+    assert check(server.EditBulkPayload(rel_paths=both, preset_id=pid))["edited"] == [
+        {"rel_path": "a.jpg", "replaces": ["light"]}]
+    assert check(server.EditBulkPayload(rel_paths=both, edit={"temp": 10}, mode="add"))["edited"] == [
+        {"rel_path": "a.jpg", "replaces": []}]
+    assert check(server.EditBulkPayload(rel_paths=both, edit={}))["edited"] == [
+        {"rel_path": "a.jpg", "replaces": ["light", "detail"]}]
+    assert check(server.EditBulkPayload(rel_paths=both, preset_id=pid, slot=0))["edited"] == [
+        {"rel_path": "a.jpg", "replaces": ["version"]}]
+    assert check(server.EditBulkPayload(rel_paths=both, preset_id=pid, slot=1))["edited"] == []
+
+    done = _route(app, "/api/edit/bulk", "POST")(server.EditBulkPayload(rel_paths=both, preset_id=pid))
+    assert done["photos"]["b.jpg"]["edit"]["exposure"] == 0.5
+    assert done["before"][1] == {"rel_path": "b.jpg", "edit": None, "edited_at": None, "edit_slots": None}
+    undone = _route(app, "/api/edit/restore", "POST")(server.RestoreEditsPayload(
+        photos=[server.EditEntry(**b) for b in done["before"]]))
+    assert "edit" not in undone["photos"]["b.jpg"]
+    stored = {p["rel_path"]: p for p in db.load(path)["photos"]}
+    assert stored["a.jpg"]["edit"] == own and stored["a.jpg"]["edited_at"] == "2026-10-01T09:00:00"
+    assert stored["a.jpg"]["edit_slots"][0]["name"] == "bw"
+    assert not {"edit", "edited_at", "edit_slots"} & set(stored["b.jpg"])
+    with pytest.raises(server.HTTPException):
+        _route(app, "/api/edit/restore", "POST")(server.RestoreEditsPayload(photos=[
+            server.EditEntry(rel_path="nope.jpg", edit=None, edited_at=None, edit_slots=None)]))
 
 
 def test_a_preset_from_before_parts_carries_what_its_edit_sets() -> None:
