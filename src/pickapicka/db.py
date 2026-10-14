@@ -17,9 +17,7 @@ def load(path: Path) -> dict[str, Any]:
 
 
 def save(path: Path, data: dict[str, Any]) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    fsutil.replace(tmp, path)
+    fsutil.write_text(path, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def init_db(photo_root: Path, jpeg_subdir: str, raw_subdir: str = "") -> dict[str, Any]:

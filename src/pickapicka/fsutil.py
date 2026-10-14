@@ -12,6 +12,7 @@ other side's hold is one read of a small file.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Callable, TypeVar
@@ -25,6 +26,19 @@ _WAIT = 0.02    # seconds; 2 s in all
 def replace(src: str | Path, dst: str | Path) -> None:
     """`os.replace`, retried while Windows reports the target busy."""
     retry_busy(lambda: os.replace(src, dst))
+
+
+def write_text(path: Path, text: str) -> None:
+    """`text` as the whole of `path`, by a temp file renamed over it. The temp
+    file is this thread's own, as the thumbnails' and the RAW previews' are:
+    the server saves on many threads, and with one name for every writer the
+    second to finish found the first had already renamed it away."""
+    tmp = path.parent / f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def retry_busy(op: Callable[[], T]) -> T:

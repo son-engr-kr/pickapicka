@@ -2,11 +2,13 @@
 presets. Lives in the platform's application-data directory — see `paths`."""
 from __future__ import annotations
 
+import functools
 import json
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from . import fsutil, paths
 
@@ -26,9 +28,23 @@ def _load() -> dict[str, Any]:
 
 def _save(data: dict[str, Any]) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    fsutil.replace(tmp, STATE_FILE)
+    fsutil.write_text(STATE_FILE, json.dumps(data, indent=2, ensure_ascii=False))
+
+
+# Every change is a read of the whole file, a change, and a write of it back.
+# The server makes them on many threads, and two read before either wrote
+# kept only the second's change (a view saved as a project opened lost the
+# project's id), so each change holds this from its read to its write.
+_CHANGING = threading.RLock()
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _changes(fn: F) -> F:
+    @functools.wraps(fn)
+    def held(*args: Any, **kwargs: Any) -> Any:
+        with _CHANGING:
+            return fn(*args, **kwargs)
+    return held  # type: ignore[return-value]
 
 
 def get_recents() -> list[dict[str, Any]]:
@@ -40,6 +56,7 @@ def get_last_db_path() -> Path | None:
     return Path(p) if p else None
 
 
+@_changes
 def remember_open(
     db_path: Path,
     photo_dir: Path,
@@ -72,6 +89,7 @@ def remember_open(
     _save(data)
 
 
+@_changes
 def forget(key: Path) -> None:
     """Remove a recent entry. `key` may be a db_path or project_dir."""
     data = _load()
@@ -92,6 +110,7 @@ def list_presets() -> list[dict[str, Any]]:
     return _load().get("presets", [])
 
 
+@_changes
 def save_preset(name: str, stored: dict[str, Any]) -> dict[str, Any]:
     """Create or update (by name) a global preset from `presets.make`'s
     {parts, edit}. Returns the stored one."""
@@ -112,6 +131,7 @@ def save_preset(name: str, stored: dict[str, Any]) -> dict[str, Any]:
     return preset
 
 
+@_changes
 def delete_preset(preset_id: str) -> None:
     data = _load()
     data["presets"] = [p for p in data.get("presets", []) if p.get("id") != preset_id]
@@ -129,6 +149,7 @@ def get_export_settings() -> dict[str, Any]:
     return _load().get("export_settings", {})
 
 
+@_changes
 def set_export_settings(settings: dict[str, Any]) -> None:
     data = _load()
     data["export_settings"] = settings
@@ -143,6 +164,7 @@ def get_update_auto() -> bool:
     return bool(_load().get("update_auto", True))
 
 
+@_changes
 def set_update_auto(on: bool) -> None:
     data = _load()
     data["update_auto"] = bool(on)
@@ -157,6 +179,7 @@ def get_model_on(pack_id: str, default: bool) -> bool:
     return bool(_load().get("models", {}).get(pack_id, {}).get("on", default))
 
 
+@_changes
 def set_model_on(pack_id: str, on: bool) -> None:
     data = _load()
     data.setdefault("models", {}).setdefault(pack_id, {})["on"] = bool(on)
@@ -167,6 +190,7 @@ def get_model_memory(pack_id: str) -> str:
     return str(_load().get("models", {}).get(pack_id, {}).get("memory", "auto"))
 
 
+@_changes
 def set_model_memory(pack_id: str, mode: str) -> None:
     data = _load()
     data.setdefault("models", {}).setdefault(pack_id, {})["memory"] = mode
@@ -177,6 +201,7 @@ def get_model_terms(pack_id: str) -> str | None:
     return _load().get("models", {}).get(pack_id, {}).get("accepted")
 
 
+@_changes
 def set_model_terms(pack_id: str, when: str) -> None:
     data = _load()
     data.setdefault("models", {}).setdefault(pack_id, {})["accepted"] = when
@@ -213,10 +238,7 @@ def list_luts() -> list[dict[str, Any]]:
 
 def save_lut(key: str, params: dict[str, Any]) -> None:
     LUT_DIR.mkdir(parents=True, exist_ok=True)
-    dst = _lut_path(key)
-    tmp = dst.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(params), encoding="utf-8")
-    fsutil.replace(tmp, dst)
+    fsutil.write_text(_lut_path(key), json.dumps(params))
 
 
 def load_lut(key: str) -> dict[str, Any] | None:
@@ -247,6 +269,7 @@ def get_view(key: str) -> dict[str, Any]:
     return _load().get("views", {}).get(key, {})
 
 
+@_changes
 def set_view(key: str, view: dict[str, Any]) -> None:
     data = _load()
     views = data.setdefault("views", {})
@@ -300,6 +323,7 @@ def get_current_workspace() -> str | None:
     return ws[0] if ws else None
 
 
+@_changes
 def add_workspace(path: Path) -> None:
     """Register (or bump) a workspace and make it current."""
     data = _load()
@@ -311,6 +335,7 @@ def add_workspace(path: Path) -> None:
     _save(data)
 
 
+@_changes
 def include_workspace(path: Path) -> None:
     """List a workspace without making it current, as add_workspace would:
     one projects were just moved into, while the person stays where they are."""
@@ -322,6 +347,7 @@ def include_workspace(path: Path) -> None:
         _save(data)
 
 
+@_changes
 def set_current_workspace(path: Path) -> None:
     data = _load()
     p = str(path)
@@ -331,6 +357,7 @@ def set_current_workspace(path: Path) -> None:
     _save(data)
 
 
+@_changes
 def relocate_workspace(old: Path, new: Path) -> None:
     """A workspace's folder moved: list it at `new` in `old`'s place, current
     if `old` was. The projects inside are refiled with `project_moved`."""
@@ -345,6 +372,7 @@ def relocate_workspace(old: Path, new: Path) -> None:
     _save(data)
 
 
+@_changes
 def forget_workspace(path: Path) -> None:
     data = _load()
     p = str(path)
@@ -364,6 +392,7 @@ def get_project_location() -> str:
     return _load().get("project_location", "workspace")
 
 
+@_changes
 def set_project_location(location: str) -> None:
     assert location in ("workspace", "photos"), f"unknown project location: {location!r}"
     data = _load()
@@ -375,6 +404,7 @@ def known_projects() -> list[str]:
     return _load().get("known_projects", [])
 
 
+@_changes
 def remember_project(project_dir: Path) -> None:
     data = _load()
     p = str(project_dir)
@@ -384,6 +414,7 @@ def remember_project(project_dir: Path) -> None:
         _save(data)
 
 
+@_changes
 def forget_project(project_dir: Path) -> None:
     data = _load()
     p = str(project_dir)
@@ -400,6 +431,7 @@ def project_ids() -> dict[str, str]:
     return _load().get("project_ids", {})
 
 
+@_changes
 def note_project_id(project_dir: Path, project_id: str) -> None:
     data = _load()
     ids = data.setdefault("project_ids", {})
@@ -408,6 +440,7 @@ def note_project_id(project_dir: Path, project_id: str) -> None:
         _save(data)
 
 
+@_changes
 def project_moved(old: Path, new: Path) -> None:
     """Refile everything keyed by a project's folder under its new one: the
     recents entry, the remembered view and the known-projects list. Without
