@@ -438,6 +438,7 @@ code { background: var(--bg-3); padding: 1px 4px; border-radius: 3px; font-size:
    photos selected brings up both. */
 body:has(#selection-bar:not(.hidden)) #undo-toast { bottom: 84px; }
 #undo-toast-msg { flex: 1; }
+#undo-toast-btn.hidden { display: none; }
 #undo-toast-btn { padding: 4px 10px; font-size: 11px; font-weight: 600; }
 #undo-toast-btn .kbd { display: inline-block; margin-left: 6px; padding: 1px 5px;
   border: 1px solid currentColor; border-radius: 3px; font-size: 9px;
@@ -591,6 +592,13 @@ body:has(#selection-bar:not(.hidden)) #undo-toast { bottom: 84px; }
 #modal-original.hidden { display: none; }
 #modal-original img { display: block; margin: auto; max-width: 100%; max-height: 100%; user-select: none; }
 #modal-original.zoomed img { position: absolute; margin: 0; max-width: none; max-height: none; }
+#level-line { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 6; }
+#level-line.hidden { display: none; }
+#level-line line { stroke: #ffd84a; stroke-width: 2; filter: drop-shadow(0 0 1px #000); }
+#level-line text { fill: #ffd84a; font-size: 13px; font-weight: 600; paint-order: stroke;
+  stroke: #000; stroke-width: 3px; }
+#modal-image-wrap.levelling { cursor: crosshair; }
+#modal-level.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 #modal-hud { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 5;
   padding: 4px 12px; border-radius: 999px; background: rgba(0, 0, 0, 0.7); color: #fff;
   font-size: 12px; line-height: 1.4; pointer-events: none; border: 1px solid rgba(255, 255, 255, 0.16);
@@ -2765,6 +2773,20 @@ body[data-insp-faces="l"] #insp-faces { grid-template-columns: 1fr; gap: 10px; }
 #insp-exif dt { color: var(--ink-faint); }
 #insp-exif dd { margin: 0; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #insp-edit { width: 100%; justify-content: center; }
+.insp-quick-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.insp-quick-head .insp-label { margin-bottom: 0; }
+#insp-quick-on { flex: 1; color: var(--ink-faint); font-size: var(--fs-xs); }
+#insp-quick-auto, #insp-quick-level { padding: 2px 10px; font-size: var(--fs-xs); }
+.quick-row { display: grid; grid-template-columns: 1fr 22px 22px 46px 22px 22px; align-items: center;
+  gap: 2px; height: 22px; }
+.quick-row button { padding: 0; height: 20px; min-width: 0; justify-content: center;
+  font-size: var(--fs-sm); line-height: 1; }
+.quick-row .quick-name { justify-content: flex-start; padding: 0 2px; background: none; border: 0;
+  color: var(--ink-dim); text-align: left; }
+.quick-row .quick-name:hover { color: var(--ink); }
+.quick-val { text-align: center; font-variant-numeric: tabular-nums; color: var(--ink);
+  font-size: var(--fs-xs); }
+.quick-val.zero { color: var(--ink-faint); }
 #inspector-btn.active { background: var(--raised); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-strong); }
 
 /* ----- the grid scrolls; rows are sized so a screen holds a page ----- */

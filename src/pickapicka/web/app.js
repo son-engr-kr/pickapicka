@@ -1424,10 +1424,12 @@ function bindModalZoom() {
   let drag = null;
   wrap.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
-    drag = { x: e.clientX, y: e.clientY, left: wrap.scrollLeft, top: wrap.scrollTop, moved: false };
     wrap.setPointerCapture(e.pointerId);
+    if (levelTool.on) { levelDown(e); return; }
+    drag = { x: e.clientX, y: e.clientY, left: wrap.scrollLeft, top: wrap.scrollTop, moved: false };
   });
   wrap.addEventListener("pointermove", (e) => {
+    if (levelTool.drag) { levelMove(e); return; }
     if (!drag) return;
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
@@ -1437,6 +1439,7 @@ function bindModalZoom() {
     wrap.scrollTop = drag.top - dy;
   });
   const end = (e) => {
+    if (levelTool.drag) { levelUp(e); return; }
     const was = drag;
     drag = null;
     wrap.classList.remove("panning");
@@ -2900,6 +2903,7 @@ const undoToast = { undo: null, timer: null };
 function showUndoToast(msg, undo) {
   if (undoToast.timer) clearTimeout(undoToast.timer);
   undoToast.undo = undo;
+  $("#undo-toast-btn").classList.toggle("hidden", !undo);
   $("#undo-toast-msg").textContent = msg;
   $("#undo-toast").classList.remove("hidden");
   undoToast.timer = setTimeout(hideUndoToast, 12000);
@@ -9094,13 +9098,14 @@ function selectAllShown() {
 function renderSelectionBar() {
   const bar = $("#selection-bar");
   const n = state.selection.size;
-  if (!n) { bar.classList.add("hidden"); return; }
+  if (!n) { bar.classList.add("hidden"); renderQuickEdit(); return; }
   const shown = state.filteredPhotos.filter((p) => state.selection.has(p.rel_path)).length;
   // Selected under one filter and then another: say so, since what the bar's
   // buttons act on is then more than the grid shows.
   $("#selection-count").textContent = shown < n ? `${n} selected (${n - shown} not shown)` : `${n} selected`;
   $("#selection-all").classList.toggle("hidden", shown === state.filteredPhotos.length);
   bar.classList.remove("hidden");
+  renderQuickEdit();
 }
 
 // `pending`: what Apply sends and to which photos, from the check until it is
@@ -9382,6 +9387,7 @@ function openModal(absIdx) {
 }
 
 function closeModal() {
+  setLevelTool(false);
   state.modal.open = false;
   modalLoadSeq++;
   delete $("#modal-image").dataset.full;
@@ -9534,7 +9540,7 @@ function upgradeModalImage() {
   const photo = state.filteredPhotos[state.modal.idx];
   const img = $("#modal-image");
   if (!photo || !state.modal.zoom || !img.dataset.full || !isRendered(photo)) return;
-  const max = img.dataset.full.replace(/\?edge=\d+$/, "?edge=0");
+  const max = img.dataset.full.replace(/edge=\d+$/, "edge=0");
   if (img.dataset.max === max) return;
   img.dataset.max = max;
   const seq = modalLoadSeq;
@@ -9550,14 +9556,22 @@ function upgradeModalImage() {
 function showModalImage(photo, rel) {
   const img = $("#modal-image");
   const seq = ++modalLoadSeq;
-  const full = "/img/" + enc(rel) + `?edge=${screenEdge()}`;
+  // When it was edited is in the address, so a quick edit to the photo shown
+  // loads it again.
+  const v = rel === photo.rel_path && photo.edited_at ? `v=${encodeURIComponent(photo.edited_at)}&` : "";
+  const full = "/img/" + enc(rel) + `?${v}edge=${screenEdge()}`;
   const note = $("#modal-loading");
-  if (img.dataset.full === full || img.dataset.max === full.replace(/\?edge=\d+$/, "?edge=0")) return;
+  if (img.dataset.full === full || img.dataset.max === full.replace(/edge=\d+$/, "edge=0")) return;
+  // The same photo again, after an edit: it stays on screen until the new
+  // render is in, rather than going soft to the thumbnail in between.
+  const again = !!img.dataset.full && img.dataset.full.split("?")[0] === full.split("?")[0];
   img.dataset.full = full;
   delete img.dataset.max;
-  img.src = rel === photo.rel_path ? thumbUrl(photo) : full;
-  note.textContent = "Loading full size…";
-  note.classList.remove("hidden", "error");
+  if (!again) {
+    img.src = rel === photo.rel_path ? thumbUrl(photo) : full;
+    note.textContent = "Loading full size…";
+    note.classList.remove("hidden", "error");
+  }
   const loader = new Image();
   loader.onload = () => {
     if (seq !== modalLoadSeq) return;
@@ -9951,7 +9965,8 @@ function bindKeys() {
     }
 
     if (state.modal.open) {
-      if (k === "Escape") { closeModal(); e.preventDefault(); return; }
+      if (k === "Escape") { if (levelTool.on) setLevelTool(false); else closeModal(); e.preventDefault(); return; }
+      if (k === "s" || k === "S") { setLevelTool(!levelTool.on); e.preventDefault(); return; }
       if (k === "ArrowRight" || k === " ") { modalNav(+1); e.preventDefault(); return; }
       if (k === "ArrowLeft") { modalNav(-1); e.preventDefault(); return; }
       if (k === "f" || k === "F" || k === "z" || k === "Z") { toggleModalZoom(); e.preventDefault(); return; }
@@ -9965,6 +9980,7 @@ function bindKeys() {
       if (k === "e" || k === "E") {
         const i = state.modal.idx; closeModal(); openEditModal(i); e.preventDefault(); return;
       }
+      if (quickKey(k)) { e.preventDefault(); return; }
       const mark = markForKey(k, state.filteredPhotos[state.modal.idx]);
       if (mark) { e.preventDefault(); markAt(state.modal.idx, mark); return; }
       const decision = decisionForKey(k);
@@ -10001,6 +10017,7 @@ function bindKeys() {
     if (k === "i" || k === "I") { toggleInspector(); e.preventDefault(); return; }
     if (k === "c" || k === "C") { openCompare(); e.preventDefault(); return; }
     if (k === "x" || k === "X") { toggleSelect(state.cursorIdx, e.shiftKey); e.preventDefault(); return; }
+    if (quickKey(k)) { e.preventDefault(); return; }
     if (k === SELECT_ALL_KEY) { selectAllShown(); e.preventDefault(); return; }
     if ((k === "d" || k === "D") && state.selection.size) {
       downloadSelection(); e.preventDefault(); return;
@@ -10143,6 +10160,7 @@ function renderInspector() {
   const rows = [["Camera", ex.camera], ["Lens", ex.lens], ["Focal", ex.focal], ["Aperture", ex.aperture],
     ["Shutter", ex.shutter], ["ISO", ex.iso_text], ["Size", px ? `${px.w} × ${px.h}` : ""]];
   $("#insp-exif").innerHTML = rows.filter(([, v]) => v).map(([k, v]) => `<dt>${k}</dt><dd>${escapeHtml(v)}</dd>`).join("");
+  renderQuickEdit();
 }
 
 function bindInspector() {
@@ -10154,6 +10172,7 @@ function bindInspector() {
     if (p) decideAt(state.cursorIdx, p.decision === b.dataset.decision ? null : b.dataset.decision);
   }));
   $("#insp-edit").addEventListener("click", () => openEditModal(state.cursorIdx));
+  bindQuickEdit();
   $$("#insp-marks .label-chip").forEach((c) => c.addEventListener("click", () => {
     const p = state.filteredPhotos[state.cursorIdx];
     if (p) markAt(state.cursorIdx, { label: p.label === c.dataset.label ? "" : c.dataset.label });
@@ -10180,6 +10199,255 @@ function bindInspector() {
       e.target.blur();   // so the next key goes to the photos, not the menu
     });
   }
+}
+
+// ---------- quick edit ----------
+// Lightroom's Quick Develop, beside the grid: a step moves each photo's own
+// value, on the selection when there is one (as the decision keys do), else on
+// the highlighted photo; in the viewer, on the photo shown. Its steps are
+// Lightroom's: a third of a stop and a stop for Exposure, 5 and 20 for the
+// rest. Clicking a name sets it back to 0. Steps in a row on the same photos
+// are one change for Undo, which puts back the edits from before the first.
+const QUICK_ROWS = [
+  { k: "exposure", label: "Exposure", small: 1 / 3, big: 1, says: ["a third of a stop", "a stop"] },
+  { k: "contrast", label: "Contrast" },
+  { k: "highlights", label: "Highlights" },
+  { k: "shadows", label: "Shadows" },
+  { k: "whites", label: "Whites" },
+  { k: "blacks", label: "Blacks" },
+  { k: "temp", label: "Temperature" },
+  { k: "tint", label: "Tint" },
+  { k: "clarity", label: "Clarity" },
+  { k: "vibrance", label: "Vibrance" },
+  // The editor's own steps for its Straighten slider: 0.1 a key, 1 with Shift.
+  { k: "tilt", label: "Straighten", small: 0.1, big: 1, says: ["0.1°", "1°"] },
+].map((r) => ({ small: 5, big: 20, says: [String(r.small || 5), String(r.big || 20)], ...r }));
+const QUICK_BY_KEY = Object.fromEntries(QUICK_ROWS.map((r) => [r.k, r]));
+
+function quickFormat(k, v) {
+  const sign = v > 0 ? "+" : "";
+  if (k === "exposure") return `${sign}${v.toFixed(2)}`;
+  if (k === "tilt") return `${sign}${v.toFixed(1)}°`;
+  return `${sign}${Math.round(v)}`;
+}
+
+// What a step acts on: in the viewer the photo shown, else the selection, else
+// the highlighted photo.
+function quickTargets() {
+  if (state.modal.open) {
+    const p = state.filteredPhotos[state.modal.idx];
+    return p ? [p] : [];
+  }
+  if (state.selection.size) return state.photos.filter((p) => state.selection.has(p.rel_path));
+  const p = state.filteredPhotos[state.cursorIdx];
+  return p ? [p] : [];
+}
+
+function renderQuickEdit() {
+  const rows = $("#insp-quick-rows");
+  if (!rows) return;
+  if (!rows.childElementCount) {
+    rows.innerHTML = QUICK_ROWS.map((r) => {
+      const [small, big] = r.says;
+      return `<div class="quick-row" data-quick="${r.k}">`
+        + `<button type="button" class="quick-name" data-quick-reset title="${r.label} back to 0">${r.label}</button>`
+        + `<button type="button" data-quick-step="${-r.big}" title="Down ${big}">«</button>`
+        + `<button type="button" data-quick-step="${-r.small}" title="Down ${small}">‹</button>`
+        + `<span class="quick-val"></span>`
+        + `<button type="button" data-quick-step="${r.small}" title="Up ${small}">›</button>`
+        + `<button type="button" data-quick-step="${r.big}" title="Up ${big}">»</button></div>`;
+    }).join("");
+  }
+  const photos = quickTargets();
+  $("#insp-quick-on").textContent = state.selection.size ? `on ${plural(photos.length, "selected photo")}` : "on this photo";
+  for (const r of QUICK_ROWS) {
+    const vals = photos.map((p) => (p.edit && p.edit[r.k]) || 0);
+    const one = vals.every((v) => v === vals[0]);
+    const el = rows.querySelector(`[data-quick="${r.k}"] .quick-val`);
+    el.textContent = !vals.length ? "" : one ? quickFormat(r.k, vals[0]) : "mixed";
+    el.classList.toggle("zero", one && vals[0] === 0);
+  }
+}
+
+// Sent one at a time, in order. Steps pressed while one is on its way are
+// added up into the next, so holding a key does not queue a request a repeat.
+const quickQueue = { items: [], busy: false, run: null };
+
+function quickEdit(change) {
+  const photos = quickTargets();
+  if (!photos.length) return;
+  const rels = photos.map((p) => p.rel_path);
+  const key = rels.join("\n");
+  const last = quickQueue.items[quickQueue.items.length - 1];
+  const steps = (c) => !c.auto && !c.level && !Object.keys(c.to || {}).length;
+  if (last && last.key === key && steps(change) && steps(last.change)) {
+    for (const [k, d] of Object.entries(change.by)) last.change.by[k] = (last.change.by[k] || 0) + d;
+  } else {
+    quickQueue.items.push({ key, rels, focus: photos.length === 1 ? photos[0] : null,
+                            change: { by: { ...(change.by || {}) }, to: { ...(change.to || {}) },
+                                      auto: !!change.auto, level: !!change.level } });
+  }
+  if (!quickQueue.busy) quickPump();
+}
+
+async function quickPump() {
+  quickQueue.busy = true;
+  while (quickQueue.items.length) {
+    const item = quickQueue.items.shift();
+    const { by, to, auto, level } = item.change;
+    // Steps that cancelled out while waiting: nothing to send.
+    if (!auto && !level && !Object.keys(to).length
+        && Object.values(by).every((d) => Math.abs(d) < 1e-9)) continue;
+    // Auto and Level read each photo, half a second a RAW: say so meanwhile.
+    if ((auto || level) && item.rels.length > 1) {
+      showUndoToast(`${auto ? "Auto tone" : "Levelling"} on ${plural(item.rels.length, "photo")}…`, null);
+    }
+    const got = await bulkPost("/api/edit/quick", { rel_paths: item.rels, ...item.change });
+    if (got.error) {
+      quickQueue.items = [];
+      alert("Quick edit failed: " + got.error);
+      break;
+    }
+    takeEdits(got.data.photos);
+    quickNoteRun(item, got.data.before, got.data.levelled);
+    afterQuickEdit(item.focus);
+  }
+  quickQueue.busy = false;
+}
+
+// The steps in a row on the same photos, for the message and its Undo.
+function quickNoteRun(item, before, levelled) {
+  let run = quickQueue.run;
+  if (!run || run.key !== item.key || undoToast.undo !== run.undo) {
+    run = { key: item.key, n: item.rels.length, before: new Map(), sums: {}, said: [] };
+    run.undo = () => { quickQueue.run = null; restoreEdits([...run.before.values()]); };
+    quickQueue.run = run;
+  }
+  for (const b of before) if (!run.before.has(b.rel_path)) run.before.set(b.rel_path, b);
+  const { by, to, auto, level } = item.change;
+  if (auto && !run.said.includes("Auto tone")) run.said.push("Auto tone");
+  if (level) {
+    // Each level replaces the last one's word: it measures afresh.
+    run.said = run.said.filter((w) => !w.startsWith("Level"));
+    const got = Object.values(levelled).filter((t) => t !== null);
+    const none = item.rels.length - got.length;
+    run.said.push(item.rels.length === 1
+      ? (got.length ? `Levelled ${quickFormat("tilt", got[0])}` : "Level found no lines to go by")
+      : `Levelled ${got.length} of ${item.rels.length}` + (none ? ` (${none} with no lines to go by)` : ""));
+  }
+  for (const k of Object.keys(to)) {
+    delete run.sums[k];
+    const said = `${QUICK_BY_KEY[k].label} to ${quickFormat(k, to[k])}`;
+    if (!run.said.includes(said)) run.said.push(said);
+  }
+  for (const [k, d] of Object.entries(by)) run.sums[k] = (run.sums[k] || 0) + d;
+  const sums = Object.entries(run.sums).filter(([, d]) => Math.abs(d) > 1e-9)
+    .map(([k, d]) => `${QUICK_BY_KEY[k].label} ${quickFormat(k, d)}`);
+  const what = [...run.said, ...sums].join(", ") || "No change";
+  const on = run.n === 1 ? basename(item.rels[0]) : plural(run.n, "photo");
+  showUndoToast(`${what} · ${on}`, run.undo);
+}
+
+// The grid, the panel and the viewer after a quick edit. The highlighted photo
+// stays highlighted unless the filter has let it go (Edited, stepped back to
+// nothing), as after a decision.
+function afterQuickEdit(focus) {
+  recomputeFilter();
+  const at = focus ? state.filteredPhotos.indexOf(focus) : -1;
+  if (at !== -1) state.cursorIdx = at;
+  renderSidebar();
+  renderMain();
+  renderInspector();
+  if (state.modal.open) {
+    if (!state.filteredPhotos.length) { closeModal(); return; }
+    state.modal.idx = state.cursorIdx;
+    renderModal();
+  }
+}
+
+function quickKey(k) {
+  const step = { ".": 1 / 3, ",": -1 / 3, ">": 1, "<": -1 }[k];
+  if (step === undefined) return false;
+  quickEdit({ by: { exposure: step } });
+  return true;
+}
+
+function bindQuickEdit() {
+  renderQuickEdit();
+  $("#insp-quick-rows").addEventListener("click", (e) => {
+    const row = e.target.closest("[data-quick]");
+    if (!row) return;
+    const k = row.dataset.quick;
+    const step = e.target.closest("[data-quick-step]");
+    if (step) quickEdit({ by: { [k]: Number(step.dataset.quickStep) } });
+    else if (e.target.closest("[data-quick-reset]")) quickEdit({ to: { [k]: 0 } });
+  });
+  $("#insp-quick-auto").addEventListener("click", () => quickEdit({ auto: true }));
+  $("#insp-quick-level").addEventListener("click", () => quickEdit({ level: true }));
+}
+
+// ---------- straighten in the viewer ----------
+// S, or Straighten in the bar: drag along a line in the photo that should be
+// level or upright, and the photo turns by what it is off, as Lightroom's
+// Straighten tool does. The angle is read on screen, where the photo is drawn
+// at one scale both ways, so it is the photo's own at any zoom; and the photo
+// shown is already straightened, so what is measured is what is left, and it
+// is added to the Straighten it has. A line nearer upright than level is
+// made upright. It stays on, for the next photo, until S or Esc.
+const levelTool = { on: false, drag: null };
+
+function setLevelTool(on) {
+  levelTool.on = on;
+  levelTool.drag = null;
+  $("#modal-image-wrap").classList.toggle("levelling", on);
+  $("#modal-level").classList.toggle("active", on);
+  $("#level-line").classList.add("hidden");
+  if (on) showModalHud("Drag along a line that should be level or upright. S or Esc to stop", 2600);
+}
+
+// The turn that levels a line drawn from (x0, y0) to (x1, y1), in degrees,
+// positive clockwise as Straighten's is; null for a line too short to read.
+function levelTurn(d) {
+  const dx = d.x1 - d.x0, dy = d.y1 - d.y0;
+  if (Math.hypot(dx, dy) < 12) return null;
+  let a = Math.atan2(dy, dx) * 180 / Math.PI;
+  if (a > 90) a -= 180; else if (a <= -90) a += 180;
+  return Math.abs(a) <= 45 ? a : (a > 0 ? a - 90 : a + 90);
+}
+
+// Whether the photo on screen is the one with its edit as it now is: a line
+// drawn on a render the last turn has not reached yet would be counted twice.
+function viewerShowsItsEdit() {
+  const img = $("#modal-image"), p = state.filteredPhotos[state.modal.idx];
+  return !!p && !quickQueue.busy && !state.modal.compare
+    && (img.src.endsWith(img.dataset.full) || img.src.endsWith(thumbUrl(p)));
+}
+
+function levelDown(e) {
+  if (!viewerShowsItsEdit()) { showModalHud("A moment: the photo is still turning", 1200); return; }
+  levelTool.drag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY };
+}
+
+function levelMove(e) {
+  const d = levelTool.drag;
+  d.x1 = e.clientX;
+  d.y1 = e.clientY;
+  const svg = $("#level-line"), line = svg.querySelector("line"), text = svg.querySelector("text");
+  for (const [k, v] of Object.entries({ x1: d.x0, y1: d.y0, x2: d.x1, y2: d.y1 })) line.setAttribute(k, v);
+  const turn = levelTurn(d);
+  text.textContent = turn === null ? "" : `${Math.abs(turn).toFixed(1)}°`;
+  text.setAttribute("x", d.x1 + 10);
+  text.setAttribute("y", d.y1 - 10);
+  svg.classList.remove("hidden");
+}
+
+function levelUp(e) {
+  const d = levelTool.drag;
+  levelTool.drag = null;
+  $("#level-line").classList.add("hidden");
+  if (e.type === "pointercancel") return;
+  const turn = levelTurn(d);
+  if (turn !== null && Math.abs(turn) >= 0.05) quickEdit({ by: { tilt: turn } });
 }
 
 // ---------- compare ----------
@@ -10890,6 +11158,7 @@ function bindUi() {
   $("#edit-prev").addEventListener("click", () => editNav(-1));
   $("#edit-next").addEventListener("click", () => editNav(+1));
   $("#edit-curve-reset").addEventListener("click", resetCurve);
+  $("#modal-level").addEventListener("click", () => setLevelTool(!levelTool.on));
   $("#modal-edit").addEventListener("click", () => {
     const i = state.modal.idx;
     closeModal();
@@ -12876,6 +13145,10 @@ const KEYMAP = {
       { k: ["0"], label: "No stars" },
       { k: ["6", "7", "8", "9"], label: "Red, yellow, green, blue label (again to remove)" },
     ]},
+    { group: "Quick edit", note: "With photos selected, on all of them: each photo's own exposure moves. The rest is in the photo info panel.", keys: [
+      { k: [",", "."], label: "Exposure down / up a third of a stop", bar: "Exposure" },
+      { k: ["<", ">"], label: "Exposure down / up a stop" },
+    ]},
     { group: "Move", keys: [
       { k: ["←", "→"], label: "Previous / next photo", bar: "Move" },
       { k: ["↑", "↓"], label: "Row up / down" },
@@ -12910,6 +13183,11 @@ const KEYMAP = {
       { k: ["1", "–", "5"], label: "Stars", bar: "Stars" },
       { k: ["0"], label: "No stars" },
       { k: ["6", "7", "8", "9"], label: "Red, yellow, green, blue label (again to remove)" },
+    ]},
+    { group: "Quick edit", note: "On the photo shown.", keys: [
+      { k: [",", "."], label: "Exposure down / up a third of a stop", bar: "Exposure" },
+      { k: ["<", ">"], label: "Exposure down / up a stop" },
+      { k: ["S"], label: "Straighten: drag along a line that should be level or upright, until S or Esc", bar: "Straighten" },
     ]},
     { group: "Move", keys: [
       { k: ["←", "→"], alt: "Space", label: "Previous / next photo", bar: "Move" },

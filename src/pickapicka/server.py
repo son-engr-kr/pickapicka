@@ -84,6 +84,11 @@ FILL_CACHE_MAX = 64        # AI fill patches kept decoded
 MEASURE_CACHE_MAX = 48     # small copies Keep brightness measures, kept decoded
 PREFETCH_MAX = 2           # neighbours decoded ahead: under EDIT_BASE_CACHE_MAX with the current one
 FULL_BASE_CACHE_MAX = 2    # full-res decode LRU: big arrays, so keep very few
+# Viewer decodes kept, at screen size. A RAW takes a second to demosaic and
+# under 10 ms to grade, so a quick edit in the viewer, or going back a photo,
+# would otherwise wait on the decode every time. Four is the photo shown, the
+# one before and after it (the viewer loads the next ahead), and one more.
+VIEW_CACHE_MAX = 4
 EDIT_ZOOM_MAX_OUT = 3200   # cap on the pixels a 1:1 request may return
 # Per-photo edit slots: a scratchpad for "try this, keep that". Six fits one
 # row of chips in the editor and is more variants than anyone compares at once,
@@ -209,6 +214,18 @@ class EditEntry(BaseModel):
 
 class RestoreEditsPayload(BaseModel):
     photos: list[EditEntry]
+
+
+class QuickEditPayload(BaseModel):
+    """Quick edit, from the culling screen: sliders moved by an amount on each
+    photo (`by`), set to a value (`to`), and the photo's own auto tone
+    (`auto`), and its horizon levelled from its own lines (`level`), on every
+    photo named. Each photo keeps the rest of its edit."""
+    rel_paths: list[str]
+    by: dict[str, float] = {}
+    to: dict[str, float] = {}
+    auto: bool = False
+    level: bool = False
 
 
 class AutoTonePayload(BaseModel):
@@ -664,6 +681,8 @@ class AppContext:
         # Full-resolution originals for the 1:1 zoom view (see get_full_base).
         self.full_base_cache = PhotoArrays(FULL_BASE_CACHE_MAX, FULL_BASE_CACHE_MAX,
                                            max_arrays=FULL_BASE_CACHE_MAX)
+        # The viewer's screen-sized decodes (see decode_view).
+        self.view_cache = PhotoArrays(VIEW_CACHE_MAX, 2)
 
         self.save_lock = threading.Lock()
         self.score_lock = threading.Lock()
@@ -748,6 +767,7 @@ class AppContext:
         self.fill_cache.clear()
         self.edit_base_cache.clear()
         self.full_base_cache.clear()
+        self.view_cache.clear()
         self.portrait_cache.clear()
         self.ca_cache.clear()
         self.settled_optics.clear()
@@ -825,6 +845,7 @@ class AppContext:
         # decoded-base cache so previews decode the fresh files.
         self.edit_base_cache.clear()
         self.full_base_cache.clear()
+        self.view_cache.clear()
         self.portrait_cache.clear()
         self.ca_cache.clear()
         self.settled_optics.clear()
@@ -930,8 +951,12 @@ class AppContext:
 
     def decode_view(self, rel_path: str, max_edge: int | None = EDIT_VIEW_EDGE) -> np.ndarray:
         """RGB uint8 capped at `max_edge` (None: full size), for rendering the
-        viewer image of an edited or RAW photo."""
-        return self._decode_scaled(rel_path, max_edge)
+        viewer image of an edited or RAW photo. Screen-sized decodes are kept
+        (VIEW_CACHE_MAX); a full-size one is a hundred megabytes, and is not."""
+        if max_edge is None:
+            return self._decode_scaled(rel_path, None)
+        return self.view_cache.get(rel_path, f"view{max_edge}",
+                                   lambda: self._decode_scaled(rel_path, max_edge))
 
     def get_decoded_base(self, rel_path: str) -> np.ndarray:
         """Cached downscaled (~EDIT_PREVIEW_EDGE) original RGB — the array the
@@ -4026,6 +4051,69 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         rels = [entry.rel_path for entry in payload.photos]
         _prebuild_thumbs(ctx, rels)
         return {"photos": {rp: _photo_wire(ctx.photo_index[rp]) for rp in rels}}
+
+    @app.post("/api/edit/quick")
+    def quick_edit(payload: QuickEditPayload) -> dict[str, Any]:
+        """Lightroom's Quick Develop, for the culling screen: a step on many
+        photos at once is relative, so +1/3 EV adds a third of a stop to each
+        photo's own exposure, whatever it was at, and no photo's other settings
+        move. `to` sets a slider outright (the culling panel's reset of one).
+        Auto is `presets.AUTO_LIGHT`'s: exposure, contrast, whites and blacks
+        from each photo's own auto tone, the rest left; an edit made at an
+        older process is updated first, as auto tone speaks today's.
+
+        A photo with nothing on it starts at today's process, as the editor
+        starts one; one stepped back to nothing is unedited again. What each
+        photo was is handed back, for Undo (`/api/edit/restore`).
+
+        Level is the editor's Upright Level, per photo: the roll measured from
+        its lines (after its lens correction) becomes its Straighten, and a
+        perspective it had goes, as each measures the roll afresh and the two
+        together would turn it twice. A photo with no lines to go by is left as
+        it was; `levelled` says which, with the angle each was given."""
+        _require_loaded()
+        if ctx.scoring_state["running"]:
+            raise HTTPException(status_code=409, detail="scoring in progress; edits disabled")
+        keys = set(payload.by) | set(payload.to)
+        unknown = keys - (set(editing._RANGES) - editing._MODIFIER_KEYS)
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"not a slider: {sorted(unknown)}")
+        if not (keys or payload.auto or payload.level):
+            raise HTTPException(status_code=400, detail="nothing to change")
+        for rp in payload.rel_paths:
+            if ctx.photo_index.get(rp) is None:
+                raise HTTPException(status_code=404, detail=f"photo not found: {rp}")
+        photos = [ctx.photo_index[rp] for rp in payload.rel_paths]
+        before = [_edit_entry(photo) for photo in photos]
+        levelled: dict[str, float | None] = {}
+        for photo in photos:
+            own = photo.get("edit")
+            e = editing.normalize({"pv": editing.PROCESS_VERSION} if editing.is_empty(own) else own)
+            if payload.auto:
+                e = editing.upgrade(e)
+                auto = editing.auto_tone(ctx.get_decoded_base(photo["rel_path"]))
+                for k in presets_mod.AUTO_KEYS:
+                    e[k] = auto[k]
+            if payload.level:
+                base = ctx.get_corrected_base(photo["rel_path"], {"lens": e["lens"]})
+                roll = float(transform_mod.estimate_upright(base, "level")["rotate"])
+                found = abs(roll) > 1e-3
+                levelled[photo["rel_path"]] = round(roll, 2) if found else None
+                if found:
+                    e["tilt"], e["transform"] = round(roll, 2), None
+            for k, v in payload.to.items():
+                e[k] = v
+            for k, d in payload.by.items():
+                e[k] = e[k] + d
+            for k in keys:
+                lo, hi = editing._RANGES[k]
+                e[k] = min(max(e[k], lo), hi)
+            _apply_edit_to_photo(photo, e)
+        with ctx.save_lock:
+            db.save(ctx.db_path, ctx.data)
+        _prebuild_thumbs(ctx, list(payload.rel_paths))
+        return {"before": before, "levelled": levelled,
+                "photos": {rp: _photo_wire(ctx.photo_index[rp]) for rp in payload.rel_paths}}
 
     @app.post("/api/edit/upgrade")
     def upgrade_edit(payload: EditPreviewPayload) -> dict[str, Any]:

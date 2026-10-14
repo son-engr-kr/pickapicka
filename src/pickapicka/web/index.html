@@ -550,6 +550,19 @@
             <button type="button" class="btn-decision" data-decision="pick">Pick <span class="kbd">P</span></button>
           </div>
         </div>
+        <!-- Quick edit: Lightroom's Quick Develop. A step is relative, on the
+             selection when there is one, else on this photo. -->
+        <div class="insp-section" id="insp-quick">
+          <div class="insp-quick-head">
+            <span class="insp-label">Quick edit</span>
+            <span id="insp-quick-on"></span>
+            <button type="button" id="insp-quick-auto"
+                    title="Exposure, contrast, whites and blacks from each photo's own auto tone">Auto</button>
+            <button type="button" id="insp-quick-level"
+                    title="Straighten each photo from its own lines, as the editor's Upright Level does. In the viewer, S draws the line yourself">Level</button>
+          </div>
+          <div id="insp-quick-rows"></div>
+        </div>
         <div class="insp-section" id="insp-faces-section">
           <div class="insp-label">Faces</div>
           <div id="insp-faces"></div>
@@ -1096,6 +1109,8 @@
       <div id="modal-original" class="hidden"><img alt="" draggable="false" /></div>
       <span id="modal-loading" class="hidden">Loading full size…</span>
       <span id="modal-hud" class="hidden" aria-live="polite"></span>
+      <!-- Straighten (S): the line being drawn, in screen coordinates. -->
+      <svg id="level-line" class="hidden" aria-hidden="true"><line /><text /></svg>
     </div>
     <div class="filmstrip" id="modal-filmstrip" aria-label="Photos in this scene"></div>
     <div id="modal-bottom">
@@ -1113,6 +1128,7 @@
                 data-loupe-scale="2">2:1</button><button
                 data-loupe-scale="4">4:1</button>
       </span>
+      <button id="modal-level" title="Straighten: drag along a line that should be level or upright (S)">Straighten</button>
       <button id="modal-edit" data-icon="pencil" title="Edit this photo (E)">Edit</button>
     </div>
     <div class="keybar" data-context="viewer"></div>

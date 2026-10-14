@@ -95,12 +95,14 @@ rather than deletes.
 `P` pick · `R` reject · `V` review · `U` clear (each decides the highlighted
 photo and moves to the next) · `1`–`5` stars, `0` none · `6`–`9` colour
 labels · `←` `→` move · `[` `]` a screen on or back · `Enter` viewer ·
-`C` compare · `E` edit · `I` photo info · `X` select · `D` download the
-selection · `B` subject boxes · `K` focus peaking · `L` loupe · `?` every
-shortcut · `⌘,` / `Ctrl+,` preferences
+`C` compare · `E` edit · `,` `.` exposure down or up a third of a stop
+(`<` `>` a stop), on the selection when there is one · `I` photo info · `X`
+select · `D` download the selection · `B` subject boxes · `K` focus peaking ·
+`L` loupe · `?` every shortcut · `⌘,` / `Ctrl+,` preferences
 
 In the viewer: a click zooms to 100% there · scroll or pinch zooms · drag pans ·
-`F` fit ↔ 100% · `+` `-` zoom · `Tab` hide the bars
+`F` fit ↔ 100% · `+` `-` zoom · `Tab` hide the bars · `S` straighten (drag
+along a line that should be level)
 
 In the editor: `R` `G` `B` add a radial, gradient or brush mask · `\` show the
 mask · `Del` remove it · `C` hold the original · `F` fit ↔ 100% ·

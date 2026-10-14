@@ -31,8 +31,8 @@ whole job: decide, filter, move on.
   opens, so a fresh shoot does not show black tiles for long.
 - **The info panel** (`I`) beside the grid shows the highlighted photo's
   histogram, the suggestion and why in words, its faces, and the camera and
-  exposure, with the decision buttons. It steps aside on a window narrower
-  than 1180 px.
+  exposure, with the decision buttons and Quick edit (see *Deciding*). It
+  steps aside on a window narrower than 1180 px.
 - **The viewer** (`Enter`) shows the photo at once from its thumbnail while the
   full image loads, with the decision buttons, the reasons for the suggestion,
   and a **filmstrip** of the scene along the bottom. The editor has the same
@@ -140,6 +140,35 @@ keys for where you are, `?` lists every one (also in the
   label keys act on it. `Z`, or a click, takes every pane to 100% at the same
   place, and dragging one pans them all, to see which frame of a burst is
   sharpest. `Esc` returns to the grid on the active photo.
+- **Quick edit**, Lightroom's Quick Develop, without opening the editor: `.`
+  and `,` brighten or darken by a third of a stop, `>` and `<` by a stop, in
+  the grid and in the viewer. The info panel has the rest under **Quick edit**:
+  Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Temperature, Tint,
+  Clarity, Vibrance and Straighten, each with `«` `‹` `›` `»` (a stop and a
+  third of one for Exposure, 20 and 5 for the others, as Lightroom's are; 1°
+  and 0.1° for Straighten, the editor slider's own steps), its name to set it
+  back to 0, and **Auto** for each photo's own auto tone (exposure, contrast,
+  whites and blacks only; the editor's Auto starts the edit over).
+- **Straightening** in the viewer: `S` (or **Straighten** in its bar), then
+  drag along a line in the photo that should be level, or upright, and the
+  photo turns by what it is off, as Lightroom's Straighten tool does. The
+  angle is read off the photo as it is shown, already straightened, so a
+  second line corrects what the first left, at any zoom. It stays on for the
+  next photo until `S` or `Esc`. **Level** in the info panel is the editor's
+  Upright Level for each photo: the roll measured from its own lines becomes
+  its Straighten (and a perspective it had goes, as in the editor). Check what
+  it did: on 30 picks of a forest hike it found lines to go by in 4, and
+  turned one of those, a mountain view that was already level with a spruce
+  in front, by 14°. A line drawn by hand is the sure way.
+  Like the decision keys it acts on the selection when there is one, else on
+  the highlighted photo, and in the viewer on the photo shown. A step is
+  relative: each photo's own value moves, so photos exposed differently stay
+  different, and nothing else in their edits changes. It is saved at once and
+  the tiles and the viewer show it: on a 33 MP RAW in the viewer at 2560 px,
+  saving a step and rendering the photo again take 0.06 to 0.09 s together,
+  where the render alone took over a second, as the viewer now keeps the last
+  four photos decoded. Steps made in a row on
+  the same photos are one Undo in the message that follows (or `⌘Z`).
 
 The keyboard cursor follows the mouse only when the mouse moves: a pointer
 resting on the grid does not pull the cursor when the page turns under it.
