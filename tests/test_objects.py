@@ -414,13 +414,16 @@ def test_download_never_overwrites(tmp_path) -> None:
     assert _unique_name(tmp_path, "other.jpg", seen) == "other.jpg"
 
 
-def test_only_raw_and_edited_photos_are_re_encoded() -> None:
+def test_only_raw_and_edited_photos_are_re_encoded(tmp_path) -> None:
     """A plain JPEG is byte-copied: re-encoding it would lose quality for nothing."""
-    from pathlib import Path
     from types import SimpleNamespace
 
     from pickapicka.server import ExportSettings, _baked_name, _needs_render
-    ctx = SimpleNamespace(source_path=lambda rel: Path(rel))
+    # On disk, as the copy checks an original's size against the file size limit.
+    (tmp_path / "a").mkdir()
+    for name in ("DSC01.jpg", "DSC01.JPG"):
+        (tmp_path / "a" / name).write_bytes(b"\xff\xd8 a small jpeg")
+    ctx = SimpleNamespace(source_path=lambda rel: tmp_path / rel)
     default = ExportSettings()
     plain = {"rel_path": "a/DSC01.jpg"}
     assert not _needs_render(plain)

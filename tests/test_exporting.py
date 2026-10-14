@@ -18,7 +18,7 @@ from PIL import Image
 
 def _settings(**over):
     base = dict(format="jpeg", quality=95, long_edge=None, metadata="all",
-                name_template="{name}")
+                name_template="{name}", max_mb=None)      # the limit: test_export_size
     return SimpleNamespace(**{**base, **over})
 
 

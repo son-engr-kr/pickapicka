@@ -6,6 +6,7 @@ pixels on the way to disk. `metadata` decides what the file says about itself.
 """
 from __future__ import annotations
 
+import io
 import re
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
@@ -28,6 +29,15 @@ _TOKEN = re.compile(r"\{([^{}]*)\}")
 LONG_EDGE_MIN, LONG_EDGE_MAX = 64, 20000
 
 _COPYABLE = {".jpg", ".jpeg"}
+
+# A file size limit's megabyte: a million bytes, as Finder counts them. A limit
+# a service states in binary megabytes is larger, so a file under this one is
+# under that one too.
+MB = 1_000_000
+
+
+class TooLarge(Exception):
+    """Even at the lowest JPEG quality the file is over its size limit."""
 
 
 def check_template(template: str) -> None:
@@ -71,19 +81,58 @@ def can_copy(source: Path, *, needs_render: bool, settings: Any) -> bool:
     """Whether the original file already is the export, byte for byte.
 
     Only an untouched JPEG exported as a full-size JPEG with all its metadata
-    qualifies. Any other setting changes the file, and copying would ignore it,
-    for instance by leaking a location the export was told to remove.
+    qualifies, and within the file size limit when there is one. Any other
+    setting changes the file, and copying would ignore it, for instance by
+    leaking a location the export was told to remove.
     """
     return (not needs_render
             and source.suffix.lower() in _COPYABLE
             and settings.format == "jpeg"
             and settings.long_edge is None
-            and settings.metadata == "all")
+            and settings.metadata == "all"
+            and (settings.max_mb is None or source.stat().st_size <= settings.max_mb * MB))
 
 
 def resize(rgb: np.ndarray, long_edge: int | None) -> np.ndarray:
     """Shrink to `long_edge` on the longer side. Never enlarges."""
     return rgb if long_edge is None else fit_within(rgb, long_edge)
+
+
+def write_within(rgb: np.ndarray, dst: Path | BinaryIO, *, quality: int, max_bytes: int,
+                 exif: bytes | None, icc: bytes | None, xmp: bytes | None = None) -> int:
+    """Write the JPEG at the highest quality up to `quality` whose file, its
+    metadata included, is at most `max_bytes`, and return that quality.
+
+    Lightroom's Limit File Size, which moves only the quality, never the size:
+    a photo that is over the limit even at quality 1 raises TooLarge, nothing
+    written, and a smaller long edge is the way to it. The quality is found by
+    halves. A JPEG's size rises with its quality, though not at every single
+    step, so this is the highest the search finds, which can be a step short
+    of the highest there is. A photo already under the limit at `quality` is
+    encoded once, as without a limit.
+    """
+    def encoded(q: int) -> bytes:
+        buf = io.BytesIO()
+        write(rgb, buf, fmt="jpeg", quality=q, exif=exif, icc=icc, xmp=xmp)
+        return buf.getvalue()
+
+    best, at = encoded(quality), quality
+    if len(best) > max_bytes:
+        best, lo, hi = b"", 1, quality - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            data = encoded(mid)
+            if len(data) <= max_bytes:
+                best, at, lo = data, mid, mid + 1
+            else:
+                hi = mid - 1
+        if not best:
+            raise TooLarge(f"over {max_bytes / MB:g} MB even at quality 1")
+    if isinstance(dst, Path):
+        dst.write_bytes(best)
+    else:
+        dst.write(best)
+    return at
 
 
 def write(rgb: np.ndarray, dst: Path | BinaryIO, *, fmt: Format, quality: int,

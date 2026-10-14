@@ -2533,6 +2533,8 @@ const EXPORT_TOKENS = [
   ["name", "original name"], ["seq", "001, 002…"], ["date", "capture date"],
   ["time", "capture time"], ["scene", "scene"], ["project", "project"],
 ];
+// Mirrors ExportSettings.max_mb's default: the size limit a first export gets.
+const EXPORT_LIMIT_MB = 12;
 const EXPORT_EXT = { jpeg: ".jpg", tiff: ".tif" };
 const exportUi = { pollTimer: null, nameTimer: null };
 
@@ -2637,6 +2639,8 @@ function applyExportSettings(st) {
   $$("#export-format button").forEach((b) =>
     b.classList.toggle("active", b.dataset.format === st.format));
   $("#export-quality").value = st.quality;
+  $("#export-limit-on").checked = st.max_mb != null;
+  $("#export-limit").value = st.max_mb ?? EXPORT_LIMIT_MB;
   const size = st.long_edge == null ? "" : String(st.long_edge);
   const preset = [...$("#export-size").options].some((o) => o.value === size);
   $("#export-size").value = preset ? size : "custom";
@@ -2669,6 +2673,9 @@ function syncExportForm() {
   const fmt = exportFormat();
   $("#export-quality-row").classList.toggle("hidden", fmt !== "jpeg");
   $("#export-quality-val").textContent = $("#export-quality").value;
+  // A TIFF is uncompressed: its size is its pixels', with no quality to give.
+  $("#export-limit-row").classList.toggle("hidden", fmt !== "jpeg");
+  $("#export-limit").disabled = !$("#export-limit-on").checked;
   $("#export-format-note").textContent = fmt === "tiff"
     ? "Lossless and uncompressed, for printing and further editing: about 70 MB for 24 megapixels."
     : "";
@@ -2685,9 +2692,15 @@ function readExportSettings() {
   } else if (size) {
     longEdge = parseInt(size, 10);
   }
+  let maxMb = null;
+  if ($("#export-limit-on").checked) {
+    maxMb = parseFloat($("#export-limit").value);
+    if (!(maxMb > 0)) return "Enter a file size above 0 MB, or untick it.";
+  }
   return {
     format: exportFormat(),
     quality: parseInt($("#export-quality").value, 10),
+    max_mb: maxMb,
     long_edge: longEdge,
     metadata: $("#export-metadata").value,
     name_template: $("#export-name").value,
@@ -2734,6 +2747,10 @@ function bindExportForm() {
     previewExportName();
   }));
   $("#export-quality").addEventListener("input", syncExportForm);
+  $("#export-limit-on").addEventListener("change", () => {
+    syncExportForm();
+    if ($("#export-limit-on").checked) $("#export-limit").focus();
+  });
   $("#export-size").addEventListener("change", () => {
     syncExportForm();
     if ($("#export-size").value === "custom") $("#export-size-custom").focus();
@@ -2810,6 +2827,14 @@ function finishExport(st) {
   let html = `${icon("check")} ${verb} <b>${r.copied}</b> photo${r.copied === 1 ? "" : "s"}${and} to<br>`
     + `<code>${escapeHtml(r.target_dir)}</code>`;
   if (r.skipped) html += `<br>Skipped ${r.skipped} (missing source).`;
+  if (r.lowered) {
+    html += `<br>${plural(r.lowered, "file")} at a lower quality to stay under ${r.max_mb} MB`
+      + ` (the lowest ${r.lowest_quality}).`;
+  }
+  if (r.too_large.length) {
+    html += `<br><b>Not exported</b>, over ${r.max_mb} MB even at the lowest quality: `
+      + `${escapeHtml(r.too_large.map(basename).join(", "))}. A smaller Size lets them fit.`;
+  }
   if (r.per_combo && Object.keys(r.per_combo).length) {
     const sorted = Object.entries(r.per_combo).sort((a, b) => b[1] - a[1]);
     html += `<br><span class="combo-summary">${sorted.map(([k, v]) => `${escapeHtml(k)}: ${v}`).join(" · ")}</span>`;
@@ -8765,8 +8790,10 @@ async function downloadSelection() {
     }
     const info = await res.json();
     const missing = info.missing.length ? ` · ${info.missing.length} missing` : "";
+    const big = info.too_large.length
+      ? ` · ${info.too_large.length} left out, over ${info.max_mb} MB even at the lowest quality` : "";
     showDownloadToast(
-      `Saved ${info.saved} photo${info.saved === 1 ? "" : "s"} to ${info.target_dir}${missing}`,
+      `Saved ${info.saved} photo${info.saved === 1 ? "" : "s"} to ${info.target_dir}${missing}${big}`,
       info.target_dir);
   } finally {
     btn.disabled = false;

@@ -157,6 +157,18 @@ resting on the grid does not pull the cursor when the page turns under it.
   `{project}`); and metadata kept whole, kept without location, or left out.
   The export runs in the background with a progress bar and can be stopped,
   and the dialog opens on the settings used last.
+- **File size**: a JPEG is at most 12 MB a photo unless you change it (untick
+  it for no limit). As Lightroom's Limit File Size does, only the quality
+  comes down, to the highest that fits, and only where a photo would be over;
+  the size in pixels never changes. A megabyte here is a million bytes, as
+  Finder counts, so a limit a site gives in binary megabytes is met too. On a
+  33 MP forest hike at quality 95, 2 of 10 frames were over 12 MB (15.8 and
+  13.3); they came out at 11.4 and 11.7, and the rest as they were. Finding
+  the quality costs about half a second a photo over the limit. A photo that is
+  over even at the lowest quality is not exported, and the result names it: a
+  smaller long edge lets it fit. An untouched JPEG over the limit is written
+  afresh instead of copied. TIFF is uncompressed, so it has no limit. Download
+  the selection keeps to the same limit.
 - **Versions**: with **Each saved slot too** ticked, an export writes every
   saved edit slot of a photo (see *Slots* in the editing guide) as a file of
   its own beside the photo, `a0_bw.jpg` after a slot named `bw`, `a0_slot2.jpg`
@@ -175,7 +187,7 @@ resting on the grid does not pull the cursor when the page turns under it.
 - **Download the selection** (`D`): saves the selected photos straight to your
   Downloads folder — no dialog. Edits are baked and RAW is rendered, so what
   lands there is the photo as you graded it, as a full-size JPEG with its
-  metadata. One photo goes in loose, several go into a dated subfolder; nothing
+  metadata, under Export's file size limit. One photo goes in loose, several go into a dated subfolder; nothing
   already there is ever overwritten.
 
 ## Filtering and picking up where you left off

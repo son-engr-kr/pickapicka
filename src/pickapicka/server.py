@@ -300,6 +300,11 @@ class ExportSettings(BaseModel):
     (full-size JPEG at 95), now with its metadata kept."""
     format: exporting.Format = "jpeg"
     quality: int = 95
+    # The most a JPEG may weigh, in megabytes (exporting.MB), or None for no
+    # limit: the quality comes down where a photo would be over it
+    # (exporting.write_within). A TIFF is uncompressed, so its size is its
+    # pixels' and this does not apply.
+    max_mb: float | None = Field(default=12.0, gt=0)
     long_edge: int | None = None          # None: full size
     metadata: metadata_mod.MetadataMode = "all"
     name_template: str = "{name}"
@@ -1421,23 +1426,34 @@ def _unique_name(parent: Path, base: str, seen: set[str]) -> str:
     return name
 
 
+def _one_click_settings() -> ExportSettings:
+    """What a download with no dialog writes: a full-size JPEG at 95 with all
+    its metadata, under the file size limit Export was last given, since that
+    limit is about where the files are going, whichever button sent them."""
+    return ExportSettings(max_mb=ExportSettings(**userstate.get_export_settings()).max_mb)
+
+
 def _bake_photo(ctx: "AppContext", photo: dict[str, Any], rel: str, dst: Path,
-                settings: ExportSettings) -> None:
+                settings: ExportSettings) -> int | None:
     """Write one photo to `dst`: the original copied when it already is the
-    export, otherwise rendered, resized and written with its metadata."""
+    export, otherwise rendered, resized and written with its metadata. The
+    JPEG quality it was written at, None for a copy or a TIFF; raises
+    exporting.TooLarge, nothing written, for a JPEG its size limit cannot
+    hold."""
     if _copies_as_is(ctx, photo, rel, settings):
         shutil.copy2(ctx.source_path(rel), dst)
         # Stars and a colour label go into the copy's XMP; only a copy with
         # every tag kept is made at all, so they are kept too.
         if photo.get("rating") or photo.get("label"):
             metadata_mod.mark_jpeg(dst, photo.get("rating") or 0, photo.get("label"))
-        return
-    _bake_rendered(ctx, photo, rel, dst, settings)
+        return None
+    return _bake_rendered(ctx, photo, rel, dst, settings)
 
 
 def _bake_rendered(ctx: "AppContext", photo: dict[str, Any], rel: str,
-                   dst: Path | BinaryIO, settings: ExportSettings) -> None:
-    """Render one photo and write it to `dst`, a path or an open buffer."""
+                   dst: Path | BinaryIO, settings: ExportSettings) -> int | None:
+    """Render one photo and write it to `dst`, a path or an open buffer, and
+    return the JPEG quality it went out at (None for a TIFF)."""
     edit = photo.get("edit")
     out = editing.render_bands(ctx.decode_full(rel), edit,
                                meta=ctx.photo_meta(rel),
@@ -1455,8 +1471,14 @@ def _bake_rendered(ctx: "AppContext", photo: dict[str, Any], rel: str,
         src_exif, size=(out.shape[1], out.shape[0]),
         captured_at=ctx.photo_meta(rel).get("captured_at") or "",
         mode=settings.metadata, srgb=is_raw, rating=rating)
+    xmp = metadata_mod.build_xmp(rating, label)
+    if settings.format == "jpeg" and settings.max_mb is not None:
+        return exporting.write_within(out, dst, quality=settings.quality,
+                                      max_bytes=int(settings.max_mb * exporting.MB),
+                                      exif=exif, icc=icc, xmp=xmp)
     exporting.write(out, dst, fmt=settings.format, quality=settings.quality,
-                    exif=exif, icc=icc, xmp=metadata_mod.build_xmp(rating, label))
+                    exif=exif, icc=icc, xmp=xmp)
+    return settings.quality if settings.format == "jpeg" else None
 
 
 def _export_picks_to(ctx: "AppContext", picks: list[dict[str, Any]], target: Path,
@@ -1478,6 +1500,22 @@ def _export_picks_to(ctx: "AppContext", picks: list[dict[str, Any]], target: Pat
     skipped: list[str] = []
     versions = 0
     per_combo: dict[str, int] = {}
+    # The size limit's work: files it brought below the chosen quality (and
+    # the lowest it went to), and the ones it could not hold at any quality,
+    # left out and named, as Lightroom does, for a smaller long edge to fit.
+    lowered: list[int] = []
+    too_large: list[str] = []
+
+    def bake(item: dict[str, Any], to: Path, name: str) -> bool:
+        try:
+            q = _bake_photo(ctx, item, rel, to, settings)
+        except exporting.TooLarge:
+            too_large.append(name)
+            return False
+        if q is not None and q < settings.quality:
+            lowered.append(q)
+        return True
+
     for seq, photo in enumerate(picks, start=1):
         if state["cancel"]:
             break
@@ -1513,21 +1551,24 @@ def _export_picks_to(ctx: "AppContext", picks: list[dict[str, Any]], target: Pat
             combo_dir = target / _sanitize_segment(combo_label)
             combo_dir.mkdir(parents=True, exist_ok=True)
             dst = combo_dir / unique_in(combo_dir, out_name)
-            per_combo[combo_label] = per_combo.get(combo_label, 0) + 1
         elif mode == "flat":
             dst = target / unique_in(target, out_name)
         else:  # "folder"
             dst = (target / rel).parent / out_name
             dst.parent.mkdir(parents=True, exist_ok=True)
             used_names.setdefault(dst.parent, set()).add(out_name)
-        _bake_photo(ctx, photo, rel, dst, settings)
+        if not bake(photo, dst, rel):
+            state["idx"] = seq
+            continue
+        if mode == "by_person":
+            per_combo[combo_label] = per_combo.get(combo_label, 0) + 1
         # The versions go beside the photo, whichever folder it went to, and
         # never over a file: a slot's name is the user's to choose.
         for tail, edit in _export_versions(photo) if settings.versions else []:
             version = {**photo, "edit": edit}
             name = _baked_name(ctx, version, rel, settings, f"{stem}_{tail}")
-            _bake_photo(ctx, version, rel, dst.parent / unique_in(dst.parent, name), settings)
-            versions += 1
+            if bake(version, dst.parent / unique_in(dst.parent, name), f"{rel} ({tail})"):
+                versions += 1
         copied.append(rel)
         state["idx"] = seq
     return {
@@ -1539,6 +1580,10 @@ def _export_picks_to(ctx: "AppContext", picks: list[dict[str, Any]], target: Pat
         "cancelled": bool(state["cancel"]),
         "mode": mode,
         "per_combo": per_combo,
+        "max_mb": settings.max_mb if settings.format == "jpeg" else None,
+        "lowered": len(lowered),
+        "lowest_quality": min(lowered) if lowered else None,
+        "too_large": too_large,
     }
 
 
@@ -4736,22 +4781,28 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             target = _downloads_folder(ctx.project_dir.name if ctx.project_dir else ctx.db_path.stem)
             target.mkdir(parents=True)
 
-        # One click, so no choices: full size and all metadata, as a JPEG.
-        settings = ExportSettings()
+        # One click, so no choices: full size and all metadata, as a JPEG,
+        # under the file size limit Export was last given.
+        settings = _one_click_settings()
         used: set[str] = set()
         saved: list[str] = []
         missing: list[str] = []
+        too_large: list[str] = []
         for rel in payload.rel_paths:
             photo = ctx.photo_index.get(rel)
             if photo is None or not ctx.source_path(rel).is_file():
                 missing.append(rel)
                 continue
             dst = target / _unique_name(target, _baked_name(ctx, photo, rel, settings), used)
-            _bake_photo(ctx, photo, rel, dst, settings)
+            try:
+                _bake_photo(ctx, photo, rel, dst, settings)
+            except exporting.TooLarge:
+                too_large.append(rel)
+                continue
             saved.append(dst.name)
 
-        return {"target_dir": str(target), "saved": len(saved),
-                "missing": missing, "names": saved[:12]}
+        return {"target_dir": str(target), "saved": len(saved), "missing": missing,
+                "too_large": too_large, "max_mb": settings.max_mb, "names": saved[:12]}
 
     @app.post("/api/reveal")
     def reveal_path(payload: RevealPayload) -> dict[str, Any]:
@@ -4779,9 +4830,13 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         photo = ctx.photo_index.get(rel_path)
         if photo is None:
             raise HTTPException(status_code=404, detail="photo not found")
-        settings = ExportSettings()
+        settings = _one_click_settings()
         buf = io.BytesIO()
-        _bake_rendered(ctx, photo, rel_path, buf, settings)
+        try:
+            _bake_rendered(ctx, photo, rel_path, buf, settings)
+        except exporting.TooLarge as exc:
+            raise HTTPException(status_code=400, detail=f"{Path(rel_path).name} is {exc}; "
+                                "raise the file size limit in Export, or export it smaller") from exc
         fname = Path(rel_path).stem + ".jpg"
         return Response(
             content=buf.getvalue(), media_type="image/jpeg",

@@ -839,6 +839,12 @@
           <input type="range" id="export-quality" min="50" max="100" step="1" />
           <span class="export-val" id="export-quality-val"></span>
         </div>
+        <div class="export-row" id="export-limit-row">
+          <label for="export-limit">File size</label>
+          <label class="cb"><input type="checkbox" id="export-limit-on" /> At most</label>
+          <input type="number" id="export-limit" min="0.1" step="0.5" aria-label="Megabytes a photo at most" />
+          <span class="export-note">MB a photo. Where one would be bigger, only its quality comes down.</span>
+        </div>
         <div class="export-row">
           <label for="export-size">Size</label>
           <select id="export-size">
@@ -874,7 +880,8 @@
         </div>
         <p class="export-note export-copy-note">
           A photo with no edits is copied as it is, untouched, when the settings
-          above would not change it (full-size JPEG with all metadata).
+          above would not change it (full-size JPEG with all metadata, within the
+          file size).
         </p>
 
         <div class="export-progress hidden" id="export-progress">
