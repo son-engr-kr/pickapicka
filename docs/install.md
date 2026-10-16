@@ -19,8 +19,18 @@ double-click it, and follow the installer — it puts **Pickapicka.app**
 into `/Applications`. Launch it and the landing page opens in your browser
 automatically.
 
-Apple Silicon (arm64) only. The package is unsigned, so the first launch
-needs **Right-click → Open → Open** to clear Gatekeeper.
+Apple Silicon (arm64), macOS 12 or later. The package is not signed by
+Apple, so the first time it is opened macOS stops it ("Apple could not verify
+… is free of malware"):
+
+- **macOS 15 (Sequoia) and later**: click **Done**, open **System Settings →
+  Privacy & Security**, scroll down to *Security*, and click **Open Anyway**
+  beside the package's name. It stays there for about an hour after the
+  attempt. Confirm with your password, then open the package again and choose
+  **Open Anyway**.
+- **macOS 12 to 14**: **right-click → Open → Open**.
+- Or, in Terminal, take the download's quarantine mark off and open it as
+  usual: `xattr -d com.apple.quarantine ~/Downloads/Pickapicka-*.pkg`.
 
 ### Windows (no terminal needed)
 
@@ -81,7 +91,7 @@ opens again by itself, back in the project you were in, and says whether the
 update took. Say no to the prompt and the version you had opens again.
 
 Because the app downloads the installer itself rather than through a browser,
-the unsigned-app warnings (Gatekeeper's right-click → Open, SmartScreen's Run
+the unsigned-app warnings (Gatekeeper's Open Anyway, SmartScreen's Run
 anyway) do not come back for updates.
 
 The **ⓘ** button in the top bar shows the version you have and the newest

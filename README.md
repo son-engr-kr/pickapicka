@@ -39,7 +39,8 @@ non-destructive, and all previewed at the resolution you will export at.
 Prebuilt installers for **macOS** (Apple Silicon) and **Windows** (x64) are on
 the [Releases page](https://github.com/son-engr-kr/pickapicka/releases)
 — download, run, launch. Both are unsigned, so the first launch needs
-right-click → Open on macOS, or More info → Run anyway on Windows.
+System Settings → Privacy & Security → Open Anyway on macOS (right-click →
+Open before macOS 15), or More info → Run anyway on Windows.
 
 With [uv](https://github.com/astral-sh/uv), on any platform including Linux:
 
