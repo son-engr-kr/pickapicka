@@ -98,7 +98,12 @@ existing pipeline and the existing mask system with no architectural change.
   `_wb_tone_lut` makes for tone: 239 ms at 24 MP. Tints are zero-luma vectors,
   so strength cannot move brightness by construction rather than by correction.
   Zone weights are a partition of unity at any blending.
-- Point colour — sampled-colour selective adjustment
+- ~~Point colour — sampled-colour selective adjustment~~ `done`, as the
+  mixer's picked colours, with a Clean slider beside it (per band, per colour
+  and overall) that takes a colour's opposite out of it. Selection reuses the
+  colour range's metric pixel by pixel, on the ungraded frame, with an edge no
+  narrower than 32 metric units: narrower, a noisy patch on the edge speckled
+  at 3 to 9 times the Blue band's added noise. See `docs/editing.md`.
 - ~~Sharpening detail controls — radius, detail, masking~~ `done`. 320 ms at
   24 MP, 30 ms at a 2048 px preview edge. Two things to know. It is the
   pipeline's second and last deliberate exception to resolution independence,

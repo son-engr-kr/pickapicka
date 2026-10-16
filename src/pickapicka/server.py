@@ -4190,6 +4190,17 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             )
         return {"wb": wb}
 
+    @app.post("/api/edit/sample")
+    def colour_sample(payload: NeutralPickPayload) -> dict[str, Any]:
+        """The colour at a point, for the mixer's picked colours: read off the
+        ungraded base, as the white balance is, since that is what a picked
+        colour selects on (see editing._apply_points)."""
+        _require_loaded()
+        if ctx.photo_index.get(payload.rel_path) is None:
+            raise HTTPException(status_code=404, detail="photo not found")
+        base = ctx.get_corrected_base(payload.rel_path, payload.edit)
+        return {"color": editing.sample_color(base, payload.x, payload.y)}
+
     # ----- presets (app-global) --------------------------------------
 
     @app.get("/api/watermark/info")

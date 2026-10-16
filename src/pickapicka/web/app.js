@@ -65,6 +65,8 @@ const EDIT_SCHEMA = {
     { k: "tint",       label: "Tint",        min: -100, max: 100, step: 1, fmt: 0 },
     { k: "vibrance",   label: "Vibrance",    min: -100, max: 100, step: 1, fmt: 0 },
     { k: "saturation", label: "Saturation",  min: -100, max: 100, step: 1, fmt: 0 },
+    { k: "clean",      label: "Clean",       min: 0,    max: 100, step: 1, fmt: 0,
+      hint: "Takes each colour's opposite out of it: the yellow from a muddy sky, the red from dull water, the magenta from olive leaves. The colour itself stays where it is, so nothing clips; it darkens a little, most in a blue sky. Greys are left alone." },
   ]},
   detail: { title: "Detail & Effects", fields: [
     { k: "texture",    label: "Texture",     min: -100, max: 100, step: 1, fmt: 0,
@@ -146,7 +148,7 @@ const EDIT_NEUTRAL = (() => {
   // not a slider a mask could ever carry, and they are applied before anything
   // tonal. Mirrors editing.DEFAULT_EDIT.
   const e = { masks: [], watermark: null,
-              film: null, hsl: null, grading: null, lut: null,
+              film: null, hsl: null, points: null, grading: null, lut: null,
               healing: null, redeye: null, lens: null, transform: null, portrait: null,
               tilt: 0, crop: null };
   for (const c of CURVE_CHANNELS) e[c.k] = CURVE_IDENTITY.map((p) => p.slice());
@@ -179,6 +181,7 @@ function mergeNeutralEdit(edit) {
   e.crop = (edit && edit.crop) ? { ...edit.crop } : null;
   e.film = (edit && edit.film) ? { ...edit.film } : null;
   e.hsl = cloneHsl(edit && edit.hsl);
+  e.points = clonePoints(edit && edit.points);
   e.grading = cloneGrading(edit && edit.grading);
   e.lut = (edit && edit.lut) ? { ...edit.lut } : null;
   // The repairs were not copied here at all, so opening a photo that had one
@@ -209,6 +212,7 @@ function editsEqual(a, b) {
   if (canonCrop(a.crop) !== canonCrop(b.crop)) return false;
   if (canonFilm(a.film) !== canonFilm(b.film)) return false;
   if (canonHsl(a.hsl) !== canonHsl(b.hsl)) return false;
+  if (canonPoints(a.points) !== canonPoints(b.points)) return false;
   if (canonGrading(a.grading) !== canonGrading(b.grading)) return false;
   if (canonLut(a.lut) !== canonLut(b.lut)) return false;
   if (JSON.stringify(a.healing || null) !== JSON.stringify(b.healing || null)) return false;
@@ -253,6 +257,19 @@ function cloneHsl(h) {
   const out = {};
   for (const key of Object.keys(h)) if (h[key]) out[key] = { ...h[key] };
   return Object.keys(out).length ? out : null;
+}
+// Mirrors editing.normalize_points: a picked colour nothing is done to is not
+// kept, so one picked and left alone never counts as an edit.
+function canonPoints(list) {
+  const out = (list || []).map((p) => {
+    const vals = HSL_FIELDS.filter((f) => r1(p[f.k]) !== 0).map((f) => [f.k, r1(p[f.k])]);
+    return vals.length ? [(p.color || []).map(Math.round), r1(p.range ?? POINT_RANGE_NEW),
+                          p.enabled !== false, vals] : null;
+  }).filter(Boolean);
+  return out.length ? JSON.stringify(out) : "";
+}
+function clonePoints(list) {
+  return (list && list.length) ? list.map((p) => ({ ...p, color: (p.color || []).slice() })) : null;
 }
 // Mirrors grading.normalize: a zone with sat 0 and lum 0 contributes nothing
 // whatever its hue, so hue alone must not read as an edit.
@@ -338,6 +355,7 @@ function neutralAdj() {
   for (const k of MASK_LOCAL_KEYS) a[k] = EDIT_NEUTRAL[k] ?? 0;
   for (const c of CURVE_CHANNELS) a[c.k] = CURVE_IDENTITY.map((p) => p.slice());
   a.hsl = null;
+  a.points = null;
   a.grading = null;
   a.lut = null;
   a.film = null;
@@ -353,6 +371,7 @@ function cloneAdj(adj) {
       ? a[c.k].map((p) => p.slice()) : CURVE_IDENTITY.map((p) => p.slice());
   }
   a.hsl = cloneHsl(a.hsl);
+  a.points = clonePoints(a.points);
   a.grading = cloneGrading(a.grading);
   a.lut = a.lut ? { ...a.lut } : null;
   a.film = a.film ? { ...a.film } : null;
@@ -367,7 +386,8 @@ function curveIsIdentity(pts) {
 // A layer's curves, mixer, wheels, look and film, compared as the photo's are.
 function canonAdjStruct(adj) {
   return [...CURVE_CHANNELS.map((c) => (curveIsIdentity(adj[c.k]) ? "" : canonCurve(adj[c.k]))),
-          canonHsl(adj.hsl), canonGrading(adj.grading), canonLut(adj.lut), canonFilm(adj.film)];
+          canonHsl(adj.hsl), canonPoints(adj.points), canonGrading(adj.grading),
+          canonLut(adj.lut), canonFilm(adj.film)];
 }
 
 // Mirrors editing.PART_OPS / PART_TYPES / PART_MAX. A mask stacks more shapes
@@ -658,6 +678,7 @@ const SHORTCUT_TIPS = {
   "#edit-apply-more": ["Apply this edit to more photos", null],
   "#preset-open": ["Presets: apply one, or save this edit as one", null],
   "#wb-pick": ["White balance — click something that should be grey", null],
+  "#point-pick": ["Pick a colour off the photo to move it, and only it", null],
   "#wb-reset": ["Zero Temperature and Tint", null],
   "#crop-tool": ["Crop — drag a box on the photo", null],
   "#crop-reset": ["Back to the whole frame, level", null],
@@ -4675,6 +4696,8 @@ const HSL_FIELDS = [
     hint: "How much of this colour there is. At -100 the band goes grey." },
   { k: "lum", label: "Luminance",
     hint: "Brighter or darker, as an exposure change on this colour. Greys and near-greys are left alone." },
+  { k: "clean", label: "Clean", min: 0,
+    hint: "Takes this colour's opposite out of it, as Clean in the Color panel does to every colour." },
 ];
 const hslState = { band: "red", built: false };
 
@@ -4692,7 +4715,7 @@ function buildHslFields() {
   wrap.innerHTML = HSL_FIELDS.map((f) =>
     `<label class="look-row" title="${escapeHtml(f.hint)}">` +
     `<span class="look-label">${f.label}</span>` +
-    `<input type="range" data-hsl="${f.k}" ${sliderAttrs({ min: -100, max: 100 })} />` +
+    `<input type="range" data-hsl="${f.k}" ${sliderAttrs({ min: f.min ?? -100, max: 100 })} />` +
     `<span class="look-val" data-hsl-val="${f.k}"></span></label>`).join("");
   wrap.addEventListener("input", (e) => {
     const sl = e.target.closest("input[type=range][data-hsl]");
@@ -4706,7 +4729,12 @@ function renderHslPanel() {
   if (!$("#hsl-fields")) return;
   buildHslFields();
   const touched = HSL_BANDS.filter((b) => hslBandTouched(b.k)).length;
-  $("#hsl-summary-state").textContent = touched ? `\u00b7 ${touched} band${touched > 1 ? "s" : ""}` : "";
+  // Only the colours something is done to, as the server keeps them.
+  const picked = currentPoints().filter((q) => HSL_FIELDS.some((f) => r1(q[f.k]) !== 0)).length;
+  $("#hsl-summary-state").textContent = [
+    touched ? `\u00b7 ${touched} band${touched > 1 ? "s" : ""}` : "",
+    picked ? `\u00b7 ${picked} colour${picked > 1 ? "s" : ""}` : "",
+  ].filter(Boolean).join(" ");
   $("#hsl-bands").innerHTML = HSL_BANDS.map((b) =>
     `<button type="button" class="hsl-band${b.k === hslState.band ? " active" : ""}` +
     `${hslBandTouched(b.k) ? " touched" : ""}" data-band="${b.k}" title="${b.label}">` +
@@ -4723,9 +4751,11 @@ function renderHslPanel() {
     const v = r1(vals[f.k]);
     const sl = $(`#hsl-fields input[data-hsl="${f.k}"]`);
     sl.value = v;
+    paintSlider(sl);   // set here, not dragged: the fill is not redrawn on its own
     $(`#hsl-fields [data-hsl-val="${f.k}"]`).textContent = fmtSlider(sl, v);
   }
   $("#hsl-reset").disabled = !hslBandTouched(hslState.band);
+  renderPointsPanel();
 }
 
 function updateHsl(patch) {
@@ -4740,6 +4770,120 @@ function updateHsl(patch) {
   renderHslPanel();
   setEditDirty();
   previewDuringDrag();
+}
+
+// ---------- picked colours ----------
+// Mirrors editing.POINTS_MAX and the colour range's default (rangemask
+// COLOR_DEFAULT). A picked colour is the colour under the eyedropper, read off
+// the photo as shot, and moves what is that colour by a band's four values.
+const POINTS_MAX = 8;
+const POINT_RANGE_NEW = 40;
+const POINT_FIELDS = [
+  { k: "range", label: "Range", min: 0,
+    hint: "How near a colour has to be to the picked one to move with it. Low takes that exact colour; high takes its whole family." },
+  ...HSL_FIELDS,
+];
+const pointState = { sel: -1, built: false };
+
+function currentPoints() { return adjTarget().points || []; }
+
+function buildPointFields() {
+  if (pointState.built) return;
+  const wrap = $("#point-fields");
+  if (!wrap) return;
+  wrap.innerHTML = POINT_FIELDS.map((f) =>
+    `<label class="look-row" title="${escapeHtml(f.hint)}">` +
+    `<span class="look-label">${f.label}</span>` +
+    `<input type="range" data-point="${f.k}" ${sliderAttrs({ min: f.min ?? -100, max: 100 })} />` +
+    `<span class="look-val" data-point-val="${f.k}"></span></label>`).join("") +
+    `<label class="point-on"><input type="checkbox" id="point-enabled" /> On</label>`;
+  wrap.addEventListener("input", (e) => {
+    const sl = e.target.closest("input[type=range][data-point]");
+    if (sl) updatePoint({ [sl.dataset.point]: parseFloat(sl.value) });
+  });
+  $("#point-enabled").addEventListener("change", (e) => updatePoint({ enabled: e.target.checked }));
+  pointState.built = true;
+}
+
+function renderPointsPanel() {
+  if (!$("#point-list")) return;
+  buildPointFields();
+  const list = currentPoints();
+  if (pointState.sel >= list.length) pointState.sel = list.length - 1;
+  $("#point-list").innerHTML = list.map((p, i) => {
+    const [r, g, b] = p.color;
+    return `<button type="button" class="hsl-band${i === pointState.sel ? " active" : ""}` +
+      `${p.enabled === false ? " off" : ""}" data-point-idx="${i}" ` +
+      `title="Colour ${i + 1}, as shot (before any edit): rgb ${r}, ${g}, ${b}">` +
+      `<span class="hsl-swatch" style="background:rgb(${r},${g},${b})"></span>` +
+      `<span class="hsl-band-label">${i + 1}</span></button>`;
+  }).join("");
+  $$("#point-list .hsl-band").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      pointState.sel = Number(btn.dataset.pointIdx);
+      renderPointsPanel();
+    });
+  });
+  $("#point-pick").disabled = list.length >= POINTS_MAX;
+  const p = list[pointState.sel];
+  $("#point-fields").classList.toggle("hidden", !p);
+  $("#point-remove").classList.toggle("hidden", !p);
+  if (!p) return;
+  for (const f of POINT_FIELDS) {
+    const v = r1(f.k === "range" ? (p.range ?? POINT_RANGE_NEW) : p[f.k]);
+    const sl = $(`#point-fields input[data-point="${f.k}"]`);
+    sl.value = v;
+    paintSlider(sl);
+    $(`#point-fields [data-point-val="${f.k}"]`).textContent = fmtSlider(sl, v);
+  }
+  $("#point-enabled").checked = p.enabled !== false;
+}
+
+function updatePoint(patch) {
+  const list = currentPoints().map((q) => ({ ...q }));
+  if (!list[pointState.sel]) return;
+  Object.assign(list[pointState.sel], patch);
+  adjTarget().points = list;
+  renderHslPanel();
+  setEditDirty();
+  previewDuringDrag();
+}
+
+function removePoint() {
+  const list = currentPoints().filter((_, i) => i !== pointState.sel);
+  adjTarget().points = list.length ? list : null;
+  pointState.sel = Math.min(pointState.sel, list.length - 1);
+  renderHslPanel();
+  setEditDirty();
+  fetchEditPreview(true);
+}
+
+async function pickPoint(f) {
+  if (!editSession.relPath) return;
+  setEditTool(null);
+  $("#edit-status").textContent = "reading the colour\u2026";
+  try {
+    // Read off the photo as shot, as the white balance is: that is what a
+    // picked colour selects on, so a later white balance cannot move it.
+    const res = await fetch("/api/edit/sample", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rel_path: editSession.relPath, x: f.x, y: f.y, edit: opticsPayload() }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      $("#edit-status").textContent = err.detail || `colour pick failed: ${res.status}`;
+      return;
+    }
+    const { color } = await res.json();
+    const list = currentPoints().slice(0, POINTS_MAX - 1);
+    list.push({ color, range: POINT_RANGE_NEW, enabled: true });
+    adjTarget().points = list;
+    pointState.sel = list.length - 1;
+    $("#edit-hsl-group").open = true;
+    renderPointsPanel();
+    $("#edit-status").textContent = "";
+  } catch { $("#edit-status").textContent = "colour pick error"; }
 }
 
 // ---------- film emulation ----------
@@ -6268,6 +6412,7 @@ function setEditTool(tool) {
   $$("#edit-modal [data-add-part]").forEach((b) =>
     b.classList.toggle("armed", b.dataset.addPart === tool));
   $("#wb-pick").classList.toggle("armed", tool === "wb");
+  $("#point-pick").classList.toggle("armed", tool === "point");
   $$("#edit-repair-group [data-repair-tool]").forEach((b) =>
     b.classList.toggle("armed", b.dataset.repairTool === tool));
   const wrap = $(".edit-canvas-wrap");
@@ -6275,12 +6420,13 @@ function setEditTool(tool) {
     || tool === "redeye" || tool === "peteye");
   wrap.classList.toggle("tool-brush", tool === "brush" || isRepairBrush(tool));
   wrap.classList.toggle("tool-crop", tool === "crop");
-  wrap.classList.toggle("tool-wb", tool === "wb");
+  wrap.classList.toggle("tool-wb", tool === "wb" || tool === "point");
   const text = tool === "radial" ? "Drag on the photo to place the ellipse"
     : tool === "linear" ? "Drag on the photo to set the gradient direction"
     : tool === "brush" ? "Paint over the area · Alt = erase · [ ] = brush size"
     : tool === "crop" ? "Drag the box or its corners · press Crop again when done"
     : tool === "wb" ? "Click something that should be grey — a white wall, a grey card, a white shirt"
+    : tool === "point" ? "Click the colour to move: a muddy sky, dull water, olive leaves"
     : tool === "spot" ? "Click a dust spot or blemish · [ ] = size"
     : tool === "heal" ? "Paint over what should go; it fills from around it · [ ] = size"
     : tool === "fill" ? "Paint over what should go; a model draws skin, hair or whatever is around it · [ ] = size"
@@ -7686,6 +7832,13 @@ function overlayDown(e) {
     e.preventDefault();
     return;
   }
+  if (editSession.tool === "point" && !panButton) {
+    // Beside the photo there is no colour to pick; the server would clamp the
+    // point to the frame's edge and pick that. The tool stays armed.
+    if (f0.x >= 0 && f0.x <= 1 && f0.y >= 0 && f0.y <= 1) pickPoint(f0);
+    e.preventDefault();
+    return;
+  }
   if (isRepairTool(editSession.tool) && !panButton) {
     repairDown(e, f0);
     return;
@@ -8054,6 +8207,9 @@ function bindMaskUi() {
     updateGradeZone(Object.fromEntries(GRADE_FIELDS.map((f) => [f.k, 0]))));
   $("#wb-pick").addEventListener("click", () =>
     setEditTool(editSession.tool === "wb" ? null : "wb"));
+  $("#point-pick").addEventListener("click", () =>
+    setEditTool(editSession.tool === "point" ? null : "point"));
+  $("#point-remove").addEventListener("click", removePoint);
   $("#wb-reset").addEventListener("click", () => {
     // Zeroes whatever the Color panel is showing, which is the mask's own pair
     // while one is selected and the global one otherwise.
@@ -8185,8 +8341,8 @@ function slotSummary(e) {
   const parts = [];
   const any = (keys) => keys.some((k) => Math.abs(Number(e[k]) || 0) > 1e-6);
   if (any(["exposure", "contrast", "highlights", "shadows", "whites", "blacks"])) parts.push("light");
-  if (any(["temp", "tint", "vibrance", "saturation"])) parts.push("colour");
-  if (e.hsl) parts.push("mixer");
+  if (any(["temp", "tint", "vibrance", "saturation", "clean"])) parts.push("colour");
+  if (e.hsl || canonPoints(e.points)) parts.push("mixer");
   if (e.grading) parts.push("grading");
   if (CURVE_CHANNELS.some((c) => !curveIsIdentity(e[c.k]))) parts.push("curves");
   if (any(["clarity", "texture", "dehaze", "denoise", "sharpen", "vignette",
@@ -10224,6 +10380,7 @@ const QUICK_ROWS = [
   { k: "tint", label: "Tint" },
   { k: "clarity", label: "Clarity" },
   { k: "vibrance", label: "Vibrance" },
+  { k: "clean", label: "Clean" },
   // The editor's own steps for its Straighten slider: 0.1 a key, 1 with Shift.
   { k: "tilt", label: "Straighten", small: 0.1, big: 1, says: ["0.1°", "1°"] },
 ].map((r) => ({ small: 5, big: 20, says: [String(r.small || 5), String(r.big || 20)], ...r }));

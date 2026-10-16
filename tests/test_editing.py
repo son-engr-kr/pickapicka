@@ -220,6 +220,8 @@ LAYER_PARTS = {
     "curve_g": [[0.0, 0.0], [0.5, 0.15], [1.0, 1.0]],
     "film": {"enabled": True, "strength": 100, "contrast": 80, "warmth": 60, "crosstalk": 70},
     "vignette": -90,
+    "clean": 60,
+    "points": [{"color": [175, 70, 50], "range": 60, "hue": 60}],
 }
 
 
@@ -855,6 +857,186 @@ def test_hsl_is_pointwise() -> None:
     edit = {"hsl": {"aqua": {"sat": 70, "lum": -40}}}
     assert np.array_equal(editing.render(small, edit), editing.render(big, edit)[::5, ::5])
     assert editing.effect_padding(edit, 4000.0) == editing.effect_padding({}, 4000.0)
+
+
+# ----- clean colour ---------------------------------------------------------
+
+def test_clean_takes_the_opposite_out_and_keeps_the_strongest_channel() -> None:
+    """A muddy sky loses its yellow (red and green light) while its blue stays
+    where it was, so nothing can clip; this is the curves pulled down under the
+    sky, made inside each pixel. At 50 every ratio to the strongest channel goes
+    to the power 1.5."""
+    sky = _patch((95, 145, 215))
+    r, g, b = editing.render(sky, {"clean": 50})[0, 0].astype(int)
+    assert b == 215
+    assert abs(r - 215 * (95 / 215) ** 1.5) <= 1
+    assert abs(g - 215 * (145 / 215) ** 1.5) <= 1
+
+
+@pytest.mark.parametrize("rgb", [(200, 60, 60), (220, 200, 80), (90, 130, 60),
+                                 (70, 140, 150), (95, 145, 215), (190, 80, 150)])
+def test_clean_works_on_every_hue(rgb: tuple[int, int, int]) -> None:
+    """One operator for every colour: each loses its own opposite."""
+    out = editing.render(_patch(rgb), {"clean": 60})[0, 0].astype(int)
+    src = np.asarray(rgb)
+    assert out.max() == src.max(), "the strongest channel must stay"
+    assert out.max() - out.min() > src.max() - src.min() + 5, "the colour must get cleaner"
+    assert (out <= src).all(), "clean only takes light away"
+
+
+def test_clean_leaves_greys_alone() -> None:
+    for v in (0, 30, 128, 250):
+        grey = _patch((v, v, v))
+        assert np.array_equal(editing.render(grey, {"clean": 100}), grey)
+    near = _patch((128, 130, 129))      # a hue that is only noise
+    assert np.abs(editing.render(near, {"clean": 100}).astype(int) - near).max() <= 1
+
+
+def test_clean_by_band_hits_only_its_band() -> None:
+    blue, red = _patch((40, 60, 200)), _patch((200, 40, 40))
+    edit = {"hsl": {"blue": {"clean": 100}}}
+    assert not np.array_equal(editing.render(blue, edit), blue)
+    assert np.array_equal(editing.render(red, edit), red)
+
+
+def test_clean_by_band_and_overall_multiply() -> None:
+    """Two passes of the same power: 50 overall and 50 on the band are the
+    ratios to the power 1.5 x 1.5."""
+    blue = _patch((40, 40, 200))                     # on the Blue band's centre
+    r = int(editing.render(blue, {"clean": 50, "hsl": {"blue": {"clean": 50}}})[0, 0, 0])
+    assert abs(r - 200 * (40 / 200) ** 2.25) <= 1
+
+
+def test_clean_ranges() -> None:
+    assert editing.normalize({"clean": 140})["clean"] == 100
+    assert editing.normalize({"clean": -40})["clean"] == 0
+    assert editing.normalize_hsl({"blue": {"clean": -40}}) is None, "clean only takes away"
+    assert editing.normalize_hsl({"blue": {"clean": 140, "sat": -140}}) == \
+        {"blue": {"sat": -100, "clean": 100}}
+    assert editing.is_neutral({"clean": 0}) and not editing.is_neutral({"clean": 5})
+
+
+def test_clean_is_pointwise() -> None:
+    rng = np.random.default_rng(7)
+    small = rng.integers(0, 256, size=(24, 24, 3), dtype=np.uint8)
+    big = np.repeat(np.repeat(small, 5, axis=0), 5, axis=1)
+    edit = {"clean": 70, "hsl": {"green": {"clean": 40}}}
+    assert np.array_equal(editing.render(small, edit), editing.render(big, edit)[::5, ::5])
+    assert editing.effect_padding(edit, 4000.0) == editing.effect_padding({}, 4000.0)
+
+
+def test_skin_is_held_against_clean_and_picked_colours() -> None:
+    """Skin tone holds the skin to the render without the colour edits, and
+    both of these are colour edits: Clean 50 raises a light skin's chroma by 44%."""
+    e = editing.normalize({"clean": 40, "points": [{"color": [220, 170, 140], "sat": 30}]})
+    ref = editing.colour_neutral(e)
+    assert ref["clean"] == 0 and ref["points"] is None
+    assert not editing._colour_is_neutral(editing.normalize({"clean": 10}))
+    assert not editing._colour_is_neutral(e)
+
+
+# ----- picked colours -------------------------------------------------------
+
+_SKY, _ORANGE = (95, 145, 215), (220, 130, 60)
+
+
+def _two_colours() -> np.ndarray:
+    img = np.zeros((40, 80, 3), dtype=np.uint8)
+    img[:, :40] = _SKY
+    img[:, 40:] = _ORANGE
+    return img
+
+
+def test_points_normalize() -> None:
+    got = editing.normalize_points([
+        {"color": [95, 145, 215], "sat": 150, "clean": -20},
+        {"color": [1, 2, 3]},                               # nothing done to it
+        {"color": [1, 2], "sat": 10},                       # not a colour
+        {"color": [300, -5, 9.6], "range": 120, "hue": 10, "enabled": False, "preset": "p1"},
+    ])
+    assert got == [
+        {"color": [95, 145, 215], "range": 40, "enabled": True, "sat": 100},
+        {"color": [255, 0, 10], "range": 100, "enabled": False, "hue": 10, "preset": "p1"},
+    ]
+    many = [{"color": [i, 0, 0], "sat": 10} for i in range(20)]
+    assert len(editing.normalize_points(many)) == editing.POINTS_MAX
+    assert editing.normalize_points([]) is None and editing.normalize_points("x") is None
+
+
+def test_a_picked_colour_moves_only_that_colour() -> None:
+    img = _two_colours()
+    out = editing.render(img, {"points": [{"color": list(_SKY), "sat": -100}]})
+    sky = out[20, 10].astype(int)
+    assert sky.max() - sky.min() < 20, "the picked sky should go grey"
+    assert np.array_equal(out[:, 40:], img[:, 40:]), "the orange was not picked"
+
+
+def test_a_picked_colour_selects_on_the_photo_as_shot() -> None:
+    """A white balance moved afterwards must not change what a picked colour
+    catches: it is read off the ungraded photo, as the eyedropper reads it."""
+    img = _two_colours()
+    point = {"points": [{"color": list(_SKY), "range": 20, "sat": -100}]}
+    for temp in (0, 100):
+        with_point = editing.render(img, {"temp": temp, **point}).astype(int)
+        without = editing.render(img, {"temp": temp}).astype(int)
+        moved = np.abs(with_point - without).max(axis=2) > 3
+        assert moved[:, :40].all() and not moved[:, 40:].any(), f"temp {temp}"
+
+
+def test_picked_colours_stack() -> None:
+    """The second still catches the sky after the first turned it, and works on
+    what the first made: turned, then greyed."""
+    img = _two_colours()
+    turn = {"color": list(_SKY), "hue": 100}
+    grey = {"color": list(_SKY), "sat": -100}
+    out = editing.render(img, {"points": [turn, grey]})[20, 10].astype(int)
+    assert out.max() - out.min() < 20
+
+
+def test_a_switched_off_colour_does_nothing_but_is_kept() -> None:
+    img = _two_colours()
+    edit = {"points": [{"color": list(_SKY), "sat": -100, "enabled": False}]}
+    assert editing.is_neutral(edit)
+    assert np.array_equal(editing.render(img, edit), img)
+    assert editing.normalize(edit)["points"][0]["enabled"] is False
+
+
+def test_picked_colours_need_the_photo_as_shot() -> None:
+    e = editing.normalize({"points": [{"color": list(_SKY), "sat": -50}]})
+    with pytest.raises(AssertionError, match="as shot"):
+        editing._grade(_two_colours(), e)
+
+
+def test_a_picked_colour_does_not_speckle_noise() -> None:
+    """Read pixel by pixel, a noisy patch on the edge of the selection must not
+    come out speckled: no more noise added than the band doing the same move
+    adds, give or take a half, at any range."""
+    rng = np.random.default_rng(0)
+    img = np.clip(np.full((120, 160, 3), _SKY, np.float32) + rng.normal(0, 2, (120, 160, 3)),
+                  0, 255).astype(np.uint8)
+
+    def added(edit: dict) -> float:
+        d = editing.render(img, edit).astype(np.float32) - img
+        return float((d - d.mean(axis=(0, 1))).std(axis=(0, 1)).max())
+
+    band = added({"hsl": {"blue": {"sat": -100}}})
+    worst = max(added({"points": [{"color": [110, 160, 215], "range": r, "sat": -100}]})
+                for r in range(4, 60, 4))
+    assert worst < 1.5 * band, (worst, band)
+
+
+def test_picked_colours_merge_by_appending() -> None:
+    base = {"points": [{"color": [1, 2, 3], "sat": 10}]}
+    over = {"points": [{"color": [4, 5, 6], "lum": -10}]}
+    merged = editing.merge_additive(base, over)
+    assert [q["color"] for q in merged["points"]] == [[1, 2, 3], [4, 5, 6]]
+
+
+def test_sample_color_reads_the_patch_median() -> None:
+    img = _two_colours()
+    img[20, 10] = (255, 255, 255)            # a hot pixel the median must ignore
+    assert editing.sample_color(img, 10 / 79, 20 / 39) == list(_SKY)
+    assert editing.sample_color(img, 0.9, 0.5) == list(_ORANGE)
 
 
 # ----- per-channel tone curves --------------------------------------------

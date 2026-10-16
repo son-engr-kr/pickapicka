@@ -1706,6 +1706,19 @@ input[type="range"] { accent-color: var(--accent); }
 .hsl-reset:disabled { opacity: 0.4; }
 #hsl-summary-state { color: var(--accent); font-weight: 500;
   text-transform: none; letter-spacing: 0; }
+.hsl-points { margin-top: var(--s3); padding-top: var(--s2);
+  border-top: 1px solid var(--line); }
+.hsl-points-head { display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: var(--s1); }
+.hsl-points-title { font-size: var(--fs-sm); color: var(--ink-dim); }
+#point-pick { font-size: var(--fs-xs); padding: 3px 8px; }
+#point-pick.armed { border-color: var(--accent); color: var(--accent); }
+#point-pick:disabled { opacity: 0.4; }
+#point-list:empty { display: none; }
+#point-list .hsl-band.off { opacity: 0.45; }
+#point-fields.hidden, #point-remove.hidden { display: none; }
+.point-on { display: flex; align-items: center; gap: var(--s1);
+  font-size: var(--fs-xs); color: var(--ink-dim); margin-top: var(--s1); }
 
 /* ----- film panel ----- */
 .film-enable { display: flex; align-items: center; gap: var(--s2);

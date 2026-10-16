@@ -337,23 +337,42 @@ def _lab_parts(lab: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray,
     return lab[..., 0], a, b, chroma, _sat(chroma)
 
 
-def _color_distance(lab: np.ndarray, sample_lab: np.ndarray) -> np.ndarray:
-    """Squared hue-dominant Lab distance from every pixel of `lab` to one
-    sampled Lab triple.
+def color_parts(lab: np.ndarray) -> tuple[np.ndarray, ...]:
+    """What the metric reads of each pixel of `lab`, worked out once for a
+    frame however many colours are then measured against it."""
+    return _lab_parts(lab)
+
+
+def _color_distance(parts: tuple[np.ndarray, ...], sample_lab: np.ndarray) -> np.ndarray:
+    """Squared hue-dominant Lab distance from every pixel (its `color_parts`)
+    to one sampled Lab triple.
 
     Δa,Δb is split into its chroma and hue parts by the CIE94 identity
     Δa² + Δb² = ΔC² + ΔH², which costs one subtraction instead of two atan2s
     over the frame, and gives ΔH the sqrt(C1*C2) scaling that makes it fade out
-    on neutrals.
+    on neutrals. In place, term by term: the colour mixer measures every pixel
+    of the frame once per picked colour.
     """
-    lum, a, b, chroma, sat = _lab_parts(lab)
-    slum, sa, sb, schroma, ssat = _lab_parts(sample_lab.reshape(1, 1, 3))
-    d_ab2 = (a - sa) ** 2 + (b - sb) ** 2
-    d_chroma = chroma - schroma
-    d_hue2 = np.maximum(0.0, d_ab2 - d_chroma * d_chroma)
-    return (((lum - slum) / _K_LIGHT) ** 2
-            + (sat - ssat) ** 2
-            + d_hue2 / (_K_HUE * _K_HUE))
+    lum, a, b, chroma, sat = parts
+    slum, sa, sb, schroma, ssat = (float(v[0, 0]) for v in _lab_parts(sample_lab.reshape(1, 1, 3)))
+    d = a - sa
+    d *= d
+    t = b - sb
+    t *= t
+    d += t                                   # Δa² + Δb²
+    np.subtract(chroma, schroma, out=t)
+    t *= t
+    d -= t                                   # ΔH², by the identity
+    np.maximum(d, 0.0, out=d)
+    d *= 1.0 / (_K_HUE * _K_HUE)
+    np.subtract(sat, ssat, out=t)
+    t *= t
+    d += t
+    np.subtract(lum, slum, out=t)
+    t *= 1.0 / _K_LIGHT
+    t *= t
+    d += t
+    return d
 
 
 def color_alpha(rgb: np.ndarray, params: dict[str, Any],
@@ -369,17 +388,30 @@ def color_alpha(rgb: np.ndarray, params: dict[str, Any],
     assert "samples" in params and params["samples"], "colour params have no samples"
     for key in ("range", "feather"):
         assert key in params, f"colour params missing {key}; normalize first"
-    thresh = (float(params["range"]) / 100.0) ** 2 * _COLOR_RANGE_MAX
-    band = max(_COLOR_BAND_FLOOR, thresh * float(params["feather"]) / 100.0)
-
-    lab = _lab_selector(rgb)
-    samples = np.asarray(params["samples"], dtype=np.float32).reshape(-1, 1, 3) / 255.0
-    sample_lab = cv2.cvtColor(np.ascontiguousarray(samples), cv2.COLOR_RGB2Lab)
-
-    best = _color_distance(lab, sample_lab[0])
-    for i in range(1, len(sample_lab)):
-        np.minimum(best, _color_distance(lab, sample_lab[i]), out=best)
-    dist = np.sqrt(best, out=best)
-    alpha = 1.0 - _smoothstep(np.clip((dist - (thresh - band / 2.0)) / band, 0.0, 1.0))
+    alpha = color_weight(color_parts(_lab_selector(rgb)), params["samples"], params["range"],
+                         params["feather"])
     h, w = out_hw if out_hw is not None else rgb.shape[:2]
     return _to_output(alpha, h, w)
+
+
+def color_weight(parts: tuple[np.ndarray, ...], samples: list[list[int]], rng: float,
+                 feather: float, band_min: float = _COLOR_BAND_FLOOR) -> np.ndarray:
+    """How much each pixel is one of the sampled 8-bit RGB colours, in [0,1], by
+    the metric above. `parts` is `color_parts` of the pixels in CIE Lab (from
+    float RGB in [0,1]). `band_min` is the narrowest the ramp may be, in the
+    metric's units.
+
+    Shared by the colour range, which hands it a smoothed selector, and by the
+    colour mixer's own colours (`editing.normalize_points`), which hand it the
+    pixels themselves: "this colour" then means the same thing in both.
+    """
+    thresh = (float(rng) / 100.0) ** 2 * _COLOR_RANGE_MAX
+    band = max(band_min, thresh * float(feather) / 100.0)
+    sample = np.asarray(samples, dtype=np.float32).reshape(-1, 1, 3) / 255.0
+    sample_lab = cv2.cvtColor(np.ascontiguousarray(sample), cv2.COLOR_RGB2Lab)
+
+    best = _color_distance(parts, sample_lab[0])
+    for i in range(1, len(sample_lab)):
+        np.minimum(best, _color_distance(parts, sample_lab[i]), out=best)
+    dist = np.sqrt(best, out=best)
+    return 1.0 - _smoothstep(np.clip((dist - (thresh - band / 2.0)) / band, 0.0, 1.0))

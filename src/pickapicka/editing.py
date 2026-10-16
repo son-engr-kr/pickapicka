@@ -69,6 +69,7 @@ DEFAULT_EDIT: dict[str, Any] = {
     "tint": 0,         # magenta (+) / green (-)
     "vibrance": 0,
     "saturation": 0,
+    "clean": 0,        # 0..100: takes each colour's opposite out of it; see _apply_clean
     "clarity": 0,
     "texture": 0,      # fine detail; - smooths skin, + finds pores and fabric
     "dehaze": 0,       # - puts atmosphere back, + cuts through it
@@ -97,6 +98,7 @@ DEFAULT_EDIT: dict[str, Any] = {
     "curve_g": [[0.0, 0.0], [1.0, 1.0]],
     "curve_b": [[0.0, 0.0], [1.0, 1.0]],
     "hsl": None,       # colour mixer; see the "colour mixer" section below
+    "points": None,    # the mixer's own picked colours; see normalize_points
     "grading": None,   # three-way colour wheels; see the grading module
     # Repairs, applied before anything tonal. See `_repair`.
     "healing": None,   # heal / clone / spot; see the healing module
@@ -125,6 +127,7 @@ _RANGES: dict[str, tuple[float, float]] = {
     "tint": (-100, 100),
     "vibrance": (-100, 100),
     "saturation": (-100, 100),
+    "clean": (0, 100),
     "clarity": (-100, 100),
     "texture": (-100, 100),
     "dehaze": (-100, 100),
@@ -440,12 +443,12 @@ PART_MAX = 8               # parts stacked onto one mask
 # colour or reshape one tonal range in one place.
 LOCAL_KEYS: tuple[str, ...] = (
     "exposure", "contrast", "highlights", "shadows", "whites", "blacks",
-    "temp", "tint", "vibrance", "saturation", "clarity", "texture",
+    "temp", "tint", "vibrance", "saturation", "clean", "clarity", "texture",
     "dehaze", "denoise", "sharpen", "sharpen_radius", "sharpen_detail",
     "sharpen_masking",
     "blur", "motion", "motion_angle", "glow", "pixelate", "vignette",
 )
-LOCAL_STRUCT_KEYS: tuple[str, ...] = CURVE_KEYS + ("hsl", "grading", "lut", "film")
+LOCAL_STRUCT_KEYS: tuple[str, ...] = CURVE_KEYS + ("hsl", "points", "grading", "lut", "film")
 
 # Keys that describe *how* an effect looks rather than how much of it there is —
 # on their own they change nothing, so they do not make a mask "active".
@@ -524,6 +527,7 @@ def _neutral_adj() -> dict[str, Any]:
 _STRUCT_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     **{k: (lambda raw: _clean_curve(raw)) for k in CURVE_KEYS},
     "hsl": lambda raw: normalize_hsl(raw),
+    "points": lambda raw: normalize_points(raw),
     "grading": lambda raw: grading_mod.normalize(raw),
     "lut": lambda raw: normalize_lut_ref(raw),
     "film": lambda raw: film_mod.normalize(raw),
@@ -726,6 +730,8 @@ def _adj_is_neutral(adj: dict[str, Any]) -> bool:
     """
     if any(adj.get(k) is not None for k in ("hsl", "grading", "lut", "film")):
         return False    # each is None when it would change nothing
+    if points_active(adj.get("points")):
+        return False
     if not all(_curve_is_identity(adj.get(k) or DEFAULT_EDIT[k]) for k in CURVE_KEYS):
         return False
     return all(abs(float(adj.get(k, DEFAULT_EDIT[k]) or 0)
@@ -784,6 +790,7 @@ def normalize(edit: dict[str, Any] | None) -> dict[str, Any]:
     out["crop"] = None
     out["film"] = None
     out["hsl"] = None
+    out["points"] = None
     out["grading"] = None
     out["healing"] = None
     out["redeye"] = None
@@ -811,6 +818,8 @@ def normalize(edit: dict[str, Any] | None) -> dict[str, Any]:
         out["redeye"] = redeye_mod.normalize(edit["redeye"])
     if edit.get("hsl") is not None:
         out["hsl"] = normalize_hsl(edit["hsl"])
+    if edit.get("points") is not None:
+        out["points"] = normalize_points(edit["points"])
     if edit.get("grading") is not None:
         out["grading"] = grading_mod.normalize(edit["grading"])
     if edit.get("film") is not None:
@@ -899,6 +908,10 @@ def merge_additive(base: dict[str, Any] | None,
         for band, vals in over["hsl"].items():
             merged.setdefault(band, {}).update(vals)
         out["hsl"] = merged or None
+    # Picked colours are appended, like masks: a preset that cleans a sky must
+    # not take away the colours someone picked on this photo.
+    if over["points"] is not None:
+        out["points"] = ((out["points"] or []) + over["points"])[:POINTS_MAX]
     if over["grading"] is not None:
         # Zone by zone and key by key, for the same reason the mixer merges that
         # way: a preset that only warms the highlights must not clear the rest.
@@ -948,6 +961,8 @@ def is_neutral(edit: dict[str, Any] | None) -> bool:
         return False
     if e["hsl"] is not None:
         return False   # normalize_hsl returns None unless a band is off neutral
+    if points_active(e["points"]):
+        return False   # normalize_points drops a colour nothing is done to
     if e["grading"] is not None:
         return False   # likewise: grading.normalize drops anything neutral
     if e["healing"] is not None or e["redeye"] is not None:
@@ -1162,18 +1177,20 @@ def _apply_clarity(rgb: np.ndarray, clarity: int, frame_long: float) -> np.ndarr
 
 # ----- colour mixer (HSL) -------------------------------------------------
 #
-# Eight hue bands, each with hue / saturation / luminance. Stored sparsely —
-# only values that are actually off neutral — so a neutral mixer normalizes to
-# None and never makes an edit look non-neutral, and the edit hash stays short.
-#
-# Global only, no per-mask version, and deliberately so: the mixer is a
-# statement about a colour wherever it appears in the frame, and a mask already
-# answers "only here" better than eight bands could. Lightroom draws the same
-# line for the same reason.
+# Eight hue bands, each with hue / saturation / luminance and clean (see
+# "clean colour" below). Stored sparsely, only values that are actually off
+# neutral, so a neutral mixer normalizes to None and never makes an edit look
+# non-neutral, and the edit hash stays short. Beside the bands, the colours
+# picked off the photo (see "picked colours"), which take the same four
+# moves to one colour rather than to a slice of the hue circle.
 
 HSL_BANDS: tuple[str, ...] = ("red", "orange", "yellow", "green",
                               "aqua", "blue", "purple", "magenta")
-HSL_KEYS: tuple[str, ...] = ("hue", "sat", "lum")
+HSL_KEYS: tuple[str, ...] = ("hue", "sat", "lum", "clean")
+# The three the mixer applies itself; clean is its own stage, `_apply_clean`.
+_HSL_MOVES: tuple[str, ...] = ("hue", "sat", "lum")
+# Clean only takes away (see `_apply_clean`); the rest go either way.
+_HSL_RANGES: dict[str, tuple[float, float]] = {"clean": (0.0, 100.0)}
 
 # Where each band sits on the hue circle, in degrees.
 _HSL_CENTRES = (0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 285.0, 320.0)
@@ -1191,7 +1208,7 @@ _HSL_LUM_EV = 2.8
 # zones fades its lightness and hue edits on low-chroma pixels by
 # (1 - C/128)^2 (src/iop/colorzones.c); process 2 weights by its complement.
 _HSL_CHROMA_FULL = 128.0
-_HSL_GREY_GUARD = 0.12   # saturation below which the mixer lets go; see _apply_hsl
+_HSL_GREY_GUARD = 0.12   # saturation below which the mixer lets go; see _move_colours
 
 
 def normalize_hsl(raw: Any) -> dict[str, dict[str, int]] | None:
@@ -1205,20 +1222,34 @@ def normalize_hsl(raw: Any) -> dict[str, dict[str, int]] | None:
         src = raw.get(band)
         if not isinstance(src, dict):
             continue
-        vals = {}
-        for key in HSL_KEYS:
-            if src.get(key) is None:
-                continue
-            val = _tenth(_fnum(src[key], -100.0, 100.0, 0.0))
-            if val:
-                vals[key] = val
+        vals = _hsl_values(src)
         if vals:
             out[band] = vals
     return out or None
 
 
-def _hsl_luts(hsl: dict[str, dict[str, int]]) -> tuple[np.ndarray, ...]:
-    """One 360-entry lookup per parameter, indexed by hue in degrees.
+def _hsl_values(src: dict[str, Any]) -> dict[str, int]:
+    """A band's or a picked colour's four values, clamped, the neutral ones left
+    out."""
+    vals = {}
+    for key in HSL_KEYS:
+        if src.get(key) is None:
+            continue
+        lo, hi = _HSL_RANGES.get(key, (-100.0, 100.0))
+        val = _tenth(_fnum(src[key], lo, hi, 0.0))
+        if val:
+            vals[key] = val
+    return vals
+
+
+def _hsl_sets(hsl: dict[str, dict[str, int]] | None, keys: tuple[str, ...]) -> bool:
+    """Whether a normalized mixer sets any of `keys` in any band."""
+    return hsl is not None and any(k in vals for vals in hsl.values() for k in keys)
+
+
+def _hsl_luts(hsl: dict[str, dict[str, int]],
+              keys: tuple[str, ...] = _HSL_MOVES) -> tuple[np.ndarray, ...]:
+    """One 360-entry lookup per parameter in `keys`, indexed by hue in degrees.
 
     The eight band values are interpolated around the circle with a smoothstep
     between neighbours rather than a per-band window. Two things fall out of
@@ -1232,7 +1263,7 @@ def _hsl_luts(hsl: dict[str, dict[str, int]]) -> tuple[np.ndarray, ...]:
     centres = np.asarray(_HSL_CENTRES, dtype=np.float32)
     xs = np.concatenate([centres - 360.0, centres, centres + 360.0])
     luts = []
-    for key in HSL_KEYS:
+    for key in keys:
         vals = np.asarray([hsl.get(b, {}).get(key, 0) for b in HSL_BANDS],
                           dtype=np.float32)
         ys = np.concatenate([vals, vals, vals])
@@ -1244,7 +1275,20 @@ def _hsl_luts(hsl: dict[str, dict[str, int]]) -> tuple[np.ndarray, ...]:
 
 
 def _apply_hsl(rgb: np.ndarray, hsl: dict[str, dict[str, int]], pv: int = 1) -> np.ndarray:
-    """Rotate, saturate and lighten each hue band.
+    """Rotate, saturate and lighten each hue band (`_move_colours`)."""
+    hue_lut, sat_lut, lum_lut = _hsl_luts(hsl)
+    # H, L, S with H in degrees; the 1-degree quantization of the lookup is far
+    # below anything visible.
+    hls = cv2.cvtColor(np.clip(rgb, 0.0, 1.0), cv2.COLOR_RGB2HLS)
+    at = np.clip(hls[..., 0], 0.0, 359.0).astype(np.int32)
+    return _move_colours(rgb, hls, hue_lut[at], sat_lut[at], lum_lut[at], pv)
+
+
+def _move_colours(rgb: np.ndarray, hls: np.ndarray, hue_v: np.ndarray, sat_v: np.ndarray,
+                  lum_v: np.ndarray, pv: int) -> np.ndarray:
+    """Rotate, saturate and lighten each pixel by its own amounts, in slider
+    units: the mixer's maths, for its bands and its picked colours alike.
+    `hls` is `rgb`, clipped, in OpenCV's HLS, and is consumed.
 
     Every change is scaled by the pixel's own saturation, and that guard is the
     difference between a usable mixer and a noisy one. The hue of a near-grey
@@ -1253,20 +1297,15 @@ def _apply_hsl(rgb: np.ndarray, hsl: dict[str, dict[str, int]], pv: int = 1) -> 
     speckle a flat wall with two different corrections. Fading out below
     `_HSL_GREY_GUARD` means the mixer only ever moves colours that are there.
     """
-    hue_lut, sat_lut, lum_lut = _hsl_luts(hsl)
-    # H, L, S with H in degrees; the 1-degree quantization of the lookup is far
-    # below anything visible.
-    hls = cv2.cvtColor(np.clip(rgb, 0.0, 1.0), cv2.COLOR_RGB2HLS)
     h, lum, sat = hls[..., 0], hls[..., 1], hls[..., 2]
-    at = np.clip(h, 0.0, 359.0).astype(np.int32)
     grip = _smoothstep(np.clip(sat / _HSL_GREY_GUARD, 0.0, 1.0))
 
-    shift = hue_lut[at] / 100.0 * _HSL_HUE_SHIFT
+    shift = hue_v / 100.0 * _HSL_HUE_SHIFT
     hls[..., 0] = np.mod(h + shift * grip, 360.0)
-    gain = sat_lut[at] / 100.0
+    gain = sat_v / 100.0
     hls[..., 2] = np.clip(sat * (1.0 + gain * grip), 0.0, 1.0)
     if pv < 2:
-        k = lum_lut[at] / 100.0 * _HSL_LUM_MAX * grip
+        k = lum_v / 100.0 * _HSL_LUM_MAX * grip
         # Towards white or towards black, never past either: a multiplier would
         # clip the brightest band members and flatten them into one another.
         hls[..., 1] = np.clip(np.where(k >= 0.0, lum + (1.0 - lum) * k,
@@ -1280,7 +1319,6 @@ def _apply_hsl(rgb: np.ndarray, hsl: dict[str, dict[str, int]], pv: int = 1) -> 
     # how much colour the pixel really has (CIELAB chroma), so a shadow keeps
     # its place and a grey is left alone.
     out = cv2.cvtColor(hls, cv2.COLOR_HLS2RGB)
-    lum_v = lum_lut[at]
     if not np.any(lum_v):
         return out
     lab = cv2.cvtColor(np.clip(rgb, 0.0, 1.0), cv2.COLOR_RGB2LAB)
@@ -1288,6 +1326,187 @@ def _apply_hsl(rgb: np.ndarray, hsl: dict[str, dict[str, int]], pv: int = 1) -> 
     weight = 1.0 - (1.0 - np.minimum(chroma / _HSL_CHROMA_FULL, 1.0)) ** 2
     gain = np.exp2(lum_v / 100.0 * _HSL_LUM_EV * weight).astype(np.float32)
     return np.clip(_linear_to_srgb(_srgb_to_linear(out) * gain[..., None]), 0.0, 1.0)
+
+
+# ----- clean colour -------------------------------------------------------
+#
+# A colour goes muddy when its opposite is mixed into it: a sky with yellow in
+# it (red and green light) turns grey-blue, water with red in it dull, leaves
+# with magenta olive. The colourist's cure is to take the opposite out and leave
+# the colour where it is: pull the red and green curves down under the sky.
+# Done with curves it is done to the whole frame, and is then a white balance:
+# on three hiking frames those curves moved the median 0.4 to 0.56 stops darker
+# and turned grey granite lavender, and they turn a light-skin swatch 22 degrees
+# towards magenta.
+#
+# Here the same move is made inside each pixel: every channel's ratio to the
+# pixel's strongest channel goes through a power, c' = M (c / M) ** g, which is
+# the curve pulled down at its middle. The strongest channel stays, so nothing
+# can clip; a grey (every ratio 1) stays exactly; and every colour loses its own
+# opposite whatever its hue, so the one operator serves the slider, the mixer's
+# bands and its picked colours.
+#
+# Its cost, stated: taking light out of a colour darkens it, most where the
+# opposite carries the luminance. A sky loses red and green, a yellow only
+# blue. Holding the brightness would mean raising the strongest channel, which
+# is what Saturation does, and is what clips a bright sky.
+#
+# The strength at 100 was set by eye on six frames (a clear and an overcast
+# hiking sky, autumn leaves, an orchard with faces under a blue sky, fireworks,
+# cars), sweeping g at full strength: at 1.5 it was already strong, at 2 the
+# sky went deep and faces began to turn orange, at 3 it was broken. So 100 is
+# g = 2, every ratio squared, and the useful range is the lower half. At 100 the
+# frame's median moved 0.1 stops darker on the leaves and the cars, 0.43 on
+# the orchard and 0.53 on the overcast sky.
+_CLEAN_GAIN = 1.0   # g - 1 at 100
+
+
+def _clean_prep(rgb: np.ndarray) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
+    """`rgb`'s planes (clipped), its strongest channel, and the mixer's grey guard
+    (see `_move_colours`): a near-grey's ratios are noise, and raising noise to a
+    power is noise made worse. The guard reads OpenCV's HLS saturation, worked
+    out from the planes rather than by a round trip through HLS."""
+    planes = cv2.split(np.clip(rgb, 0.0, 1.0))
+    top = cv2.max(cv2.max(planes[0], planes[1]), planes[2])
+    low = cv2.min(cv2.min(planes[0], planes[1]), planes[2])
+    both = top + low
+    sat = (top - low) / np.maximum(np.where(both < 1.0, both, 2.0 - both), 1e-6)
+    return planes, top, _smoothstep(np.clip(sat / _HSL_GREY_GUARD, 0.0, 1.0))
+
+
+def _clean_power(planes: list[np.ndarray], top: np.ndarray, power: np.ndarray) -> np.ndarray:
+    """Each channel's ratio to the pixel's strongest one, raised to `power`, as
+    exp(power log ratio): a per-pixel power is several times slower."""
+    inv = 1.0 / np.maximum(top, 1e-6)
+    out = []
+    for c in planes:
+        lg = cv2.log(cv2.max(c * inv, 1e-6))
+        lg *= power
+        out.append(top * cv2.exp(lg))
+    return cv2.merge(out)
+
+
+def _apply_clean(rgb: np.ndarray, amount: float,
+                 hsl: dict[str, dict[str, int]] | None) -> np.ndarray:
+    """Clean every colour by `amount` (0..100) and each band by its own. The two
+    are two passes of the same power, so they multiply."""
+    planes, top, grip = _clean_prep(rgb)
+    power = 1.0 + _CLEAN_GAIN * amount / 100.0 * grip
+    if _hsl_sets(hsl, ("clean",)):
+        (lut,) = _hsl_luts(hsl, ("clean",))
+        hue = cv2.cvtColor(np.clip(rgb, 0.0, 1.0), cv2.COLOR_RGB2HLS)[..., 0]
+        at = np.clip(hue, 0.0, 359.0).astype(np.int32)
+        power = power * (1.0 + _CLEAN_GAIN * lut[at] / 100.0 * grip)
+    return _clean_power(planes, top, power)
+
+
+# ----- picked colours -----------------------------------------------------
+#
+# The mixer's bands are fixed slices of the hue circle. A picked colour is the
+# colour itself, sampled off the photo with an eyedropper, and moves what is
+# that colour by the band's four values. They stack: each is applied in turn to
+# what the ones before it made.
+#
+# Which pixels are "that colour" is decided on the photo as shot (`sel`), not
+# on the colours arriving at this stage. Otherwise a white balance or an
+# earlier colour moved afterwards would quietly change what a later one
+# catches, and the colour under the eyedropper (read off the ungraded frame,
+# as the white balance one is) would not be the colour selected. The masks
+# select on the ungraded frame for the same reason.
+#
+# "That colour" is the colour range's own measure (`rangemask.color_weight`):
+# hue first, then saturation, lightness a little, which leaves a grey wall
+# alone because its hue is noise. So a picked clear blue can take the sky and
+# leave the grey-blue of an overcast one, which the Blue band cannot tell
+# apart. Unlike the colour range it reads each pixel, not a smoothed grid: it
+# is a statement about a colour, and a single twig against the sky is not the
+# sky's colour, where a smoothed selection would bleed the sky's move onto it.
+#
+# Reading each pixel has a price the colour range pays its smoothing to avoid:
+# a pixel's noise moves it along the ramp between selected and not, and with
+# the colour range's ramp (a quarter of the range, at least 1 unit) a patch
+# sitting on the ramp came out speckled. On a noisy sky and on leaves, a
+# saturation of -100 there added 3 to 9 times the per-pixel noise that the
+# Blue or Green band adds doing the same. So the ramp is never narrower than
+# `_POINT_SOFTNESS`: swept from 1, the added noise fell until 32 and no
+# further (1.2 to 1.3 times the band's), and a clear sky picked at range 40
+# still took only 0.08 of an overcast grey-blue (0.26 at 64).
+
+POINTS_MAX = 8
+_POINT_FEATHER = rangemask_mod.COLOR_DEFAULT["feather"]
+_POINT_SOFTNESS = 32.0   # the narrowest ramp, in the colour metric's units
+
+
+def normalize_points(raw: Any) -> list[dict[str, Any]] | None:
+    """Clamp the mixer's picked colours: an 8-bit RGB `color`, a `range` (the
+    colour range's, 0..100), `enabled`, and the four values a band has, the
+    neutral ones left out. A colour nothing is done to is not kept, as a layer
+    with no shape is not, so None when no colour would move."""
+    if not isinstance(raw, (list, tuple)):
+        return None
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if len(out) >= POINTS_MAX:
+            break
+        if not isinstance(item, dict):
+            continue
+        color = item.get("color")
+        if not isinstance(color, (list, tuple)) or len(color) != 3:
+            continue
+        vals = _hsl_values(item)
+        if not vals:
+            continue
+        point: dict[str, Any] = {
+            "color": [int(round(_fnum(c, 0.0, 255.0, 0.0))) for c in color],
+            "range": _tenth(_fnum(item.get("range"), 0.0, 100.0,
+                                  rangemask_mod.COLOR_DEFAULT["range"])),
+            "enabled": item.get("enabled", True) is not False,
+            **vals,
+        }
+        tag = item.get("preset")
+        if isinstance(tag, str) and tag:
+            point["preset"] = tag   # which preset brought it (see presets.apply)
+        out.append(point)
+    return out or None
+
+
+def points_active(points: list[dict[str, Any]] | None) -> bool:
+    """Whether normalized picked colours would move any pixel."""
+    return points is not None and any(p["enabled"] for p in points)
+
+
+def _apply_points(rgb: np.ndarray, points: list[dict[str, Any]], sel: np.ndarray,
+                  pv: int) -> np.ndarray:
+    """Each picked colour moves the pixels that are that colour, in order.
+    `sel` is the photo as shot, 8-bit and pixel for pixel where `rgb` is.
+
+    Each colour grades only the pixels it reaches, gathered into a column and
+    put back: every stage here is pointwise, so their neighbours do not matter,
+    and a picked sky leaves the ground below it out of the sums."""
+    assert sel.dtype == np.uint8 and sel.shape == rgb.shape, \
+        f"picked colours select on the 8-bit photo as shot, aligned: got {sel.dtype} {sel.shape}"
+    parts = rangemask_mod.color_parts(cv2.cvtColor(sel.astype(np.float32) / 255.0,
+                                                   cv2.COLOR_RGB2Lab))
+    shape = rgb.shape
+    flat = np.array(rgb, dtype=np.float32).reshape(-1, 3)
+    for p in points:
+        if not p["enabled"]:
+            continue
+        w = rangemask_mod.color_weight(parts, [p["color"]], p["range"], _POINT_FEATHER,
+                                       _POINT_SOFTNESS).reshape(-1)
+        at = np.flatnonzero(w > 1.0 / 512.0)
+        if not at.size:
+            continue
+        sub, w = flat[at].reshape(-1, 1, 3), w[at].reshape(-1, 1)
+        if any(p.get(k) for k in _HSL_MOVES):
+            hls = cv2.cvtColor(np.clip(sub, 0.0, 1.0), cv2.COLOR_RGB2HLS)
+            sub = _move_colours(sub, hls, w * p.get("hue", 0), w * p.get("sat", 0),
+                                w * p.get("lum", 0), pv)
+        if p.get("clean"):
+            planes, top, grip = _clean_prep(sub)
+            sub = _clean_power(planes, top, 1.0 + _CLEAN_GAIN * p["clean"] / 100.0 * w * grip)
+        flat[at] = sub.reshape(-1, 3)
+    return flat.reshape(shape)
 
 
 # ----- texture, dehaze and noise -----------------------------------------
@@ -1978,11 +2197,12 @@ def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
                  frame_size: tuple[int, int] | None = None,
                  pv: int = 1,
                  luts: dict[str, dict[str, Any]] | None = None,
-                 seed: int = 0) -> np.ndarray:
+                 seed: int = 0, sel: np.ndarray | None = None) -> np.ndarray:
     """Blend a locally graded copy through each mask, in order. `img` is float32
     RGB clipped to [0,1] and is modified in place. A layer's look goes on its
     crop before the rest of its grade, as the photo's look does before the
     photo's (`luts` holds its table); its film grain is the photo's `seed`.
+    `sel` is the photo as shot, where `img` is, for a layer's picked colours.
 
     `frame_size` (w, h) is the photo's own size, for a render of the whole
     frame at any scale: the mask grid is then the photo's, not this array's.
@@ -2034,7 +2254,8 @@ def _apply_masks(img: np.ndarray, masks: list[dict[str, Any]],
             crop = cv2.convertScaleAbs(sub, alpha=255.0)
         else:
             crop = sub.copy()
-        graded = np.clip(_grade(crop, adj, sub_roi, seed), 0.0, 1.0)
+        graded = np.clip(_grade(crop, adj, sub_roi, seed,
+                                None if sel is None else sel[y0:y1, x0:x1]), 0.0, 1.0)
         img[y0:y1, x0:x1] = sub + (graded - sub) * alpha[..., None]
     return img
 
@@ -2251,11 +2472,14 @@ def _pregrade(rgb: np.ndarray, e: dict[str, Any], roi: tuple[float, float, float
 
 def _grade(img: np.ndarray, e: dict[str, Any],
            roi: tuple[float, float, float, float] = FULL_ROI,
-           seed: int = 0) -> np.ndarray:
+           seed: int = 0, sel: np.ndarray | None = None) -> np.ndarray:
     """Run the adjustment stages of a normalized edit over float32 RGB in [0,1].
     Shared by the global pass and by every local mask (masks reuse the same maths
     on their own slider values, so a local +1 EV means what a global +1 EV means).
-    The result may sit slightly outside [0,1]; the caller clips."""
+    The result may sit slightly outside [0,1]; the caller clips.
+
+    `sel` is the photo as shot where `img` is, which the mixer's picked colours
+    select on (see `_apply_points`); needed only when the edit has some."""
     h, w = img.shape[:2]
     # The whole photo's size in this array's pixels. Effects size themselves off
     # it so they look the same at any render resolution, and `origin` is where
@@ -2293,8 +2517,15 @@ def _grade(img: np.ndarray, e: dict[str, Any],
         img = _apply_clarity(img, e["clarity"], frame_long)
     # The mixer before vibrance and saturation: it decides what each colour is,
     # and those two then decide how much of all of them there is.
-    if e["hsl"] is not None:
+    if _hsl_sets(e["hsl"], _HSL_MOVES):
         img = _apply_hsl(img, e["hsl"], process_version(e))
+    # Clean after the mixer's moves, so a band turned towards blue is cleaned as
+    # the blue it became, and before the picked colours, which then stack on it.
+    if e["clean"] or _hsl_sets(e["hsl"], ("clean",)):
+        img = _apply_clean(img, e["clean"], e["hsl"])
+    if points_active(e["points"]):
+        assert sel is not None, "picked colours select on the photo as shot: pass `sel`"
+        img = _apply_points(img, e["points"], sel, process_version(e))
     # The wheels after the mixer: the mixer says what a colour is, the wheels
     # then push a whole tonal region somewhere regardless of what was there.
     if e["grading"] is not None:
@@ -2332,14 +2563,14 @@ def _grade(img: np.ndarray, e: dict[str, Any],
 # master curve and every tonal slider stay, so the reference is lit as the
 # render is and only its colour differs.
 
-_COLOUR_SCALARS = ("temp", "tint", "vibrance", "saturation")
+_COLOUR_SCALARS = ("temp", "tint", "vibrance", "saturation", "clean")
 _IDENTITY_CURVE = [[0.0, 0.0], [1.0, 1.0]]
 
 
 def colour_neutral(e: dict[str, Any]) -> dict[str, Any]:
     """A normalized edit with its colour edits left out."""
-    out = {**e, **{k: 0 for k in _COLOUR_SCALARS}, "hsl": None, "grading": None,
-           "lut": None, "film": None}
+    out = {**e, **{k: 0 for k in _COLOUR_SCALARS}, "hsl": None, "points": None,
+           "grading": None, "lut": None, "film": None}
     for k in _CHANNEL_CURVES:
         out[k] = [list(p) for p in _IDENTITY_CURVE]
     return out
@@ -2347,7 +2578,7 @@ def colour_neutral(e: dict[str, Any]) -> dict[str, Any]:
 
 def _colour_is_neutral(e: dict[str, Any]) -> bool:
     return (not any(e[k] for k in _COLOUR_SCALARS)
-            and e["hsl"] is None and e["grading"] is None
+            and e["hsl"] is None and not points_active(e["points"]) and e["grading"] is None
             and e["lut"] is None and e["film"] is None
             and all(_curve_is_identity(e[k]) for k in _CHANNEL_CURVES))
 
@@ -2558,7 +2789,7 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
         seed = film_mod.seed_for(str((meta or {}).get("file") or ""))
         pkey = None if cache_key is None else f"{cache_key}|{optics_key(e)}"
         img = _pregrade(rgb, e, roi, faces, luts, pkey, given, fills)
-        img = _grade(img, e, roi, seed)
+        img = _grade(img, e, roi, seed, sel=rgb)
         img = np.clip(img, 0.0, 1.0)
         # Before the masks: what a mask does to a face is meant, and is left be.
         if not portrait_mod.skin_tone_is_neutral(e["portrait"]) and not _colour_is_neutral(e):
@@ -2566,7 +2797,7 @@ def render(rgb: np.ndarray, edit: dict[str, Any] | None,
             img = _hold_skin(img, rgb, e, roi, faces, auto, pkey, given, fills, seed)
         if e["masks"]:
             img = _apply_masks(img, e["masks"], roi, auto, src, frame_size, process_version(e),
-                               luts, seed)
+                               luts, seed, sel=rgb)
         # The face's shape last, so that everything placed on the face (its
         # retouching, heals and masks) moves with it; see the reshape module.
         if reshape_mod.is_active(e["portrait"]):
@@ -2744,6 +2975,20 @@ _PICK_FLOOR = 10 / 255.0   # below this a patch is noise wearing a colour
 _PICK_CEIL = 250 / 255.0   # ...and above it, a clipped channel with no ratio left
 
 
+def sample_color(rgb: np.ndarray, x: float, y: float) -> list[int]:
+    """The colour of the patch at (`x`, `y`), fractions of `rgb`'s frame, as
+    8-bit RGB: what the eyedroppers read. The median, not the mean: a dust
+    speck or one hot pixel inside the patch would drag a mean somewhere the eye
+    never agreed to."""
+    assert rgb.ndim == 3 and rgb.shape[2] == 3, f"expected RGB, got {rgb.shape}"
+    h, w = rgb.shape[:2]
+    rad = max(1, int(round(_PICK_PATCH * max(h, w))))
+    cx = int(round(min(max(x, 0.0), 1.0) * (w - 1)))
+    cy = int(round(min(max(y, 0.0), 1.0) * (h - 1)))
+    patch = rgb[max(0, cy - rad):cy + rad + 1, max(0, cx - rad):cx + rad + 1]
+    return [int(round(float(v))) for v in np.median(patch.reshape(-1, 3), axis=0)]
+
+
 def neutral_wb(rgb: np.ndarray, x: float, y: float) -> dict[str, Any] | None:
     """Solve for the temp/tint that turn the patch at (`x`, `y`) grey.
 
@@ -2769,15 +3014,7 @@ def neutral_wb(rgb: np.ndarray, x: float, y: float) -> dict[str, Any] | None:
     Returns None when the patch cannot answer the question: near-black has no
     colour but the noise floor, and a clipped channel has no ratio left to read.
     """
-    assert rgb.ndim == 3 and rgb.shape[2] == 3, f"expected RGB, got {rgb.shape}"
-    h, w = rgb.shape[:2]
-    rad = max(1, int(round(_PICK_PATCH * max(h, w))))
-    cx = int(round(min(max(x, 0.0), 1.0) * (w - 1)))
-    cy = int(round(min(max(y, 0.0), 1.0) * (h - 1)))
-    patch = rgb[max(0, cy - rad):cy + rad + 1, max(0, cx - rad):cx + rad + 1]
-    # The median, not the mean: a dust speck or one hot pixel inside the patch
-    # would drag a mean somewhere the eye never agreed to.
-    r, g, b = (float(v) / 255.0 for v in np.median(patch.reshape(-1, 3), axis=0))
+    r, g, b = (v / 255.0 for v in sample_color(rgb, x, y))
     if min(r, g, b) < _PICK_FLOOR or max(r, g, b) > _PICK_CEIL:
         return None
 

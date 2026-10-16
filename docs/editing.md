@@ -9,7 +9,7 @@ adjustments bake in only on export or download.
 
 - **In-app photo editing**: adjust any photo right from the picking screen —
   Exposure, Contrast, Highlights/Shadows/Whites/Blacks, Temperature/Tint,
-  Vibrance/Saturation, Texture/Clarity/Dehaze/Denoise/Sharpen/Vignette, and a
+  Vibrance/Saturation/Clean, Texture/Clarity/Dehaze/Denoise/Sharpen/Vignette, and a
   draggable **tone curve**,
   with a live before/after preview and an **Auto** button. Fully
   non-destructive — originals are never modified; adjustments bake in only on
@@ -505,6 +505,87 @@ Two stages that fix the captured image rather than interpret it, and they run
 - A **layer has its own mixer** (see Layers): the colour mixer is a statement
   about a colour, and a layer says where. It used to be the photo's alone, which
   left no way to turn one colour in one place.
+- Each band also has **Clean** (see *Clean colour*), which takes that band's
+  opposite out of it.
+
+### Picked colours
+
+- **Pick a colour** under the bands, then click it on the photo: a muddy sky,
+  dull water, olive leaves. The colour you clicked gets the four sliders a band
+  has (Hue, Saturation, Luminance, Clean) and a **Range** for how near a colour
+  has to be to move with it. Up to eight, and they stack: each works on what the
+  ones before it made, so "clean the sky, then turn the leaves greener" is two
+  colours, one after the other.
+- **One colour, not a slice of the circle.** A band is 60 degrees of hue and
+  cannot tell a clear blue from the grey-blue of an overcast sky beside it. A
+  picked colour is measured the way the colour range layer measures one (hue
+  first, then saturation, lightness a little), so a clear blue picked at the
+  default range takes only 0.08 of an overcast grey-blue.
+- **What it catches is read off the photo as shot**, as the white balance
+  eyedropper reads it. So a white balance moved afterwards, or an earlier
+  colour that turned the sky, does not change what a later one catches, and
+  the colour under the eyedropper is the colour selected. The masks select on
+  the ungraded frame for the same reason.
+- **Pixel by pixel, with a soft edge.** Unlike the colour range layer, which
+  decides on a smoothed grid, a picked colour reads every pixel: a twig against
+  the sky is not the sky's colour, and a smoothed selection would bleed the
+  sky's move onto it. Reading every pixel has a price, which is noise: a pixel
+  sitting on the edge of the selection is pushed in and out of it by its own
+  noise. With the colour range's edge, a noisy sky on that edge came out with 3
+  to 9 times the speckle the Blue band adds doing the same; so the edge is
+  never narrower than the point where widening it stopped helping (1.2 to 1.3
+  times the band's).
+- A **layer has its own picked colours**, as it has its own mixer, and a preset
+  carrying the mixer adds its colours beside the photo's own rather than taking
+  them away (every look carries the mixer). Applying the same preset again
+  replaces the ones it brought.
+- Cost: about what a band costs. Measured on a 2048 px preview, one picked sky
+  added 36 ms where the Blue band's saturation adds 28; a colour that covers
+  little of the frame costs less, since only the pixels it reaches are graded.
+
+## Clean colour
+
+- **Clean**, 0 to 100, in the Color panel and Quick edit, on every layer, and
+  per band and per picked colour in the mixer. It takes each colour's
+  opposite out of it: the yellow from a muddy sky, the red from dull water, the
+  magenta from olive leaves.
+- **Why a colour goes muddy.** A colour is the colour plus some grey, and the
+  grey is its opposite mixed in: a sky with some yellow in it (red and green
+  light) turns grey-blue. The colourist's cure is to take the opposite out and
+  leave the colour where it is, pulling the red and green curves down under the
+  sky. Done with curves on the whole photo that is a white balance, not a clean
+  colour: on three hiking frames it moved the median 0.4 to 0.56 stops darker
+  and turned grey granite lavender, and it turns a light-skin swatch 22 degrees
+  towards magenta.
+- **The same move, inside each pixel.** Every channel's ratio to the pixel's
+  strongest channel is raised to a power, which is that curve pulled down at
+  its middle. Three things follow. The strongest channel stays, so nothing
+  clips. A grey, whose ratios are all 1, stays exactly. And every colour loses
+  its own opposite whatever its hue, so one control does the sky, the water and
+  the leaves, and a red flower or a yellow wall as well.
+- **Not Saturation.** Saturation keeps a colour's lightness by raising its
+  strongest channel, so a bright sky heads for clipping (the mixer's Saturation
+  at +50 on four bands took one hiking frame's clipped pixels from 0.75% to
+  4.75%) and turns electric.
+  Clean takes light out instead, which is why it reads as deeper rather than
+  brighter.
+- **Its cost: it darkens.** Taking light out of a colour darkens it, most where
+  the opposite carries the brightness: a sky loses red and green, a yellow only
+  blue. At 100 the frame's median went 0.1 stops darker on autumn leaves and on
+  cars, 0.43 on an orchard under a blue sky and 0.53 on an overcast one.
+  Holding the brightness would mean raising the strongest channel, which is
+  Saturation's clipping again.
+- **The strength was set by eye**, on six frames (a clear and an overcast
+  hiking sky, autumn leaves, an orchard with faces, fireworks, cars): at 100
+  every ratio is squared. Half that was already strong; past 100 the sky went
+  ultramarine and faces orange. The useful range is the lower half.
+- **Skin.** Clean raises the chroma of skin as much as of anything, a little
+  more than of a sky (a light skin's by 44% at 50, a mid sky's by 38%), so it
+  counts as a colour edit
+  for **Skin tone** in the Portrait panel, as Vibrance and the mixer do: turn
+  that up and the faces stay as they were.
+- The overall slider and a band's Clean are two passes of the same power, so
+  they multiply: 50 overall and 50 on Blue clean a blue as 125 would.
 
 ## Colour grading
 
@@ -864,7 +945,8 @@ The order the stages run in is not arbitrary, and two parts of it are worth
 knowing because they decide what a slider means:
 
 1. **Grade** — white balance, then tone, then dehaze, denoise and texture, then
-   clarity, then the colour mixer, then vibrance and saturation, then the
+   clarity, then the colour mixer, then Clean, then the picked colours in
+   their order, then the wheels, then vibrance and saturation, then the
    optical effects (defocus, smear, bloom), then
    sharpen, then the vignette. Masks run after the global pass, each blending a
    locally graded copy through its own alpha: its look first, then this same

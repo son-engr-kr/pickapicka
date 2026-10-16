@@ -1387,6 +1387,21 @@
                 <div class="hsl-bands" id="hsl-bands"></div>
                 <div class="hsl-fields" id="hsl-fields"></div>
                 <button class="hsl-reset" id="hsl-reset" type="button">Reset band</button>
+                <div class="hsl-points">
+                  <div class="hsl-points-head">
+                    <span class="hsl-points-title">Picked colours</span>
+                    <button type="button" id="point-pick">Pick a colour</button>
+                  </div>
+                  <p class="hsl-note">
+                    One colour off the photo rather than a slice of the circle: a
+                    clear blue can take the sky and leave a grey-blue cloud. What it
+                    catches is read off the photo as shot, so a white balance moved
+                    later leaves it be. Each works on what the ones before it made.
+                  </p>
+                  <div class="hsl-bands" id="point-list"></div>
+                  <div class="hsl-fields" id="point-fields"></div>
+                  <button class="hsl-reset" id="point-remove" type="button">Remove colour</button>
+                </div>
               </div>
             </details>
             <details class="edit-group" id="edit-grade-group">

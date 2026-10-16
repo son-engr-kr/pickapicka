@@ -48,12 +48,12 @@ from . import editing, grading as grading_mod, portrait as portrait_mod
 # The slider parts follow the editor's sections (EDIT_SCHEMA in app.js).
 PARTS: dict[str, tuple[str, ...]] = {
     "light": ("exposure", "contrast", "highlights", "shadows", "whites", "blacks"),
-    "color": ("temp", "tint", "vibrance", "saturation"),
+    "color": ("temp", "tint", "vibrance", "saturation", "clean"),
     "detail": ("texture", "clarity", "dehaze", "denoise", "sharpen", "sharpen_radius",
                "sharpen_detail", "sharpen_masking", "vignette"),
     "creative": ("blur", "motion", "motion_angle", "glow", "pixelate"),
     "curve": editing.CURVE_KEYS,
-    "mixer": ("hsl",),
+    "mixer": ("hsl", "points"),
     "grading": ("grading",),
     "look": ("lut",),
     "film": ("film",),
@@ -119,6 +119,11 @@ def replaced_parts(before: dict[str, Any] | None, after: dict[str, Any] | None) 
             continue
         if part == "layers":
             changed = any(m not in a["masks"] for m in b["masks"])
+        elif part == "mixer":
+            # The picked colours as the layers: one of the photo's own gone or
+            # changed counts, one added beside them does not.
+            changed = b["hsl"] != a["hsl"] or any(
+                q not in (a["points"] or []) for q in (b["points"] or []))
         else:
             changed = any(b[k] != a[k] for k in PARTS[part])
         if changed:
@@ -160,6 +165,8 @@ def make(edit: dict[str, Any] | None, parts: list[str]) -> dict[str, Any]:
     if "masks" in stored:
         for m in stored["masks"]:
             m.pop("preset", None)
+    for q in stored.get("points") or []:
+        q.pop("preset", None)
     return {"parts": [p for p in PART_NAMES if p in parts], "edit": stored}
 
 
@@ -206,6 +213,20 @@ def _blend_hsl(b: dict | None, p: dict | None, a: float) -> dict | None:
     return editing.normalize_hsl(out)
 
 
+def _scaled_points(points: list | None, preset_id: str | None, a: float) -> list:
+    """A preset's picked colours as they land: their values `a` of the way from
+    neutral, as a layer's sliders are, tagged with the preset when it has one."""
+    out = []
+    for q in copy.deepcopy(points or []):
+        for key in editing.HSL_KEYS:
+            if key in q:
+                q[key] = _lerp(0, q[key], a)
+        if preset_id is not None:
+            q["preset"] = preset_id
+        out.append(q)
+    return out
+
+
 def _blend_grading(b: dict | None, p: dict | None, a: float) -> dict | None:
     """Strength and lightness move towards the preset's; a zone's hue is the
     preset's (a hue halfway between two is not a weaker version of either)."""
@@ -249,6 +270,7 @@ def _scaled_layer(m: dict[str, Any], preset_id: str, a: float) -> dict[str, Any]
     for k in editing.CURVE_KEYS:
         adj[k] = _blend_curve(editing.DEFAULT_EDIT[k], adj[k], a)
     adj["hsl"] = _blend_hsl(None, adj["hsl"], a)
+    adj["points"] = _scaled_points(adj["points"], None, a)
     adj["grading"] = _blend_grading(None, adj["grading"], a)
     for k, strength in (("lut", "amount"), ("film", "strength")):
         if adj[k] is not None:
@@ -291,6 +313,13 @@ def apply(base: dict[str, Any] | None, preset: dict[str, Any], amount: float = 1
                 out[k] = _blend_curve(b[k], p[k], a)
         elif part == "mixer":
             out["hsl"] = _blend_hsl(b["hsl"], p["hsl"], a)
+            # The photo's own picked colours stay, and the preset's are added
+            # beside them, as its layers are: every look carries the mixer, and
+            # applying one must not take away colours picked on this photo.
+            pid = preset["id"]
+            keep = [q for q in (b["points"] or []) if q.get("preset") != pid]
+            added = _scaled_points(p["points"], pid, a) if on else []
+            out["points"] = (keep + added)[:editing.POINTS_MAX] or None
         elif part == "grading":
             out["grading"] = _blend_grading(b["grading"], p["grading"], a)
         elif part == "portrait":

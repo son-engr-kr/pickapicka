@@ -305,7 +305,7 @@ def test_color_no_speckle_on_noise() -> None:
     band = max(rangemask._COLOR_BAND_FLOOR, thresh * params["feather"] / 100.0)
     sample = np.asarray([params["samples"][0]], np.float32).reshape(1, 1, 3) / 255.0
     d = np.sqrt(rangemask._color_distance(
-        _raw_lab(img), cv2.cvtColor(sample, cv2.COLOR_RGB2Lab)))
+        rangemask.color_parts(_raw_lab(img)), cv2.cvtColor(sample, cv2.COLOR_RGB2Lab)))
     t = np.clip((d - (thresh - band / 2)) / band, 0, 1)
     naive = 1.0 - t * t * (3 - 2 * t)
     assert _roughness(naive) > 1.0, _roughness(naive)

@@ -49,7 +49,7 @@ def test_a_preset_stores_its_parts_only() -> None:
     p = presets.make(_LOOK, ["light", "mixer"])
     assert p["parts"] == ["light", "mixer"]
     keys = set(p["edit"]) - {"pv"}
-    assert keys == set(presets.PARTS["light"]) | {"hsl"}
+    assert keys == set(presets.PARTS["light"]) | set(presets.PARTS["mixer"])
     with pytest.raises(AssertionError, match="unknown preset parts"):
         presets.make(_LOOK, ["light", "healing"])
     with pytest.raises(AssertionError, match="at least one part"):
@@ -340,3 +340,29 @@ def test_a_layers_whole_grade_scales_with_the_amount() -> None:
     assert half["lut"]["amount"] == 40 and half["film"]["strength"] == 50
     double = presets.apply(None, p, 200)["masks"][0]["adj"]
     assert double["lut"]["amount"] == 80 and double["film"]["strength"] == 100
+
+
+def test_picked_colours_are_added_tagged_and_replaced_on_reapply() -> None:
+    """As a preset's layers are: every look carries the mixer, and laying one
+    on a photo must not take away the colours picked on it."""
+    own = {"color": [95, 145, 215], "clean": 40}
+    brought = {"color": [90, 130, 60], "sat": 30, "clean": 60}
+    preset = _preset(["mixer"], {"points": [brought]})
+    assert "preset" not in presets.make({"points": [{**brought, "preset": "x"}]},
+                                        ["mixer"])["edit"]["points"][0]
+    once = presets.apply({"points": [own]}, preset)
+    assert [q["color"] for q in once["points"]] == [own["color"], brought["color"]]
+    assert once["points"][1]["preset"] == "p1" and "preset" not in once["points"][0]
+    again = presets.apply(once, preset, amount=50)
+    assert len(again["points"]) == 2, "applying again replaces its own colours"
+    assert (again["points"][1]["sat"], again["points"][1]["clean"]) == (15, 30)
+    assert presets.replaced_by({"points": [own]}, preset) == []
+    # A look's mixer leaves picked colours alone, and a whole mixer it replaces.
+    look = _preset(["mixer"], {"hsl": {"blue": {"sat": 20}}})
+    assert presets.apply({"points": [own]}, look)["points"][0]["color"] == own["color"]
+    assert presets.replaced_by({"hsl": {"red": {"sat": 5}}, "points": [own]}, look) == ["mixer"]
+
+
+def test_clean_is_in_the_colour_part() -> None:
+    p = _preset(["color"], {"clean": 30, "vibrance": 10})
+    assert presets.apply({"clean": 80}, p, amount=50)["clean"] == 55
