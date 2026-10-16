@@ -4,7 +4,8 @@
 
 Standard library only, so the Pages workflow needs nothing installed. The page
 is site/index.html with the latest release filled in: its version, its date,
-and a direct link and size for each installer. That is why the site is rebuilt
+and a direct link and size for each installer; site/install.sh, the Terminal
+install for macOS, gets the same, and the installer's checksum. That is why the site is rebuilt
 whenever a release finishes building (.github/workflows/pages.yml): the links
 are baked in rather than looked up by every visitor's browser.
 
@@ -89,12 +90,18 @@ def main() -> None:
         "WIN_SIZE": megabytes(win["size"]),
         "GUIDE_YOUTUBE_ID": GUIDE_YOUTUBE_ID,
     }
-    html = (SITE / "index.html").read_text(encoding="utf-8")
-    for key, value in fields.items():
-        html = html.replace("{{" + key + "}}", value)
-    left = re.findall(r"\{\{[A-Z_]+\}\}", html)
-    assert not left, f"placeholders with no value: {sorted(set(left))}"
-    (out / "index.html").write_text(html, encoding="utf-8")
+    digest = mac.get("digest") or ""
+    assert digest.startswith("sha256:"), f"{mac['name']} has no sha256 digest for install.sh to check"
+    fields["MAC_SHA256"] = digest.removeprefix("sha256:")
+    # The page, and the script its Terminal line runs (the macOS install that
+    # macOS does not stop, see install.sh).
+    for name in ("index.html", "install.sh"):
+        text = (SITE / name).read_text(encoding="utf-8")
+        for key, value in fields.items():
+            text = text.replace("{{" + key + "}}", value)
+        left = re.findall(r"\{\{[A-Z_0-9]+\}\}", text)
+        assert not left, f"{name}: placeholders with no value: {sorted(set(left))}"
+        (out / name).write_text(text, encoding="utf-8")
 
     for rel, src in COPIES.items():
         dst = out / rel

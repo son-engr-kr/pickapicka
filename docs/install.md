@@ -11,17 +11,37 @@
 Pick whichever installer you prefer. The first run downloads the
 `insightface` `buffalo_l` model (~280 MB) into `~/.insightface/`.
 
-### macOS (no terminal needed)
+### macOS
 
-Grab the latest `.pkg` from
-[Releases](https://github.com/son-engr-kr/pickapicka/releases),
-double-click it, and follow the installer — it puts **Pickapicka.app**
-into `/Applications`. Launch it and the landing page opens in your browser
-automatically.
+Apple Silicon (arm64), macOS 12 or later. The easiest way is one line in
+Terminal, which installs without macOS stopping it:
 
-Apple Silicon (arm64), macOS 12 or later. The package is not signed by
-Apple, so the first time it is opened macOS stops it ("Apple could not verify
-… is free of malware"):
+1. **Open Terminal**: press ⌘ Space, type `Terminal`, press Return.
+2. **Paste this line and press Return:**
+
+   ```bash
+   curl -fsSL https://son-engr-kr.github.io/pickapicka/install.sh | bash
+   ```
+
+3. **Type your Mac's login password** when it asks, and press Return.
+   Nothing appears as you type; that is normal. The first time, macOS shows
+   a WARNING about sudo before it asks, which is its usual note.
+
+It puts **Pickapicka.app** into `/Applications` and opens it, and the landing
+page opens in your browser. After that the app updates itself.
+
+What the line runs is [`site/install.sh`](../site/install.sh), with each
+release's link and checksum filled in by `site/build.py`. It downloads the
+same `.pkg` as the Releases page, checks it against the SHA-256 GitHub
+publishes for it, and installs it with macOS's own `installer`. Why this gets
+past the warning: a browser marks what it downloads as quarantined, and
+Gatekeeper checks only marked files; `curl` adds no mark. The in-app updater
+works the same way.
+
+**Or download the `.pkg` yourself** from
+[Releases](https://github.com/son-engr-kr/pickapicka/releases) and
+double-click it. The package is not signed by Apple, so the first time it is
+opened macOS stops it ("Apple could not verify … is free of malware"):
 
 - **macOS 15 (Sequoia) and later**: click **Done**, open **System Settings →
   Privacy & Security**, scroll down to *Security*, and click **Open Anyway**

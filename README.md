@@ -36,11 +36,19 @@ non-destructive, and all previewed at the resolution you will export at.
 
 ## Install
 
-Prebuilt installers for **macOS** (Apple Silicon) and **Windows** (x64) are on
-the [Releases page](https://github.com/son-engr-kr/pickapicka/releases)
-— download, run, launch. Both are unsigned, so the first launch needs
+On a Mac (Apple Silicon), paste this into Terminal and press Return; it asks
+for your password once and opens the app:
+
+```bash
+curl -fsSL https://son-engr-kr.github.io/pickapicka/install.sh | bash
+```
+
+Prebuilt installers for **macOS** (Apple Silicon) and **Windows** (x64) are
+also on the [Releases page](https://github.com/son-engr-kr/pickapicka/releases):
+download, run, launch. Both are unsigned, so the first launch needs
 System Settings → Privacy & Security → Open Anyway on macOS (right-click →
-Open before macOS 15), or More info → Run anyway on Windows.
+Open before macOS 15), or More info → Run anyway on Windows. The Terminal line
+above skips that step. Step by step: [docs/install.md](docs/install.md).
 
 With [uv](https://github.com/astral-sh/uv), on any platform including Linux:
 

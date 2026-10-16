@@ -51,8 +51,8 @@
         into scenes and suggests what to keep. Then it edits the keepers, non-destructively.
         Your photos never leave the computer they are on.</p>
       <div class="cta" id="cta">
-        <a class="btn primary" data-os="mac" href="{{MAC_URL}}">
-          <svg class="ico"><use href="#i-apple"/></svg><span>Download for macOS</span></a>
+        <a class="btn primary" data-os="mac" href="#mac">
+          <svg class="ico"><use href="#i-apple"/></svg><span>Install on macOS</span></a>
         <a class="btn" data-os="win" href="{{WIN_URL}}">
           <svg class="ico"><use href="#i-windows"/></svg><span>Download for Windows</span></a>
       </div>
@@ -159,13 +159,36 @@
       <p class="download-lead">Version {{VERSION}}, released {{RELEASE_DATE}}. Install it once: after that
         the app finds new versions itself and updates in one click.</p>
       <div class="cards">
-        <div class="card">
+        <div class="card card-mac" id="mac">
           <h3><svg class="ico"><use href="#i-apple"/></svg>macOS</h3>
-          <p class="card-sub">Apple Silicon (M1 and later) · {{MAC_SIZE}}</p>
-          <a class="btn primary" href="{{MAC_URL}}">Download the .pkg</a>
-          <p class="note">The app is not signed by Apple, so macOS stops it the first
-            time: click <b>Done</b>, then <b>System Settings → Privacy &amp; Security →
-            Open Anyway</b> (before macOS 15, <b>right-click → Open</b>).</p>
+          <p class="card-sub">Apple Silicon (M1 and later), macOS 12 or later · {{MAC_SIZE}}</p>
+          <p class="note">Three steps, about a minute. No need to know Terminal: it is only
+            where the line below is pasted.</p>
+          <ol class="steps">
+            <li><b>Open Terminal.</b> Press <kbd>⌘</kbd> <kbd>Space</kbd>, type
+              <b>Terminal</b>, and press <kbd>Return</kbd>.</li>
+            <li><b>Copy this line, paste it into Terminal</b> (<kbd>⌘</kbd> <kbd>V</kbd>)
+              <b>and press <kbd>Return</kbd>.</b>
+              <div class="copy-line">
+                <code id="mac-line">curl -fsSL {{SITE_URL}}install.sh | bash</code>
+                <button type="button" class="copy" data-copy="mac-line">Copy</button>
+              </div></li>
+            <li><b>Type your Mac's password</b> (the one you log in with) when it asks, and
+              press <kbd>Return</kbd>. Nothing appears as you type; that is normal. The first
+              time, macOS shows a <i>WARNING</i> about sudo before it asks: that is its usual
+              note. Pickapicka opens by itself once it is installed.</li>
+          </ol>
+          <p class="note">The line downloads the same installer as the button below, checks
+            it against GitHub's checksum and installs it, and it updates itself in the app
+            after that. <a href="{{REPO_URL}}/blob/main/site/install.sh">What the line runs</a>.</p>
+          <details class="pkg-way">
+            <summary>Or download the .pkg yourself</summary>
+            <a class="btn" href="{{MAC_URL}}">Download the .pkg</a>
+            <p class="note">The app is not signed by Apple, so macOS stops the .pkg the first
+              time. Click <b>Done</b>, open <b>System Settings → Privacy &amp; Security</b>,
+              scroll down, click <b>Open Anyway</b> and enter your password, then open the
+              .pkg again. Before macOS 15, <b>right-click → Open</b> instead.</p>
+          </details>
         </div>
         <div class="card">
           <h3><svg class="ico"><use href="#i-windows"/></svg>Windows</h3>
@@ -211,6 +234,15 @@ pickapicka serve</code></pre>
         cta.prepend(win);
       }
     })();
+    // Copy buttons: the line goes on the clipboard, ready to paste.
+    for (const b of document.querySelectorAll("[data-copy]")) {
+      b.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(document.getElementById(b.dataset.copy).textContent);
+        b.textContent = "Copied";
+        b.classList.add("done");
+        setTimeout(() => { b.textContent = "Copy"; b.classList.remove("done"); }, 2000);
+      });
+    }
     // The guide loads YouTube's player only when asked to play.
     for (const b of document.querySelectorAll("[data-youtube]")) {
       b.addEventListener("click", () => {
