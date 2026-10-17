@@ -62,6 +62,9 @@ give_output_somewhere()
 from pickapicka import cli, cluster, db, editing, hdr, raw, scenes, scorer, server, userstate  # noqa: E402, F401
 from pickapicka.scoring import blur, exposure, faces  # noqa: E402, F401
 import rawpy  # noqa: E402, F401  # anchor the native libraw dependency into the bundle
+# The command line's app built in the same process (link._local) goes through
+# FastAPI's TestClient, imported only when a command runs.
+from fastapi import testclient  # noqa: E402, F401
 
 
 def run() -> None:

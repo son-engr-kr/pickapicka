@@ -10886,16 +10886,48 @@ async function renderProjectMenu() {
 const TASK_WORDS = { export: "Exporting", scoring: "Scoring", grouping: "Grouping faces",
                      originals: "Deleting originals" };
 let activityTimer = null;
+// How many changes the command line has made (an assistant working the shoot
+// from a terminal; see link.py), as the window last loaded them.
+let outsideRev = null;
 
 async function pollActivity() {
   if (document.body.classList.contains("landing-mode")) { $("#activity").classList.add("hidden"); return; }
   const res = await fetch("/api/state", { cache: "no-store" }).catch(() => null);
   if (!res || !res.ok) return;
-  const tasks = (await res.json()).tasks || {};
+  const st = await res.json();
+  const tasks = st.tasks || {};
   const running = Object.entries(tasks).filter(([, t]) => t && t.running);
   $("#activity").classList.toggle("hidden", !running.length);
   $("#activity-text").textContent = running.map(([name, t]) =>
     `${TASK_WORDS[name] || name}${t.total ? ` ${t.idx}/${t.total}` : "…"}`).join(" · ");
+  if (outsideRev === null) outsideRev = st.outside_rev;
+  // Not under the editor, whose save would put back the photo it loaded, nor
+  // under a re-score, which reloads when it ends: the next poll after them.
+  if (st.outside_rev !== outsideRev && !editSession.relPath && !scorePollTimer) {
+    outsideRev = st.outside_rev;
+    await reloadFromOutside();
+  }
+}
+
+// The command line changed the photos: decisions, stars, edits. The window
+// shows them as they now are, on the photo it was on.
+async function reloadFromOutside() {
+  const on = state.filteredPhotos[state.modal.open ? state.modal.idx : state.cursorIdx]?.rel_path;
+  await loadDb();
+  if (!state.byScene.has(state.selectedScene)) {
+    if (state.modal.open) closeModal();
+    if (state.sceneOrder.length) selectScene(state.sceneOrder[0]);
+    return;
+  }
+  recomputeFilter();
+  const at = state.filteredPhotos.findIndex((p) => p.rel_path === on);
+  if (at >= 0) state.cursorIdx = at;
+  renderSidebar();
+  renderPeopleChips();
+  if (state.modal.open) {
+    if (at >= 0) { state.modal.idx = at; renderModal(); } else closeModal();
+  }
+  renderMain();
 }
 
 function bindTopbar() {
@@ -10941,6 +10973,7 @@ async function openPrefs(pane = "general") {
   $("#pref-loupe").checked = loupe.on;
   $("#pref-launch-sound").checked = launchSoundOn();
   applyPhotoBg(photoBg());
+  await loadAssistant();
   renderPrefWorkspaces();
   $$("#pref-project-location button").forEach((b) =>
     b.classList.toggle("active", b.dataset.loc === workspaceState.location));
@@ -11165,6 +11198,7 @@ function closeMenus() {
 function bindUi() {
   bindPrefs();
   bindUpdates();
+  bindAssistant();
   bindScoreProgress();
   bindCompare();
   bindInspector();
@@ -13263,6 +13297,45 @@ function showNotice(text, link, error) {
   clearTimeout(showNotice.timer);
   // A failure stays until it is read and dismissed.
   if (!error) showNotice.timer = setTimeout(() => el.classList.add("hidden"), 12000);
+}
+
+// ---------- AI assistants ----------
+// Whether Claude Code is told of Pickapicka's command line as the app opens
+// (skill.py), and what the app found when it did, under the switch.
+function assistantText(s) {
+  if (!s.on) return "Off. Claude Code is not told how to work with Pickapicka.";
+  return {
+    written: "Claude Code can work with Pickapicka: ask it to look through a shoot, cull, edit or export. It sees what you have open.",
+    current: "Claude Code can work with Pickapicka: ask it to look through a shoot, cull, edit or export. It sees what you have open.",
+    theirs: `Your own skill is at ${s.path}, and is left as it is.`,
+    no_claude: "Claude Code is not on this computer. Once it is, Pickapicka tells it how to work with your photos when it next opens.",
+    unusable: s.unusable,
+    failed: `Could not tell Claude Code: ${s.error}`,
+    not_checked: "Told as Pickapicka opens.",
+  }[s.found];
+}
+
+function renderAssistant(s) {
+  $("#pref-assistant").checked = s.on;
+  $("#pref-assistant-status").textContent = assistantText(s);
+  $("#pref-assistant-status").title = s.on && ["written", "current"].includes(s.found) ? s.path : "";
+}
+
+async function loadAssistant() {
+  const res = await fetch("/api/assistant", { cache: "no-store" });
+  if (!res.ok) throw new Error(`assistant state failed: ${res.status}`);
+  renderAssistant(await res.json());
+}
+
+function bindAssistant() {
+  $("#pref-assistant").addEventListener("change", async (e) => {
+    const res = await fetch("/api/assistant", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on: e.target.checked }),
+    });
+    if (!res.ok) throw new Error(`assistant setting failed: ${res.status}`);
+    renderAssistant(await res.json());
+  });
 }
 
 function bindUpdates() {

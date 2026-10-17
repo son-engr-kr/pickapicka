@@ -94,6 +94,11 @@ tick, and twenty looks to start from (pastel, cinematic, film, black and white,
 comic and more) that leave each photo's brightness as it was.
 → [docs/editing.md](docs/editing.md)
 
+**With an AI assistant**: Claude Code or another assistant that runs commands
+can look at the photos, cull, apply looks and export through the `pickapicka`
+command, each change showing in the open window as it is made.
+→ [docs/assistant.md](docs/assistant.md)
+
 **Projects** — workspaces holding projects by name, three folder layouts, RAW
 treated as first-class, re-link when a folder moves, and delete that renames
 rather than deletes.
@@ -137,6 +142,7 @@ No PyTorch, no framework in the browser, no network.
 - [Culling](docs/culling.md) — scoring, scenes, subjects, people
 - [Editing](docs/editing.md) — the pipeline and every stage in it
 - [Projects and files](docs/projects.md) — layouts, RAW, persistence
+- [With an AI assistant](docs/assistant.md): the command line an assistant works with
 - [Development](docs/development.md) — tests, releasing
 
 ## License

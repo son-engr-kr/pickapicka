@@ -4,6 +4,9 @@ Every test gets an application-data directory of its own. userstate takes its
 paths at import time, and opening a project files it under them (recents,
 known projects, their ids); without this, a test run filed its temporary
 projects into the real state.json.
+
+And a Claude Code folder of its own: the skill the app writes there (skill.py)
+would otherwise land in the real ~/.claude, as it once did from a test.
 """
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from pickapicka import userstate
+from pickapicka import skill, userstate
 
 
 @pytest.fixture(autouse=True)
@@ -21,6 +24,8 @@ def _own_app_data(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(userstate, "CONFIG_DIR", home)
     monkeypatch.setattr(userstate, "STATE_FILE", home / "state.json")
     monkeypatch.setattr(userstate, "LUT_DIR", home / "luts")
+    monkeypatch.setattr(skill, "CLAUDE_DIR", home / ".claude")
+    monkeypatch.setattr(skill, "DEFAULT_DIR", home / ".claude" / "skills" / "pickapicka")
 
 
 @pytest.fixture

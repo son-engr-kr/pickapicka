@@ -81,6 +81,9 @@ pickapicka serve
 
 To upgrade later: `uv tool upgrade pickapicka`.
 
+Besides `serve`, the command has what an AI assistant works a shoot with:
+[With an AI assistant](assistant.md).
+
 ### Homebrew (macOS / Linux)
 
 ```bash

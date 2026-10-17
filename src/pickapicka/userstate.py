@@ -171,6 +171,18 @@ def set_update_auto(on: bool) -> None:
     _save(data)
 
 
+def get_assistant_skill() -> bool:
+    """Whether the app writes the Claude Code skill as it opens (skill.refresh)."""
+    return bool(_load().get("assistant_skill", True))
+
+
+@_changes
+def set_assistant_skill(on: bool) -> None:
+    data = _load()
+    data["assistant_skill"] = bool(on)
+    _save(data)
+
+
 # ----- optional models (modelstore.py) --------------------------------------
 # Per model pack: whether its feature is switched on, and when its licence's
 # use restrictions were accepted (the download that carries them needs it).

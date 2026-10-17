@@ -12,9 +12,9 @@ import threading
 import time
 import traceback
 from collections import OrderedDict
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from email.utils import formatdate
 from pathlib import Path
@@ -31,10 +31,11 @@ from pydantic import BaseModel, Field
 from . import (
     aifill as aifill_mod, cameras, db, editing, genfill as genfill_mod, healing as healing_mod,
     modelstore, exifinfo, exporting, film as film_mod, folderinfo, fsutil, hdr, imfile,
-    launch, looks as looks_mod, lut as lut_mod, metadata as metadata_mod, originals as originals_mod,
+    launch, link, looks as looks_mod, lut as lut_mod, metadata as metadata_mod, originals as originals_mod,
     portrait as portrait_mod,
     presets as presets_mod, projects as projects_mod,
     redeye as redeye_mod, transform as transform_mod, raw, relink, scenes, segment as segment_mod,
+    skill as skill_mod,
     updater as updater_mod, userstate, watermark as watermark_mod,
 )
 from .scoring import objects as objects_mod
@@ -344,6 +345,9 @@ class ExportPayload(BaseModel):
     # the picks, everything not rejected, or all.
     scenes: list[str] | None = None
     which: ExportWhich = "picks"
+    # Kept as what the export dialog offers next time. The command line sends
+    # False: an assistant's small proofs are not the person's next export.
+    remember: bool = True
 
 
 class NamePreviewPayload(BaseModel):
@@ -420,6 +424,10 @@ class VignettePayload(BaseModel):
 
 class QuitPayload(BaseModel):
     force: bool = False   # quit even with a task still running
+
+
+class AssistantPayload(BaseModel):
+    on: bool
 
 
 class UpdateAutoPayload(BaseModel):
@@ -711,6 +719,14 @@ class AppContext:
         self.prefetch_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prefetch")
         self.settled_optics: dict[str, dict[str, Any]] = {}
         self.analysis_lock = threading.Lock()
+        # Thumbnails made ahead of the grid asking: every one as a project
+        # opens, and an edited photo's as it is saved. The command line's own
+        # app has no grid, and would wait on its way out for the pool to finish.
+        self.ahead = True
+        # Changes made from the command line (see `link`): the window reloads
+        # the photos when this moves. Not reset by close(), so a project opened
+        # again does not count back to a number the window has already seen.
+        self.outside_rev = 0
 
     @staticmethod
     def _fresh_scoring_state() -> dict[str, Any]:
@@ -834,7 +850,8 @@ class AppContext:
         self.raw_cache_root.mkdir(parents=True, exist_ok=True)
         self._rebuild_index()
         self.opening_state["ready"] = True
-        _warm_thumbs(self)
+        if self.ahead:
+            _warm_thumbs(self)
 
     def reload_data(self) -> None:
         assert self.db_path is not None
@@ -2072,6 +2089,9 @@ def _report(fut: "Future[None]") -> None:
 
 
 def _prebuild_thumbs(ctx: "AppContext", rel_paths: "list[str]") -> None:
+    if not ctx.ahead:
+        return
+
     def build() -> None:
         for rel_path in rel_paths:
             photo = ctx.photo_index.get(rel_path)
@@ -2335,17 +2355,23 @@ def _resolve_db_path(payload: OpenPayload) -> Path:
 
 # ----- app construction ---------------------------------------------------
 
-def create_app(initial_db_path: Path | None = None) -> FastAPI:
+def create_app(initial_db_path: Path | None = None, lifespan: Any = None) -> FastAPI:
     ctx = AppContext()
     if initial_db_path is not None:
         ctx.load_db(initial_db_path)
 
-    app = FastAPI(title="Pickapicka")
+    app = FastAPI(title="Pickapicka", lifespan=lifespan)
+    # The command line builds an app of its own when the project is not open in
+    # the window, and loads the project into it directly (link.connect).
+    app.state.ctx = ctx
 
     @app.exception_handler(OriginalMissing)
     def original_missing(_request: Request, exc: OriginalMissing) -> JSONResponse:
         return JSONResponse(status_code=404, content={
             "detail": f"the original is not on disk: {exc}", "missing": True})
+    # Written by serve() as the app opens; an app built anywhere else (the
+    # tests, the command line's own) leaves the person's Claude folder alone.
+    app.state.assistant = skill_mod.status("not_checked")
     # Checks only once serve() starts it, so building an app (the tests) stays offline.
     updater = updater_mod.Updater()
     app.state.updater = updater
@@ -2358,6 +2384,13 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         path = request.url.path
         if path == "/" or path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-store, must-revalidate"
+        return response
+
+    @app.middleware("http")
+    async def _count_outside_changes(request: Request, call_next):
+        response = await call_next(request)
+        if request.headers.get(link.CHANGE_HEADER) and response.status_code < 400:
+            ctx.outside_rev += 1
         return response
 
     app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
@@ -2375,6 +2408,7 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             "db_path": str(ctx.db_path) if ctx.db_path else None,
             "photo_root": str(ctx.photo_root) if ctx.photo_root else None,
             "opening": ctx.opening_state,
+            "outside_rev": ctx.outside_rev,
             # What is running in the background, for the top bar's indicator.
             "tasks": {name: {k: st.get(k) for k in ("running", "phase", "idx", "total")}
                       for name, st in (("export", ctx.export_state), ("scoring", ctx.scoring_state),
@@ -2456,6 +2490,20 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
         if payload.auto:
             threading.Thread(target=updater.check, daemon=True, name="update-check").start()
         return _update_state()
+
+    # ----- AI assistants (skill.py) -----------------------------------
+
+    @app.get("/api/assistant")
+    def get_assistant() -> dict[str, Any]:
+        """Whether Claude Code is told of the command line, and what the app
+        found as it opened (written, already current, no Claude Code...)."""
+        return app.state.assistant
+
+    @app.post("/api/assistant")
+    def set_assistant(payload: AssistantPayload) -> dict[str, Any]:
+        userstate.set_assistant_skill(payload.on)
+        app.state.assistant = skill_mod.refresh() if payload.on else skill_mod.remove()
+        return app.state.assistant
 
     @app.post("/api/update/install")
     def install_update(payload: QuitPayload | None = None) -> dict[str, Any]:
@@ -4814,7 +4862,8 @@ def create_app(initial_db_path: Path | None = None) -> FastAPI:
             # Before the first photo, so an export stopped half way is left
             # out of the next scan as well.
             projects_mod.mark_export_dir(target)
-        userstate.set_export_settings(settings.model_dump())
+        if payload.remember:
+            userstate.set_export_settings(settings.model_dump())
         # Nothing between claiming the run and starting its thread may fail, or
         # the run would stay marked as running with nothing behind it.
         with ctx.score_lock:
@@ -5201,7 +5250,24 @@ def serve(db_path: Path | None, host: str, port: int, open_browser: bool = False
     if actual_port != port:
         print(f"  Port {port} is in use; using {actual_port} instead.")
 
-    app = create_app(db_path)
+    # Where the command line finds this app (link.find_running): noted while
+    # it serves, on this machine's own address when it is bound to every one.
+    # A lifespan rather than a `finally` around server.run(), because uvicorn
+    # re-raises a SIGTERM once it has shut down and that ends the process first.
+    near = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+
+    @asynccontextmanager
+    async def noted(_app: FastAPI) -> "AsyncIterator[None]":
+        link.note_running(f"http://{near}:{actual_port}")
+        try:
+            yield
+        finally:
+            link.forget_running()
+
+    app = create_app(db_path, lifespan=noted)
+    # Claude Code, if it is here, is told of the command line as the app opens,
+    # and of this version's, so an assistant needs nothing set up to use it.
+    app.state.assistant = skill_mod.refresh()
     url = f"http://{host}:{actual_port}"
     print(f"\n  Pickapicka — open {url}\n")
     if open_browser:

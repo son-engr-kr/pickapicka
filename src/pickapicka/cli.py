@@ -1,4 +1,5 @@
-"""CLI entry point: `pickapicka score`, `pickapicka serve`, `pickapicka report`."""
+"""CLI entry point: `pickapicka serve` and the scoring commands here, and the
+commands an assistant works a project with (see `commands`)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,7 +7,7 @@ from pathlib import Path
 import click
 import truststore
 
-from . import paths
+from . import commands, paths, skill
 
 
 @click.group()
@@ -22,8 +23,34 @@ def main() -> None:
     # so the libraries imported before this point are covered too.
     truststore.inject_into_ssl()
     # One-shot, on whichever subcommand runs first after an upgrade.
+    # On stderr: stdout is the JSON an assistant reads.
     for note in paths.migrate_legacy():
-        click.echo(f"Moved app data: {note}")
+        click.echo(f"Moved app data: {note}", err=True)
+
+
+for _command in commands.ALL:
+    main.add_command(_command)
+
+
+@main.command("install-skill")
+@click.option(
+    "--dir",
+    "folder",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=skill.DEFAULT_DIR,
+    show_default=True,
+    help="Folder to write SKILL.md to.",
+)
+@click.option("--print", "only_print", is_flag=True, help="Print it instead of writing it.")
+def install_skill(folder: Path, only_print: bool) -> None:
+    """Teach Claude Code to use Pickapicka: writes the skill that tells it
+    these commands. The app does this itself as it opens when Claude Code is
+    on the machine (Preferences turns that off); this is for doing it by hand,
+    or into another folder."""
+    if only_print:
+        click.echo(skill.render())
+        return
+    commands.emit({"skill": str(skill.install(folder)), "command": skill.command_path()})
 
 
 @main.command()
