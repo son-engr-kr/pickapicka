@@ -67,6 +67,8 @@ a = Analysis(
         "insightface.utils.face_align",
         # The Trash on each platform (originals.py): send2trash picks its
         # module at import time, behind a try, so name the ones it falls to.
+        # With PyObjC in the Mac app (macapp.py) it picks the modern one.
+        "send2trash.mac.modern",
         "send2trash.mac.legacy",
         "send2trash.win.legacy",
         # sklearn submodules used at runtime via DBSCAN(metric="cosine")

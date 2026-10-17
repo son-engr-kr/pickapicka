@@ -137,10 +137,17 @@ def score(
     default=False,
     help="Open the web viewer in the default browser after starting.",
 )
-def serve(db_path: Path | None, host: str, port: int, open_browser: bool) -> None:
+@click.option(
+    "--as-app",
+    is_flag=True,
+    hidden=True,
+    help="Run as the installed app (app_entry.py adds it): quit once the last tab "
+         "has closed, and on macOS answer the Dock.",
+)
+def serve(db_path: Path | None, host: str, port: int, open_browser: bool, as_app: bool) -> None:
     """Launch the web viewer. With no DB_PATH the landing page lets you pick a folder."""
     from .server import serve as run_serve
-    run_serve(db_path, host, port, open_browser=open_browser)
+    run_serve(db_path, host, port, open_browser=open_browser, as_app=as_app)
 
 
 @main.command()

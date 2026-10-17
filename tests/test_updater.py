@@ -319,11 +319,20 @@ def test_the_windows_script_quotes_for_powershell(tmp_path) -> None:
     installer = tmp_path / AWKWARD / EXE_NAME
     script = updater.windows_install_script(
         installer=installer, pid=4242, port=8765, exit_file=tmp_path / "exit.txt",
-        exe=Path(r"C:\Program Files\Pickapicka\pickapicka.exe"))
+        exe=Path(r"C:\Program Files\Pickapicka\pickapicka.exe"), as_app=False)
     assert updater._ps(str(installer)) in script
     assert "'사진 앱''s" in updater._ps(AWKWARD)
     assert "-Verb RunAs -Wait -PassThru" in script and "'/SILENT'" in script
-    assert "Get-Process -Id 4242" in script and "'--port','8765'" in script
+    assert "Get-Process -Id 4242" in script and "-ArgumentList 'serve','--port','8765'\n" in script
+
+
+def test_the_windows_script_starts_the_app_as_the_app_it_was(tmp_path) -> None:
+    """The installed app quits with its last tab (tabs.py); the one the update
+    starts again has to know it is that app."""
+    script = updater.windows_install_script(
+        installer=tmp_path / EXE_NAME, pid=1, port=8765, exit_file=tmp_path / "exit.txt",
+        exe=Path(r"C:\Program Files\Pickapicka\pickapicka.exe"), as_app=True)
+    assert "-ArgumentList 'serve','--port','8765','--as-app'\n" in script
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell's parser is Windows'")
@@ -331,7 +340,7 @@ def test_the_windows_script_parses(tmp_path) -> None:
     path = tmp_path / "install.ps1"
     path.write_text(updater.windows_install_script(
         installer=tmp_path / AWKWARD / EXE_NAME, pid=1, port=8765, exit_file=tmp_path / "exit.txt",
-        exe=Path(r"C:\Program Files\Pickapicka\pickapicka.exe")), encoding="utf-8-sig")
+        exe=Path(r"C:\Program Files\Pickapicka\pickapicka.exe"), as_app=True), encoding="utf-8-sig")
     check = ("$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("
              f"'{path}', [ref]$null, [ref]$e); $e.Count")
     out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", check],
@@ -347,7 +356,7 @@ def test_starting_the_install_hands_over_to_a_detached_script(tmp_path, github, 
     monkeypatch.setattr(sys, "executable", str(bundle / "Contents" / "MacOS" / "pickapicka"))
     started = []
     monkeypatch.setattr(updater.subprocess, "Popen", lambda args, **kw: started.append((args, kw)))
-    u.start_install(port=8765)
+    u.start_install(port=8765, as_app=True)
     assert u.snapshot()["status"] == "installing"
     pending = json.loads((tmp_path / "pending.json").read_text())
     assert pending["from"] == "0.10.0" and pending["to"] == "0.11.0"
@@ -357,7 +366,7 @@ def test_starting_the_install_hands_over_to_a_detached_script(tmp_path, github, 
     assert shlex.quote(str(tmp_path / "updates" / PKG_NAME)) in script
     assert shlex.quote(str(bundle.resolve())) in script
     with pytest.raises(AssertionError):
-        u.start_install(port=8765)      # once is enough
+        u.start_install(port=8765, as_app=True)      # once is enough
 
 
 @pytest.mark.skipif(os.name != "posix", reason="TIME_WAIT only blocks a bind without SO_REUSEADDR on POSIX")

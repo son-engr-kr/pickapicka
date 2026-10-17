@@ -71,7 +71,10 @@ Your photos are never moved or modified. Everything the app decides lives in the
 project's own folder, in a `picks.json` that points at them.
 
 Launched as an app, it opens with a short intro and a chime; Preferences turns
-the sound off.
+the sound off. The app lives in its browser tab: it quits about fifteen seconds
+after its last tab closes (once an export or scoring that is still running has
+finished), and opening it again while it runs brings it up in a fresh tab and
+closes the old one. `pickapicka serve` from a terminal runs until it is stopped.
 
 ## What it does
 

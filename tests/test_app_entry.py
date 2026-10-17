@@ -10,11 +10,14 @@ log lands there.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+import pytest
 
 
 def _run_windowed(code: str, home: Path) -> subprocess.CompletedProcess:
@@ -57,6 +60,59 @@ def test_a_console_start_is_left_alone() -> None:
                           "assert sys.stdout is before"],
                          capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr
+
+
+def _argv_after_entry(args: list[str], home: Path, opened_by: str | None = None) -> list[str]:
+    """What cli.main is handed once app_entry.run has had the arguments."""
+    env = {**os.environ, "HOME": str(home)}
+    env.pop("__CFBundleIdentifier", None)
+    if opened_by is not None:
+        env["__CFBundleIdentifier"] = opened_by
+    code = ("import json, sys\n"
+            "from pickapicka import app_entry, cli\n"
+            "cli.main = lambda: print(json.dumps(sys.argv[1:]))\n"
+            "app_entry.run()\n")
+    out = subprocess.run([sys.executable, "-c", code, *args], env=env,
+                         capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_a_launch_with_nothing_typed_serves_as_the_app() -> None:
+    """The Finder, the Dock and the Start menu pass no arguments."""
+    with tempfile.TemporaryDirectory() as d:
+        assert _argv_after_entry([], Path(d)) == ["serve", "--open", "--as-app"]
+
+
+def test_a_command_typed_in_a_terminal_is_left_as_typed() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        home = Path(d)
+        assert _argv_after_entry(["serve", "--port", "8799"], home) == ["serve", "--port", "8799"]
+        assert _argv_after_entry(["serve"], home, opened_by="com.apple.Terminal") == ["serve"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="LaunchServices is macOS's")
+def test_what_macos_opens_with_arguments_still_serves_as_the_app() -> None:
+    """The updater opens the new version with `open -a ... --args serve --port N`."""
+    with tempfile.TemporaryDirectory() as d:
+        home = Path(d)
+        got = _argv_after_entry(["serve", "--port", "8799"], home, opened_by=app_entry_bundle_id())
+        assert got == ["serve", "--port", "8799", "--as-app"]
+        got = _argv_after_entry(["serve", "--as-app"], home, opened_by=app_entry_bundle_id())
+        assert got == ["serve", "--as-app"]
+        # Only the server is the app; another command opened this way runs as it is.
+        assert _argv_after_entry(["report", "x.json"], home, opened_by=app_entry_bundle_id()) \
+            == ["report", "x.json"]
+
+
+def app_entry_bundle_id() -> str:
+    """The id the spec gives the bundle, read without importing app_entry here."""
+    spec = Path(__file__).parents[1] / "packaging" / "pickapicka.spec"
+    text = spec.read_text(encoding="utf-8")
+    assert 'bundle_identifier="kr.son-engr.pickapicka"' in text
+    entry = Path(__file__).parents[1] / "src" / "pickapicka" / "app_entry.py"
+    assert 'BUNDLE_ID = "kr.son-engr.pickapicka"' in entry.read_text(encoding="utf-8")
+    return "kr.son-engr.pickapicka"
 
 
 def _main() -> None:

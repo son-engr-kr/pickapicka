@@ -18,10 +18,17 @@ SOUND = Path(__file__).parent / "web" / "sounds" / "launch.wav"
 # The page plays its intro when it is opened at this address. Only the app's
 # own launch opens it, so a reload or a second tab goes straight to work.
 INTRO_QUERY = "launch"
+# The app opened again while it runs: no intro, but like a launch's page, this
+# one takes over from the tabs already open (server.py, /api/tabs).
+SHOW_QUERY = "show"
 
 
 def intro_url(base: str) -> str:
     return f"{base}/?{INTRO_QUERY}"
+
+
+def show_url(base: str) -> str:
+    return f"{base}/?{SHOW_QUERY}"
 
 
 def can_play() -> bool:

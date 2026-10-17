@@ -174,6 +174,13 @@ photos. The landing lists every project in the
 current workspace; you can also open a project folder directly, and recent
 projects are listed under that section.
 
+Started this way, the server runs until you stop it (Ctrl-C, or Quit in the top
+bar). The installed app quits by itself instead, about fifteen seconds after its
+last browser tab closes, though not while an export or scoring is still
+running. Opening the app again while it runs opens a fresh tab and closes the
+old one, so it comes up in front. On macOS it also sits in the Dock, where
+Quit stops it.
+
 ### Open an existing project directly
 
 ```bash

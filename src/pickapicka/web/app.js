@@ -13097,6 +13097,57 @@ async function quitApp() {
   $("#quit-screen").classList.remove("hidden");
 }
 
+// ---------- this tab ----------
+// The installed app quits a little after its last tab closes (tabs.py), so a
+// tab keeps a socket open to the server for as long as it is open. The tab the
+// app opens as it launches, or when it is opened again while it runs (?launch,
+// ?show: launch.py), takes over from the tabs already open: they save and
+// close, which leaves one tab, in front.
+const TAB_RETRY_MS = 1000;
+const TAB_SHOW_QUERY = "show";   // launch.SHOW_QUERY
+const tabLink = {
+  claim: ["launch", TAB_SHOW_QUERY].some((k) => new URLSearchParams(location.search).has(k)),
+  over: false,   // handed over to a newer tab, or the app has gone
+};
+
+function connectTab() {
+  const claim = tabLink.claim;
+  tabLink.claim = false;   // once: a reload of this tab is not a launch
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${scheme}://${location.host}/api/tabs${claim ? "?claim=true" : ""}`);
+  ws.addEventListener("message", (e) => {
+    if (JSON.parse(e.data).type === "superseded") handOverTab();
+  });
+  ws.addEventListener("close", () => {
+    if (!tabLink.over) setTimeout(checkTabLink, TAB_RETRY_MS);
+  });
+}
+
+// The socket closed while the page is open. The server has stopped (Quit in
+// the Dock, an update started from another tab), or the connection dropped
+// with the server still running, and only then does the tab connect again.
+async function checkTabLink() {
+  if (!$("#update-screen").classList.contains("hidden")) return;   // waitForRestart reloads
+  if (!$("#quit-screen").classList.contains("hidden")) return;
+  const res = await fetch("/api/state", { cache: "no-store" }).catch(() => null);
+  if (res && res.ok) { connectTab(); return; }
+  tabLink.over = true;
+  $("#quit-screen").classList.remove("hidden");
+}
+
+// A newer tab has the app now. An unsaved edit keeps this tab as it is, as
+// closing would lose it. Otherwise it saves and closes; a browser lets a page
+// close a tab only when the tab has nothing to go back to, so one that was
+// browsed in before says where the app went instead.
+async function handOverTab() {
+  if (editIsDirty()) return;
+  tabLink.over = true;
+  await decisionSaves;
+  await flushViewSave();
+  window.close();
+  $("#moved-screen").classList.remove("hidden");
+}
+
 // ---------- updates ----------
 // The server looks for a new release and fetches its installer (updater.py);
 // the page says what it found and starts the install when asked. "Later" puts
@@ -14378,6 +14429,9 @@ function playIntro() {
 
 // ---------- boot ----------
 (async () => {
+  // First, so a reload is away from the app for as short a time as it can be.
+  if (tabLink.claim) history.replaceState(null, "", location.pathname);
+  connectTab();
   if (document.documentElement.classList.contains("launching")) playIntro();
   bindUi();
   bindKeys();
@@ -14387,6 +14441,7 @@ function playIntro() {
   loupeInit();
   bindModalZoom();
   $$(".quit-btn").forEach((b) => b.addEventListener("click", quitApp));
+  $("#moved-here").addEventListener("click", () => location.replace(`${location.pathname}?${TAB_SHOW_QUERY}`));
   refreshUpdate().then(() => showUpdateResult(update.state));
   $("#undo-toast-btn .kbd").textContent = `${MOD_KEY}Z`;
   let s;

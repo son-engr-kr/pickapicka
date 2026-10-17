@@ -163,11 +163,14 @@ def _ps(text: str) -> str:
 
 
 def windows_install_script(*, installer: Path, pid: int, port: int, exit_file: Path,
-                           exe: Path) -> str:
+                           exe: Path, as_app: bool) -> str:
     """Wait for the app to quit, run setup.exe silently as an administrator
     (the UAC prompt), and start the app again from where it is installed, which
-    the upgrade keeps. Declining the prompt raises, and is recorded as such."""
+    the upgrade keeps. Declining the prompt raises, and is recorded as such.
+    `as_app` starts it as the app it was, which quits with its last tab; on
+    macOS, opening it with `open` already says so (app_entry.py)."""
     args = ",".join(_ps(a) for a in INNO_SILENT)
+    serve = ",".join(_ps(a) for a in ["serve", "--port", str(port)] + (["--as-app"] if as_app else []))
     return f"""# Written by Pickapicka's updater (updater.py), run once, after the app quits.
 $ErrorActionPreference = 'Stop'
 while (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 200 }}
@@ -181,7 +184,7 @@ try {{
   $message = $_.Exception.Message
 }}
 Set-Content -LiteralPath {_ps(str(exit_file))} -Value @("$code", $message) -Encoding UTF8
-Start-Process -FilePath {_ps(str(exe))} -ArgumentList 'serve','--port','{port}'
+Start-Process -FilePath {_ps(str(exe))} -ArgumentList {serve}
 """
 
 
@@ -349,7 +352,7 @@ class Updater:
 
     # -- installing
 
-    def start_install(self, *, port: int) -> None:
+    def start_install(self, *, port: int, as_app: bool) -> None:
         """Hand over to the installer: write the script, start it, and leave
         quitting to the caller. The script waits for this process to go."""
         with self._lock:
@@ -379,7 +382,7 @@ class Updater:
             # without one in the ANSI code page, which has no Korean in it.
             script.write_text(windows_install_script(
                 installer=installer, pid=pid, port=port, exit_file=self.exit_file,
-                exe=Path(sys.executable).resolve()), encoding="utf-8-sig")
+                exe=Path(sys.executable).resolve(), as_app=as_app), encoding="utf-8-sig")
             flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
             subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
                               "Bypass", "-WindowStyle", "Hidden", "-File", str(script)],

@@ -1916,9 +1916,9 @@ input[type="range"] { accent-color: var(--accent); }
 .sidebar-top .quit-btn { flex: none; }
 .landing-header { position: relative; }
 .landing-header .quit-btn { position: absolute; top: 0; right: 0; }
-#quit-screen { position: fixed; inset: 0; z-index: 1000; background: var(--canvas);
+#quit-screen, #moved-screen { position: fixed; inset: 0; z-index: 1000; background: var(--canvas);
   display: flex; align-items: center; justify-content: center; padding: var(--s5); }
-#quit-screen.hidden { display: none; }
+#quit-screen.hidden, #moved-screen.hidden { display: none; }
 #update-screen { position: fixed; inset: 0; z-index: 1000; background: var(--canvas);
   display: flex; align-items: center; justify-content: center; padding: var(--s4); }
 #update-screen.hidden { display: none; }
@@ -1944,6 +1944,7 @@ input[type="range"] { accent-color: var(--accent); }
 .quit-box { max-width: 420px; text-align: center; }
 .quit-box h2 { margin: 0 0 var(--s2); font-size: 18px; }
 .quit-box p { margin: 0; color: var(--ink-dim); line-height: 1.6; }
+.quit-box .btn { margin-top: var(--s4); }
 
 /* ----- look (colour LUT) panel ----- */
 .look-pick-row { display: flex; gap: var(--s1); margin-bottom: var(--s2); }

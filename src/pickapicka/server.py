@@ -22,7 +22,7 @@ from typing import Any, BinaryIO, Callable, Literal
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
@@ -35,7 +35,7 @@ from . import (
     portrait as portrait_mod,
     presets as presets_mod, projects as projects_mod,
     redeye as redeye_mod, transform as transform_mod, raw, relink, scenes, segment as segment_mod,
-    skill as skill_mod,
+    skill as skill_mod, tabs as tabs_mod,
     updater as updater_mod, userstate, watermark as watermark_mod,
 )
 from .scoring import objects as objects_mod
@@ -2377,6 +2377,8 @@ def create_app(initial_db_path: Path | None = None, lifespan: Any = None) -> Fas
     app.state.updater = updater
     downloads = modelstore.Downloads()
     app.state.downloads = downloads
+    # serve() says so when it runs as the installed app (cli serve --as-app).
+    app.state.as_app = False
 
     @app.middleware("http")
     async def _no_cache_for_web_assets(request: Request, call_next):
@@ -2470,6 +2472,40 @@ def create_app(initial_db_path: Path | None = None, lifespan: Any = None) -> Fas
         _stop_server()
         return {"quitting": True}
 
+    # ----- open tabs (tabs.py) ---------------------------------------------
+
+    tabs = tabs_mod.Tabs()
+    app.state.tabs = tabs
+    tab_sockets: set[WebSocket] = set()
+
+    @app.websocket("/api/tabs")
+    async def tab_socket(ws: WebSocket, claim: bool = False) -> None:
+        """Held open by each page for as long as it is open (app.js,
+        connectTab), which is how the installed app knows its last tab has
+        closed. A page the app opened for a launch claims the app: the tabs
+        already open are told they have been superseded, and save and close,
+        so opening the app again leaves one tab, in front."""
+        await ws.accept()
+        if claim:
+            for other in list(tab_sockets):
+                try:
+                    await other.send_json({"type": "superseded"})
+                except WebSocketDisconnect:
+                    pass   # closed while this one connected; nothing to tell it
+        tab_sockets.add(ws)
+        tabs.opened()
+        try:
+            # The page sends nothing; this waits for it to go.
+            while (await ws.receive())["type"] != "websocket.disconnect":
+                pass
+        finally:
+            tab_sockets.discard(ws)
+            tabs.closed()
+
+    # Started by serve() for the installed app.
+    app.state.watch_tabs = lambda: tabs_mod.watch(
+        tabs, busy=lambda: bool(_running_tasks()), stop=_stop_server)
+
     # ----- updates (updater.py) ------------------------------------------
 
     def _update_state() -> dict[str, Any]:
@@ -2517,7 +2553,7 @@ def create_app(initial_db_path: Path | None = None, lifespan: Any = None) -> Fas
             raise HTTPException(status_code=400, detail="there is no downloaded update to install")
         server = getattr(app.state, "server", None)
         assert server is not None, "an update needs the uvicorn server that serve() started"
-        updater.start_install(port=server.config.port)
+        updater.start_install(port=server.config.port, as_app=app.state.as_app)
         _stop_server()
         return {"restarting": True}
 
@@ -5233,17 +5269,24 @@ def _pick_free_port(host: str, preferred: int, attempts: int = 20) -> int:
         return s.getsockname()[1]
 
 
-def serve(db_path: Path | None, host: str, port: int, open_browser: bool = False) -> None:
+def serve(db_path: Path | None, host: str, port: int, open_browser: bool = False,
+          as_app: bool = False) -> None:
+    """Run the server until it is stopped. `as_app` is the installed app
+    (app_entry.py): it quits once its last tab has closed (tabs.py), and on
+    macOS it runs AppKit's event loop so that macOS can reach it (macapp.py)."""
+    import sys
+    import webbrowser
+
     import uvicorn
 
     # If our app is already serving on the requested port, just point the
-    # browser at it instead of failing with EADDRINUSE.
+    # browser at it instead of failing with EADDRINUSE. The tab that opens
+    # takes over from the ones already open (/api/tabs).
     if _is_pickapicka_running(host, port):
         url = f"http://{host}:{port}"
         print(f"\n  Pickapicka is already running — opening {url}\n")
         if open_browser:
-            import webbrowser
-            webbrowser.open(url)
+            webbrowser.open(launch.show_url(url))
         return
 
     actual_port = _pick_free_port(host, port)
@@ -5268,13 +5311,10 @@ def serve(db_path: Path | None, host: str, port: int, open_browser: bool = False
     # Claude Code, if it is here, is told of the command line as the app opens,
     # and of this version's, so an assistant needs nothing set up to use it.
     app.state.assistant = skill_mod.refresh()
+    app.state.as_app = as_app
     url = f"http://{host}:{actual_port}"
     print(f"\n  Pickapicka — open {url}\n")
     if open_browser:
-        import threading
-        import time
-        import webbrowser
-
         def _open() -> None:
             time.sleep(1.0)
             webbrowser.open(launch.intro_url(url))
@@ -5284,4 +5324,11 @@ def serve(db_path: Path | None, host: str, port: int, open_browser: bool = False
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=actual_port, log_level="warning"))
     app.state.server = server
     app.state.updater.start_background(userstate.get_update_auto)
-    server.run()
+    if as_app:
+        threading.Thread(target=app.state.watch_tabs, name="tabs", daemon=True).start()
+    if as_app and sys.platform == "darwin":
+        from . import macapp
+        macapp.run(server, reopen=lambda: webbrowser.open(launch.show_url(url)),
+                   quit=lambda: setattr(server, "should_exit", True))
+    else:
+        server.run()

@@ -2,7 +2,9 @@
 
 When launched from Finder/Dock or the Start menu there are no CLI arguments, so
 we default to `serve --open`. When run from the command line, all the regular
-`pickapicka` subcommands still work.
+`pickapicka` subcommands still work. Opened as an app, it serves as one
+(`serve --as-app`): it quits when its last tab closes, and on macOS it answers
+the Dock (macapp.py).
 
 Eagerly imports the package's heavy submodules so that PyInstaller's static
 analysis pulls in their transitive native dependencies (opencv, onnxruntime,
@@ -10,11 +12,13 @@ insightface, scikit-learn, fastapi, etc.) into the bundle.
 """
 from __future__ import annotations
 
+import os
 import sys
 
 from pickapicka import fsutil, paths
 
 LOG_NAME = "app.log"
+BUNDLE_ID = "kr.son-engr.pickapicka"   # packaging/pickapicka.spec
 LOG_MAX_BYTES = 2_000_000   # past this the last run's log is kept as app.log.1
 
 
@@ -52,8 +56,27 @@ def give_output_somewhere() -> None:
         sys.stderr = out
 
 
+def opened_by_launchservices() -> bool:
+    """Whether macOS opened this process as the app: from the Finder, the Dock,
+    Launchpad or Spotlight, or with `open`, as the updater starts it again
+    (updater.py). LaunchServices puts the bundle's id in __CFBundleIdentifier
+    for what it opens; a command typed in Terminal carries Terminal's."""
+    return sys.platform == "darwin" and os.environ.get("__CFBundleIdentifier") == BUNDLE_ID
+
+
+def opened_as_app() -> bool:
+    """No arguments is a launch from the Start menu or the Finder. macOS also
+    opens the app with arguments, when the updater asks it to."""
+    return len(sys.argv) == 1 or opened_by_launchservices()
+
+
 # Before the imports below, so nothing they do at import time meets a None.
 give_output_somewhere()
+
+# Before the imports below too, which take seconds (macapp.prepare says why).
+if opened_by_launchservices():
+    from pickapicka import macapp
+    macapp.prepare()
 
 # Static-analysis anchors: do NOT remove. These trigger PyInstaller to bundle
 # the entire dependency graph. Lazy-imported in cli.py at runtime, but bundled
@@ -68,8 +91,11 @@ from fastapi import testclient  # noqa: E402, F401
 
 
 def run() -> None:
+    as_app = opened_as_app()
     if len(sys.argv) == 1:
         sys.argv.extend(["serve", "--open"])
+    if as_app and sys.argv[1] == "serve" and "--as-app" not in sys.argv:
+        sys.argv.append("--as-app")
     cli.main()
 
 

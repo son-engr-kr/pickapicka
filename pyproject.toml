@@ -33,6 +33,9 @@ dependencies = [
     "opencv-python>=4.10",
     "pillow>=10.4",
     "platformdirs>=4.0",
+    # The Mac app's event loop (macapp.py): without one, macOS cannot hand a
+    # second launch to the running app and says it "is not open anymore".
+    "pyobjc-framework-cocoa>=11 ; sys_platform == 'darwin'",
     # 0.27 is where RawPy.other landed, which is where the capture time of a
     # RAW comes from — earlier releases have no way to read one.
     "rawpy>=0.27",
