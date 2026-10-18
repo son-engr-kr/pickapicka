@@ -314,3 +314,42 @@ def test_find_lists_new_projects_and_refiles_moved_ones(app, tmp_path) -> None:
     # Looking again finds them listed.
     again = _route(app, "/api/projects/find", "POST")(server.FindProjectsPayload(root=str(drive_b)))
     assert {r["status"] for r in again["results"]} == {"listed"}
+
+
+def test_a_relink_to_the_wrong_folder_keeps_the_old_one(app, tmp_path) -> None:
+    old, wrong = tmp_path / "old", tmp_path / "wrong"
+    (wrong / "z.jpg").parent.mkdir(parents=True)
+    (wrong / "z.jpg").write_bytes(b"x")
+    p = _project(_ws(app, tmp_path / "ws") / "p", old, [{"rel_path": "a.jpg"}, {"rel_path": "b.jpg"}])
+    with pytest.raises(server.HTTPException) as e:
+        _route(app, "/api/project/relink", "POST")(server.RelinkPayload(
+            project_dir=str(p), new_photo_dir=str(wrong)))
+    assert e.value.status_code == 400
+    assert db.load(p / "picks.json")["photo_root"] == str(old)
+
+
+def test_a_relink_finding_only_some_waits_to_be_told(app, tmp_path) -> None:
+    old, new = tmp_path / "old", tmp_path / "new"
+    new.mkdir()
+    (new / "a.jpg").write_bytes(b"x")
+    p = _project(_ws(app, tmp_path / "ws") / "p", old, [{"rel_path": "a.jpg"}, {"rel_path": "b.jpg"}])
+    relink = _route(app, "/api/project/relink", "POST")
+    rep = relink(server.RelinkPayload(project_dir=str(p), new_photo_dir=str(new)))
+    assert (rep["saved"], rep["resolved"], rep["unmatched_names"]) == (False, 1, ["b.jpg"])
+    assert db.load(p / "picks.json")["photo_root"] == str(old)
+    rep = relink(server.RelinkPayload(project_dir=str(p), new_photo_dir=str(new), partial_ok=True))
+    assert rep["saved"]
+    assert db.load(p / "picks.json")["photo_root"] == str(new.resolve())
+
+
+def test_a_relink_says_when_the_names_are_there_more_than_once(app, tmp_path) -> None:
+    old, parent = tmp_path / "old", tmp_path / "all"
+    for shoot in ("day1", "day2"):
+        (parent / shoot).mkdir(parents=True)
+        (parent / shoot / "a.jpg").write_bytes(b"x")
+    p = _project(_ws(app, tmp_path / "ws") / "p", old, [{"rel_path": "a.jpg"}])
+    with pytest.raises(server.HTTPException) as e:
+        _route(app, "/api/project/relink", "POST")(server.RelinkPayload(
+            project_dir=str(p), new_photo_dir=str(parent)))
+    assert "more than one file of their name" in e.value.detail
+    assert db.load(p / "picks.json")["photo_root"] == str(old)

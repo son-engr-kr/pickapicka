@@ -568,6 +568,7 @@ class RelinkPayload(BaseModel):
     new_photo_dir: str
     db_path: str | None = None
     project_dir: str | None = None
+    partial_ok: bool = False   # the person saw only some are there and went ahead
 
 
 # ----- app context --------------------------------------------------------
@@ -3315,7 +3316,16 @@ def create_app(initial_db_path: Path | None = None, lifespan: Any = None) -> Fas
         if not new_photo.is_dir():
             raise HTTPException(status_code=400, detail=f"folder not found: {new_photo}")
         was_root = Path(db.load(db_path)["photo_root"])
-        report = relink.relink_project(db_path, new_photo)
+        report = relink.relink_project(db_path, new_photo, partial_ok=payload.partial_ok)
+        if report["resolved"] + report["rematched"] == 0 and report["total"]:
+            # A folder above the shoot can hold the names many times over.
+            why = (f"; {report['ambiguous']} have more than one file of their name there,"
+                   " so choose the shoot's own folder" if report["ambiguous"] else "")
+            raise HTTPException(
+                status_code=400,
+                detail=f"none of the {report['total']} photos were found in {new_photo}{why}; nothing changed")
+        if not report["saved"]:
+            return report   # only some found: the UI asks before saving
         if payload.project_dir:
             # Photos are moved by the folderful: whatever else lived where
             # these did is offered too, for one re-link to bring back all.
@@ -3346,7 +3356,12 @@ def create_app(initial_db_path: Path | None = None, lifespan: Any = None) -> Fas
             elif not new_photo.is_dir():
                 r["error"] = f"folder not found: {new_photo}"
             else:
-                r.update(relink.relink_project(pdir / "picks.json", new_photo))
+                # The person chose these off a list that showed how many are there.
+                rep = relink.relink_project(pdir / "picks.json", new_photo, partial_ok=True)
+                if rep["saved"]:
+                    r.update(rep)
+                else:
+                    r["error"] = "none of its photos are there"
         return {"results": results}
 
     @app.post("/api/projects/find")

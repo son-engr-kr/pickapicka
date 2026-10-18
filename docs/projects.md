@@ -8,7 +8,8 @@
   separate from them. The new-project wizard counts the photos in the folder
   you pick and stops you at a folder with none. Photos are referenced by path; if a photo folder
   moves, the app offers to **re-link** it (matching by folder structure, then by
-  file name). **Deleting a project never touches your photos**: it renames the
+  file name). A folder holding none of the photos is turned down with the old
+  place kept, and one holding only some asks before it is used. **Deleting a project never touches your photos**: it renames the
   project folder to `<name>.deleted-<timestamp>` and hides it from the list —
   decisions and edits stay inside, so renaming the folder back restores it.
 - **A workspace is a plain folder** you choose; the app keeps nothing in it but

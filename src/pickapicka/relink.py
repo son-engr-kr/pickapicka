@@ -30,16 +30,21 @@ def _basename_index(root: Path) -> dict[str, list[Path]]:
     return idx
 
 
-def relink_project(db_path: Path, new_photo_root: Path) -> dict[str, Any]:
+def relink_project(db_path: Path, new_photo_root: Path, *,
+                   partial_ok: bool = False) -> dict[str, Any]:
     """Point a project at `new_photo_root`, remapping files by basename where the
-    relative path no longer resolves. Returns a match report."""
+    relative path no longer resolves. Returns a match report.
+
+    Nothing is saved when none of the photos are found there (a wrong folder
+    would otherwise overwrite the old root), nor when only some are and
+    `partial_ok` is not given: `saved` in the report says which."""
     data = db.load(db_path)
     jpeg_subdir = data.get("jpeg_subdir", "")
     raw_subdir = data.get("raw_subdir", "")
     new_jpeg_root = new_photo_root / jpeg_subdir if jpeg_subdir else new_photo_root
     new_raw_root = new_photo_root / raw_subdir if raw_subdir else new_jpeg_root
 
-    total = resolved = rematched = 0
+    total = resolved = rematched = ambiguous = 0
     unmatched: list[str] = []
     jpeg_idx: dict[str, list[Path]] | None = None
     raw_idx: dict[str, list[Path]] | None = None
@@ -62,6 +67,7 @@ def relink_project(db_path: Path, new_photo_root: Path) -> dict[str, Any]:
                 p["rel_path"] = str(cands[0].relative_to(new_raw_root))
                 rematched += 1
             else:
+                ambiguous += len(cands) > 1
                 unmatched.append(Path(src).name)
         else:
             rel = p["rel_path"]
@@ -75,14 +81,20 @@ def relink_project(db_path: Path, new_photo_root: Path) -> dict[str, Any]:
                 p["rel_path"] = str(cands[0].relative_to(new_jpeg_root))
                 rematched += 1
             else:
+                ambiguous += len(cands) > 1
                 unmatched.append(Path(rel).name)
 
-    data["photo_root"] = str(new_photo_root)
-    db.save(db_path, data)
+    found = resolved + rematched
+    saved = total == 0 or found == total or (found > 0 and partial_ok)
+    if saved:
+        data["photo_root"] = str(new_photo_root)
+        db.save(db_path, data)
     return {
+        "saved": saved,
         "total": total,
         "resolved": resolved,
         "rematched": rematched,
         "unmatched": len(unmatched),
+        "ambiguous": ambiguous,   # of the unmatched, those whose name is there more than once
         "unmatched_names": unmatched[:20],
     }

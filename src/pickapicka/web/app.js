@@ -12688,22 +12688,43 @@ async function confirmRelink() {
   if (!newDir) { $("#relink-status").textContent = "Pick the new photo folder."; return; }
   $("#relink-confirm").disabled = true;
   $("#relink-status").textContent = "Re-linking…";
-  const res = await fetch("/api/project/relink", {
+  const post = (partialOk) => fetch("/api/project/relink", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       project_dir: relinkState.projectDir,
       db_path: relinkState.dbPath,
       new_photo_dir: newDir,
+      partial_ok: partialOk,
     }),
   });
+  let res = await post(false);
+  let rep = res.ok ? await res.json() : null;
+  // Only some of the photos are there: nothing is saved until the person says so.
+  if (rep && rep.saved === false) {
+    const found = rep.resolved + rep.rematched;
+    const names = rep.unmatched_names.join(", ") + (rep.unmatched > rep.unmatched_names.length ? ", …" : "");
+    const go = await askChoice("Only some photos are there",
+      `${found} of ${plural(rep.total, "photo")} are in ${newDir}. `
+      + `${rep.unmatched} cannot be found there and will stay missing`
+      + (rep.ambiguous ? ` (${rep.ambiguous} because more than one file there has the name)` : "")
+      + `:\n\n${names}`,
+      [{ id: "cancel", label: "Choose another folder" },
+       { id: "go", label: `Re-link ${found}`, primary: true }]);
+    if (go !== "go") {
+      $("#relink-confirm").disabled = false;
+      $("#relink-status").textContent = "Not re-linked.";
+      return;
+    }
+    res = await post(true);
+    rep = res.ok ? await res.json() : null;
+  }
   $("#relink-confirm").disabled = false;
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     $("#relink-status").textContent = "Failed: " + errText(err, res);
     return;
   }
-  const rep = await res.json();
   closeRelinkModal();
   // Before opening: the others are re-linked while nothing else is running.
   if (rep.others && rep.others.length) await relinkOthers(rep);
