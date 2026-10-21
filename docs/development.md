@@ -85,14 +85,12 @@ default is the ANSI code page too (cp949 on a Korean system).
 
 ## Cutting a release
 
-A release is cut by pushing a `v*` tag. Three GitHub Actions fire on it and
-all attach their output to the **same** GitHub Release:
+A release is cut by pushing a `v*` tag. Two GitHub Actions fire on it and
+both attach their output to the **same** GitHub Release:
 
 - **Build macOS app** — builds the `.app` and packages a `.pkg`.
 - **Build Windows app** — builds the PyInstaller bundle and wraps it in an
   Inno Setup installer (`setup.exe`).
-- **Update Homebrew tap** — refreshes the
-  [tap](https://github.com/son-engr-kr/homebrew-pickapicka) formula.
 
 ```bash
 # 1. bump "version" in pyproject.toml, then:
@@ -101,13 +99,10 @@ git tag v0.1.4
 git push origin main v0.1.4
 ```
 
-The tag push triggers all three workflows; build artifacts publish to the
+The tag push triggers both workflows; build artifacts publish to the
 GitHub Release automatically — no manual upload. To dry-run a platform build
 *without* cutting a release, use **Actions → Build … app → Run workflow**
 (workflow_dispatch); it uploads an artifact instead of publishing a release.
-
-The Homebrew workflow needs a `TAP_TOKEN` repository secret — a fine-grained
-PAT with `Contents: Write` on `son-engr-kr/homebrew-pickapicka`.
 
 ## The website
 

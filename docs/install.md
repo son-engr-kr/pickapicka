@@ -84,14 +84,6 @@ To upgrade later: `uv tool upgrade pickapicka`.
 Besides `serve`, the command has what an AI assistant works a shoot with:
 [With an AI assistant](assistant.md).
 
-### Homebrew (macOS / Linux)
-
-```bash
-brew tap son-engr-kr/pickapicka
-brew install pickapicka
-pickapicka serve
-```
-
 ### From source
 
 ```bash
@@ -127,9 +119,8 @@ The check sends a request to GitHub and nothing else; nothing about your photos
 or projects leaves the machine. **Preferences → Updates** turns automatic checks
 off, and **Check now** and the ⓘ button work either way.
 
-A `uv tool` or Homebrew install is told when a new version is out, with the
-command that updates it (`uv tool upgrade pickapicka`, `brew upgrade
-pickapicka`).
+A `uv tool` install is told when a new version is out, with the command that
+updates it (`uv tool upgrade pickapicka`).
 
 ### Upgrading from Picture Classifier
 
@@ -148,15 +139,6 @@ workspace folder stays where it is, even if it is named
   ```bash
   uv tool uninstall picture-classifier
   uv tool install git+https://github.com/son-engr-kr/pickapicka
-  ```
-
-- **Homebrew**: the tap has a new name too:
-
-  ```bash
-  brew uninstall picture-classifier
-  brew untap son-engr-kr/picture-classifier
-  brew tap son-engr-kr/pickapicka
-  brew install pickapicka
   ```
 
 ## Usage

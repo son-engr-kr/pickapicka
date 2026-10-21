@@ -29,8 +29,8 @@ A check that fails is tried again a quarter of an hour later, not at the next
 six-hourly one, and one that keeps failing is shown in the top bar: an update
 the app silently cannot fetch looks to the user exactly like no update at all.
 
-Other installs (uv tool, Homebrew, a checkout) are told of a new version and
-given the command that updates them.
+Other installs (uv tool, a checkout) are told of a new version, and a uv tool
+install is given the command that updates it.
 """
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ EXIT_FILE_NAME = "installer-exit.txt"
 # with relocation off, so it is always here rather than wherever a copy was.
 MAC_INSTALLED_APP = Path("/Applications/Pickapicka.app")
 ASSET_SUFFIX = {"macos-app": "-macos-arm64.pkg", "windows-app": "-windows-x64.exe"}
-UPGRADE_COMMAND = {"homebrew": "brew upgrade pickapicka", "uv-tool": "uv tool upgrade pickapicka"}
+UPGRADE_COMMAND = {"uv-tool": "uv tool upgrade pickapicka"}
 # Inno Setup: a progress window and nothing else, no restart, no questions.
 # Its own "launch Pickapicka" step is skipped when silent; the script relaunches.
 INNO_SILENT = ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"]
@@ -96,9 +96,6 @@ def install_kind() -> str:
     # uv writes a receipt into every tool environment it makes.
     if (prefix / "uv-receipt.toml").is_file():
         return "uv-tool"
-    # The formula installs a venv under the Cellar (homebrew-pickapicka).
-    if "Cellar" in prefix.parts:
-        return "homebrew"
     return "other"
 
 

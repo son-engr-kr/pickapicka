@@ -57,7 +57,7 @@ uv tool install git+https://github.com/son-engr-kr/pickapicka
 pickapicka serve
 ```
 
-Homebrew, from source, and the CLI are in [docs/install.md](docs/install.md).
+Installing from source, and the CLI, are in [docs/install.md](docs/install.md).
 
 ## First run
 

@@ -13282,7 +13282,7 @@ async function onUpdateClick() {
     return;
   }
   const how = s.command
-    ? `This copy was installed with ${s.kind === "homebrew" ? "Homebrew" : "uv"}, which updates it:\n\n${s.command}\n\nThen start Pickapicka again.`
+    ? `This copy was installed with uv, which updates it:\n\n${s.command}\n\nThen start Pickapicka again.`
     : "Download it from the Releases page.";
   const pick = await askChoice(`Pickapicka ${v} is out`, how, [
     { id: "later", label: "Later" },
@@ -13446,7 +13446,7 @@ async function checkUpdateNow() {
 const DOWNLOAD_PAGE_URL = "https://son-engr-kr.github.io/pickapicka/#download";
 const INSTALL_KIND_LABEL = {   // updater.install_kind
   "macos-app": "macOS app", "windows-app": "Windows app",
-  homebrew: "Homebrew", "uv-tool": "uv tool", other: "Python package",
+  "uv-tool": "uv tool", other: "Python package",
 };
 const UPDATE_BUSY = ["checking", "downloading", "installing"];
 

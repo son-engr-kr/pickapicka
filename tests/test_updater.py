@@ -114,7 +114,6 @@ def test_the_right_installer_is_picked_for_each_kind_of_install() -> None:
     assert updater.pick_asset("macos-app", assets)["name"].endswith(".pkg")
     assert updater.pick_asset("windows-app", assets)["name"].endswith(".exe")
     assert updater.pick_asset("uv-tool", assets) is None
-    assert updater.pick_asset("homebrew", assets) is None
 
 
 def test_the_kind_of_install_is_read_from_how_python_runs(monkeypatch, tmp_path) -> None:
@@ -129,8 +128,6 @@ def test_the_kind_of_install_is_read_from_how_python_runs(monkeypatch, tmp_path)
     (tool / "uv-receipt.toml").write_text("[tool]\n")
     monkeypatch.setattr(sys, "prefix", str(tool))
     assert updater.install_kind() == "uv-tool"
-    monkeypatch.setattr(sys, "prefix", "/opt/homebrew/Cellar/pickapicka/0.10.0/libexec/venv")
-    assert updater.install_kind() == "homebrew"
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "checkout" / ".venv"))
     assert updater.install_kind() == "other"
 
