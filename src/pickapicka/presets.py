@@ -47,7 +47,8 @@ from . import editing, grading as grading_mod, portrait as portrait_mod
 # The parts of an edit a preset can carry, and the edit keys each one holds.
 # The slider parts follow the editor's sections (EDIT_SCHEMA in app.js).
 PARTS: dict[str, tuple[str, ...]] = {
-    "light": ("exposure", "contrast", "highlights", "shadows", "whites", "blacks"),
+    "light": ("exposure", "contrast", "highlights", "shadows", "whites", "blacks",
+              "black_point", "white_point", "gamma"),
     "color": ("temp", "tint", "vibrance", "saturation", "clean"),
     "detail": ("texture", "clarity", "dehaze", "denoise", "sharpen", "sharpen_radius",
                "sharpen_detail", "sharpen_masking", "vignette"),

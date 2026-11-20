@@ -1042,7 +1042,7 @@ body.resizing-edit, body.resizing-edit * { cursor: col-resize !important; user-s
 /* The heading over a layer's sliders, so the target is said where they are. */
 #mask-context { color: var(--accent); border-top: 1px solid var(--line); padding-top: var(--s3); }
 .edit-curve-wrap { display: flex; justify-content: center; padding: 4px 0; }
-#edit-curve { width: 240px; height: 240px; max-width: 100%; background: var(--bg);
+#edit-curve { width: 240px; height: 254px; max-width: 100%; background: var(--bg);
   border: 1px solid var(--border); border-radius: 6px; cursor: crosshair;
   touch-action: none; }
 .linkish { background: transparent; border: none; color: var(--accent);
@@ -2818,6 +2818,10 @@ body[data-insp-faces="l"] #insp-faces { grid-template-columns: 1fr; gap: 10px; }
 .quick-val { text-align: center; font-variant-numeric: tabular-nums; color: var(--ink);
   font-size: var(--fs-xs); }
 .quick-val.zero { color: var(--ink-faint); }
+#insp-quick-curve { display: block; width: 100%; aspect-ratio: 1 / 1.06; margin-bottom: 6px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r1);
+  cursor: crosshair; touch-action: none; }
+#insp-quick-curve.hidden { display: none; }
 #inspector-btn.active { background: var(--raised); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-strong); }
 
 /* ----- the grid scrolls; rows are sized so a screen holds a page ----- */

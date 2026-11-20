@@ -59,6 +59,12 @@ const EDIT_SCHEMA = {
     { k: "shadows",    label: "Shadows",     min: -100, max: 100, step: 1,    fmt: 0 },
     { k: "whites",     label: "Whites",      min: -100, max: 100, step: 1,    fmt: 0 },
     { k: "blacks",     label: "Blacks",      min: -100, max: 100, step: 1,    fmt: 0 },
+    { k: "black_point", label: "Black point", min: 0,   max: 100, step: 1,    fmt: 0,
+      hint: "Levels: this many of the darkest of 255 levels go to pure black, and the rest stretch down to fill the range. Unlike Blacks it clips." },
+    { k: "white_point", label: "White point", min: 0,   max: 100, step: 1,    fmt: 0,
+      hint: "Levels: this many of the brightest of 255 levels go to pure white, and the rest stretch up to fill the range. Unlike Whites it clips." },
+    { k: "gamma",      label: "Gamma",       min: -100, max: 100, step: 1,    fmt: 0,
+      hint: "Brightens (+) or darkens (\u2212) the midtones while black and white stay put. +100 is a gamma of 2.0, \u2212100 of 0.5." },
   ]},
   color: { title: "Color", fields: [
     { k: "temp",       label: "Temperature", min: -100, max: 100, step: 1, fmt: 0 },
@@ -3292,15 +3298,194 @@ const editSession = {
 };
 
 // ---------- tone curve ----------
+// One widget, drawn in the editor's Tone curve panel and in Quick edit. The
+// master curve is drawn as it lands: after the levels (Black point, White
+// point, Gamma), as editing._tone_lut applies them, so the line is the
+// response of the three and the curve together. Its points sit where they act
+// on that line. The levels are handles of the same curve: the end points slide
+// sideways to the black and white points, and the triangles under the plot
+// are the three, as in Levels; each moves its slider, and a slider moves them.
 const CURVE_MAX = 6;         // max control points (keeps it approachable)
 const CURVE_PAD = 8;
-const curveState = { cssW: 240, cssH: 240, drag: -1, accent: "#4a90e2",
-                     channel: "curve" };
+const CURVE_STRIP = 14;      // under the plot, for the levels triangles
+const LEVELS_KEYS = ["black_point", "white_point", "gamma"];
+const LEVELS_NONE = { bp: 0, wp: 0, g: 1 };
+const curveState = { accent: "#4a90e2", channel: "curve" };
+
+// The levels of an edit, in the curve's [0, 1]: the two points as fractions of
+// 255 levels, and the power the midtones are raised to.
+function levelsOf(e) {
+  return { bp: (Number(e.black_point) || 0) / 255, wp: (Number(e.white_point) || 0) / 255,
+           g: 2 ** (-(Number(e.gamma) || 0) / 100) };
+}
+function levelsAt(L, x) {
+  const t = Math.min(1, Math.max(0, (x - L.bp) / (1 - L.wp - L.bp)));
+  return t ** L.g;
+}
+function levelsFrom(L, u) { return L.bp + (1 - L.wp - L.bp) * Math.max(0, u) ** (1 / L.g); }
+const clampLevel = (v) => Math.min(100, Math.max(0, Math.round(v)));
+
+// opts: edit() the object holding the curves and the levels; channel() the
+// curve key shown; faint() the other curves drawn thin, as [{pts, colour}];
+// colour() the active curve's; change(live, levels) after the user moved
+// something (live while dragging; levels when a levels value moved).
+function makeCurve(cv, opts) {
+  const w = { cv, cssW: 0, cssH: 0, drag: null };
+  const master = () => opts.channel() === "curve";
+  const levels = () => (master() ? levelsOf(opts.edit()) : LEVELS_NONE);
+  const pts = () => opts.edit()[opts.channel()];
+  const plotH = () => w.cssH - 2 * CURVE_PAD - CURVE_STRIP;
+  const plotW = () => w.cssW - 2 * CURVE_PAD;
+  const toPx = (x, y) => [CURVE_PAD + x * plotW(), CURVE_PAD + (1 - y) * plotH()];
+  function fit() {
+    const cw = cv.clientWidth, ch = cv.clientHeight;
+    if (!cw || !ch || (cw === w.cssW && ch === w.cssH)) return !!cw;
+    const dpr = window.devicePixelRatio || 1;
+    w.cssW = cw; w.cssH = ch;
+    cv.width = Math.round(cw * dpr); cv.height = Math.round(ch * dpr);
+    cv.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
+    return true;
+  }
+  function at(e) {
+    const rect = cv.getBoundingClientRect();
+    const px = (e.clientX - rect.left) / rect.width * w.cssW, py = (e.clientY - rect.top) / rect.height * w.cssH;
+    return { px, py, x: Math.min(1, Math.max(0, (px - CURVE_PAD) / plotW())),
+             y: Math.min(1, Math.max(0, 1 - (py - CURVE_PAD) / plotH())) };
+  }
+  // Where each point is drawn: its input after the levels.
+  const shown = (L) => pts().map(([u, v]) => [levelsFrom(L, u), v]);
+  const handles = (L) => [["bp", L.bp], ["gamma", levelsFrom(L, 0.5)], ["wp", 1 - L.wp]];
+  function hit(px, py) {
+    const L = levels();
+    if (master() && py > CURVE_PAD + plotH() + 2) {
+      let best = null, bd = 9;
+      for (const [kind, x] of handles(L)) {
+        const d = Math.abs(px - toPx(x, 0)[0]);
+        if (d <= bd) { best = { kind }; bd = d; }
+      }
+      return best;
+    }
+    const s = shown(L);
+    for (let i = 0; i < s.length; i++) {
+      const [hx, hy] = toPx(s[i][0], s[i][1]);
+      if (Math.hypot(px - hx, py - hy) <= 10) return { kind: "point", i };
+    }
+    return null;
+  }
+  function draw() {
+    if (!fit() || !opts.edit()) return;
+    const ctx = cv.getContext("2d"), W = w.cssW, H = w.cssH, pw = plotW(), ph = plotH();
+    ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = "rgba(255,255,255,0.08)"; ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const gx = CURVE_PAD + pw * i / 4, gy = CURVE_PAD + ph * i / 4;
+      ctx.beginPath(); ctx.moveTo(gx, CURVE_PAD); ctx.lineTo(gx, CURVE_PAD + ph); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(CURVE_PAD, gy); ctx.lineTo(CURVE_PAD + pw, gy); ctx.stroke();
+    }
+    ctx.strokeStyle = "rgba(255,255,255,0.16)";
+    ctx.beginPath(); ctx.moveTo(...toPx(0, 0)); ctx.lineTo(...toPx(1, 1)); ctx.stroke();
+    const N = 128, xs = [];
+    for (let i = 0; i <= N; i++) xs.push(i / N);
+    const trace = (p, L, colour, width, alpha) => {
+      const ys = pchipEval(p, xs.map((x) => levelsAt(L, x)));
+      ctx.save();
+      ctx.globalAlpha = alpha; ctx.strokeStyle = colour; ctx.lineWidth = width; ctx.beginPath();
+      xs.forEach((x, i) => { const [qx, qy] = toPx(x, ys[i]); i ? ctx.lineTo(qx, qy) : ctx.moveTo(qx, qy); });
+      ctx.stroke(); ctx.restore();
+    };
+    // The other channels stay on screen, thin and faint. Four curves that each
+    // hide the other three would make a split tone impossible to reason about.
+    for (const f of opts.faint()) trace(f.pts, LEVELS_NONE, f.colour, 1, 0.4);
+    const L = levels(), colour = opts.colour();
+    trace(pts(), L, colour, 2, 1);
+    ctx.fillStyle = colour;
+    for (const [x, y] of shown(L)) { const [qx, qy] = toPx(x, y); ctx.beginPath(); ctx.arc(qx, qy, 4, 0, 7); ctx.fill(); }
+    if (!master()) return;
+    // The levels strip: a ramp, and the three triangles on it.
+    const y0 = CURVE_PAD + ph + 4;
+    const ramp = ctx.createLinearGradient(CURVE_PAD, 0, CURVE_PAD + pw, 0);
+    ramp.addColorStop(0, "#000"); ramp.addColorStop(1, "#fff");
+    ctx.save(); ctx.globalAlpha = 0.35; ctx.fillStyle = ramp;
+    ctx.fillRect(CURVE_PAD, y0, pw, 2); ctx.restore();
+    const fills = { bp: "#000", gamma: "#808080", wp: "#fff" };
+    for (const [kind, x] of handles(L)) {
+      const [qx] = toPx(x, 0);
+      ctx.beginPath(); ctx.moveTo(qx, y0); ctx.lineTo(qx - 5, y0 + 8); ctx.lineTo(qx + 5, y0 + 8); ctx.closePath();
+      ctx.fillStyle = fills[kind]; ctx.fill();
+      ctx.strokeStyle = w.drag && w.drag.kind === kind ? colour : "rgba(255,255,255,0.7)";
+      ctx.lineWidth = 1; ctx.stroke();
+    }
+  }
+  // A move of `kind` to (x, y): which values it sets. True when a level moved.
+  function move(kind, i, x, y) {
+    const e = opts.edit(), p = pts(), L = levels();
+    if (kind === "bp") { e.black_point = clampLevel(x * 255); return true; }
+    if (kind === "wp") { e.white_point = clampLevel((1 - x) * 255); return true; }
+    if (kind === "gamma") {
+      // Where 0.5 comes from, as a fraction of the levelled range, is 0.5^(1/g);
+      // the ends of the slider (g of 2 and 0.5) bound it.
+      const r = Math.min(0.5 ** 0.5, Math.max(0.25, (x - L.bp) / (1 - L.wp - L.bp)));
+      e.gamma = Math.max(-100, Math.min(100, Math.round(-100 * Math.log2(Math.log(0.5) / Math.log(r)))));
+      return true;
+    }
+    if (i === 0 || i === p.length - 1) {
+      // The ends: up and down is the curve's, sideways the levels' (master).
+      p[i] = [i ? 1 : 0, y];
+      if (!master()) return false;
+      if (i) e.white_point = clampLevel((1 - x) * 255);
+      else e.black_point = clampLevel(x * 255);
+      return true;
+    }
+    const u = levelsAt(L, x), lo = p[i - 1][0] + 0.01, hi = p[i + 1][0] - 0.01;
+    p[i] = [Math.min(hi, Math.max(lo, u)), y];
+    return false;
+  }
+  cv.addEventListener("pointerdown", (e) => {
+    if (!opts.edit()) return;
+    const a = at(e);
+    let h = hit(a.px, a.py);
+    if (!h) {
+      if (a.py > CURVE_PAD + plotH()) return;
+      const p = pts(), u = levelsAt(levels(), a.x);
+      if (p.length >= CURVE_MAX || u <= 0.01 || u >= 0.99) return;   // only interior points added
+      const np = [u, a.y];
+      p.push(np); p.sort((q, r) => q[0] - r[0]);
+      if (p.some((q, j) => j && q[0] - p[j - 1][0] < 0.01)) { p.splice(p.indexOf(np), 1); return; }
+      h = { kind: "point", i: p.indexOf(np) };
+    }
+    w.drag = h;
+    cv.setPointerCapture(e.pointerId);
+    draw(); opts.change(true, false);
+  });
+  cv.addEventListener("pointermove", (e) => {
+    if (!w.drag) return;
+    const a = at(e);
+    const lv = move(w.drag.kind, w.drag.i, a.x, a.y);
+    draw(); opts.change(true, lv);
+  });
+  const up = () => {
+    if (!w.drag) return;
+    w.drag = null;
+    draw(); opts.change(false, true);
+  };
+  cv.addEventListener("pointerup", up);
+  cv.addEventListener("pointercancel", up);
+  cv.addEventListener("dblclick", (e) => {
+    const a = at(e), h = hit(a.px, a.py), p = pts();
+    if (h && h.kind === "point" && h.i > 0 && h.i < p.length - 1) {   // can't remove endpoints
+      p.splice(h.i, 1);
+      draw(); opts.change(false, false);
+    } else if (h && h.kind !== "point") {     // a triangle back to where it starts
+      opts.edit()[{ bp: "black_point", wp: "white_point", gamma: "gamma" }[h.kind]] = 0;
+      draw(); opts.change(false, true);
+    }
+  });
+  return { draw, dragging: () => !!w.drag };
+}
 
 function curveChannel() {
   return CURVE_CHANNELS.find((c) => c.k === curveState.channel) || CURVE_CHANNELS[0];
 }
-function curvePoints() { return adjTarget()[curveState.channel]; }
 function curveTint(c) { return c.tint || curveState.accent; }
 function curveTouched(key) {
   const pts = adjTarget()[key];
@@ -3310,7 +3495,7 @@ function renderCurveChannels() {
   const wrap = $("#curve-channels");
   if (!wrap || !editSession.edit) return;
   const touched = CURVE_CHANNELS.filter((c) => c.k !== "curve" && curveTouched(c.k)).length;
-  $("#curve-summary-state").textContent = touched ? `\u00b7 ${touched} channel${touched > 1 ? "s" : ""}` : "";
+  $("#curve-summary-state").textContent = touched ? `· ${touched} channel${touched > 1 ? "s" : ""}` : "";
   wrap.innerHTML = CURVE_CHANNELS.map((c) =>
     `<button type="button" class="curve-chan${c.k === curveState.channel ? " active" : ""}` +
     `${curveTouched(c.k) ? " touched" : ""}" data-curve-chan="${c.k}" ` +
@@ -3318,30 +3503,35 @@ function renderCurveChannels() {
   $$("#curve-channels .curve-chan").forEach((b) => {
     b.addEventListener("click", () => {
       curveState.channel = b.dataset.curveChan;
-      curveState.drag = -1;
       renderCurveChannels();
       drawCurve();
     });
   });
 }
 
+let editCurve = null;
 function curveInit() {
   const cv = $("#edit-curve");
   if (!cv) return;
-  const dpr = window.devicePixelRatio || 1;
-  const w = cv.clientWidth || 240, h = cv.clientHeight || 240;
-  curveState.cssW = w; curveState.cssH = h;
-  cv.width = Math.round(w * dpr);
-  cv.height = Math.round(h * dpr);
-  cv.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
   curveState.accent =
     getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#4a90e2";
-  cv.addEventListener("pointerdown", curveDown);
-  cv.addEventListener("pointermove", curveMove);
-  cv.addEventListener("dblclick", curveDoubleClick);
-  window.addEventListener("pointerup", curveUp);
+  editCurve = makeCurve(cv, {
+    edit: () => (editSession.edit ? adjTarget() : null),
+    channel: () => curveState.channel,
+    colour: () => curveTint(curveChannel()),
+    faint: () => CURVE_CHANNELS.filter((c) => c.k !== curveState.channel && curveTouched(c.k))
+      .map((c) => ({ pts: adjTarget()[c.k], colour: curveTint(c) })),
+    change(live, levels) {
+      if (levels) syncEditSliders();
+      if (editSession.activeMask >= 0) renderMaskList();
+      setEditDirty();
+      if (live) previewDuringDrag();
+      else settleDrag();
+    },
+  });
   drawCurve();
 }
+function drawCurve() { if (editCurve) editCurve.draw(); }
 
 // Monotone-cubic (Fritsch-Carlson) sampler — mirrors editing._pchip so the drawn
 // curve matches what the server applies. The server LUT stays the source of truth.
@@ -3365,105 +3555,6 @@ function pchipEval(pts, xs) {
   });
 }
 
-function curveToPx(x, y) {
-  const pw = curveState.cssW - 2 * CURVE_PAD, ph = curveState.cssH - 2 * CURVE_PAD;
-  return [CURVE_PAD + x * pw, CURVE_PAD + (1 - y) * ph];
-}
-function curveEventData(e) {
-  const cv = $("#edit-curve"), rect = cv.getBoundingClientRect();
-  const W = curveState.cssW, H = curveState.cssH, pw = W - 2 * CURVE_PAD, ph = H - 2 * CURVE_PAD;
-  const px = (e.clientX - rect.left) / rect.width * W, py = (e.clientY - rect.top) / rect.height * H;
-  const x = Math.min(1, Math.max(0, (px - CURVE_PAD) / pw));
-  const y = Math.min(1, Math.max(0, 1 - (py - CURVE_PAD) / ph));
-  return { px, py, x, y };
-}
-function curveHit(px, py) {
-  const pts = curvePoints();
-  for (let i = 0; i < pts.length; i++) {
-    const [hx, hy] = curveToPx(pts[i][0], pts[i][1]);
-    if (Math.hypot(px - hx, py - hy) <= 10) return i;
-  }
-  return -1;
-}
-
-function drawCurve() {
-  const cv = $("#edit-curve");
-  if (!cv || !editSession.edit) return;
-  const ctx = cv.getContext("2d");
-  const W = curveState.cssW, H = curveState.cssH, pw = W - 2 * CURVE_PAD, ph = H - 2 * CURVE_PAD;
-  ctx.clearRect(0, 0, W, H);
-  ctx.strokeStyle = "rgba(255,255,255,0.08)"; ctx.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) {
-    const gx = CURVE_PAD + pw * i / 4, gy = CURVE_PAD + ph * i / 4;
-    ctx.beginPath(); ctx.moveTo(gx, CURVE_PAD); ctx.lineTo(gx, CURVE_PAD + ph); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(CURVE_PAD, gy); ctx.lineTo(CURVE_PAD + pw, gy); ctx.stroke();
-  }
-  ctx.strokeStyle = "rgba(255,255,255,0.16)";
-  ctx.beginPath(); ctx.moveTo(...curveToPx(0, 0)); ctx.lineTo(...curveToPx(1, 1)); ctx.stroke();
-
-  const N = 64, xs = [];
-  for (let i = 0; i <= N; i++) xs.push(i / N);
-  const trace = (pts, colour, width, alpha) => {
-    const ys = pchipEval(pts, xs);
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.strokeStyle = colour; ctx.lineWidth = width; ctx.beginPath();
-    xs.forEach((x, i) => { const [qx, qy] = curveToPx(x, ys[i]); i ? ctx.lineTo(qx, qy) : ctx.moveTo(qx, qy); });
-    ctx.stroke();
-    ctx.restore();
-  };
-  // The inactive channels stay on screen, thin and faint. Four curves that each
-  // hide the other three would make a split tone impossible to reason about.
-  for (const c of CURVE_CHANNELS) {
-    if (c.k === curveState.channel || !curveTouched(c.k)) continue;
-    trace(editSession.edit[c.k], curveTint(c), 1, 0.4);
-  }
-  const active = curveChannel(), colour = curveTint(active), pts = curvePoints();
-  trace(pts, colour, 2, 1);
-  ctx.fillStyle = colour;
-  for (const [x, y] of pts) { const [qx, qy] = curveToPx(x, y); ctx.beginPath(); ctx.arc(qx, qy, 4, 0, 7); ctx.fill(); }
-}
-
-function curveDown(e) {
-  if (!editSession.edit) return;
-  const { px, py, x, y } = curveEventData(e);
-  let i = curveHit(px, py);
-  if (i < 0) {
-    const pts = curvePoints();
-    if (pts.length >= CURVE_MAX || x <= 0 || x >= 1) return;  // only interior points added
-    const np = [x, y];
-    pts.push(np); pts.sort((a, b) => a[0] - b[0]);
-    i = pts.indexOf(np);
-  }
-  curveState.drag = i;
-  $("#edit-curve").setPointerCapture(e.pointerId);
-  drawCurve(); setEditDirty(); fetchEditPreview(false);
-}
-function curveMove(e) {
-  if (curveState.drag < 0) return;
-  const { x, y } = curveEventData(e);
-  const pts = curvePoints(), i = curveState.drag;
-  if (i === 0) pts[i] = [0, y];                     // endpoints: x locked, y free
-  else if (i === pts.length - 1) pts[i] = [1, y];
-  else {
-    const lo = pts[i - 1][0] + 0.01, hi = pts[i + 1][0] - 0.01;
-    pts[i] = [Math.min(hi, Math.max(lo, x)), y];
-  }
-  drawCurve(); setEditDirty(); previewDuringDrag();
-}
-function curveUp() {
-  if (curveState.drag < 0) return;
-  curveState.drag = -1;
-  settleDrag();
-}
-function curveDoubleClick(e) {
-  const { px, py } = curveEventData(e);
-  const i = curveHit(px, py), pts = curvePoints();
-  if (i > 0 && i < pts.length - 1) {             // can't remove endpoints
-    pts.splice(i, 1);
-    drawCurve(); setEditDirty(); fetchEditPreview(false);
-  }
-}
 function resetCurve() {
   // The active channel only: wiping a red curve nobody asked about because they
   // clicked reset while looking at RGB would be a surprise.
@@ -3593,6 +3684,7 @@ function bindEditControls() {
     const f = fieldByKey(k);
     $(`#edit-modal .look-val[data-val="${k}"]`).textContent = fmtSlider(sl, target[k], f.fmt);
     if (editSession.activeMask >= 0) renderMaskList();
+    if (LEVELS_KEYS.includes(k)) drawCurve();   // the levels are on the curve too
     setEditDirty();
     previewDuringDrag();     // live drafts while the slider moves
   });
@@ -8340,7 +8432,8 @@ function nudgeBrushSize(delta) {
 function slotSummary(e) {
   const parts = [];
   const any = (keys) => keys.some((k) => Math.abs(Number(e[k]) || 0) > 1e-6);
-  if (any(["exposure", "contrast", "highlights", "shadows", "whites", "blacks"])) parts.push("light");
+  if (any(["exposure", "contrast", "highlights", "shadows", "whites", "blacks",
+           "black_point", "white_point", "gamma"])) parts.push("light");
   if (any(["temp", "tint", "vibrance", "saturation", "clean"])) parts.push("colour");
   if (e.hsl || canonPoints(e.points)) parts.push("mixer");
   if (e.grading) parts.push("grading");
@@ -10376,6 +10469,10 @@ const QUICK_ROWS = [
   { k: "shadows", label: "Shadows" },
   { k: "whites", label: "Whites" },
   { k: "blacks", label: "Blacks" },
+  // Levels. A clip is in 8-bit levels, so its steps are smaller: 2 and 10.
+  { k: "black_point", label: "Black point", small: 2, big: 10 },
+  { k: "white_point", label: "White point", small: 2, big: 10 },
+  { k: "gamma", label: "Gamma" },
   { k: "temp", label: "Temperature" },
   { k: "tint", label: "Tint" },
   { k: "clarity", label: "Clarity" },
@@ -10405,6 +10502,53 @@ function quickTargets() {
   return p ? [p] : [];
 }
 
+// The curve in Quick edit: the first target's master curve and levels, drawn
+// as the editor draws them. A drag sets them, the same on every target, as it
+// goes (the queue sends what it has each time the last one lands); only what
+// was moved is sent, so moving a triangle leaves each photo's own curve.
+const quickCurve = { widget: null, edit: null, loaded: null };
+
+function quickCurveOf(p) {
+  const e = p.edit || {};
+  return { curve: (e.curve || CURVE_IDENTITY).map((q) => q.slice()),
+           black_point: e.black_point || 0, white_point: e.white_point || 0, gamma: e.gamma || 0 };
+}
+
+function quickCurveInit() {
+  const cv = $("#insp-quick-curve");
+  quickCurve.widget = makeCurve(cv, {
+    edit: () => quickCurve.edit,
+    channel: () => "curve",
+    colour: () => curveState.accent,
+    faint: () => [],
+    change() {
+      const now = quickCurve.edit, was = quickCurve.loaded, to = {};
+      for (const k of LEVELS_KEYS) {
+        if (now[k] !== was[k]) to[k] = now[k];
+        const el = $(`#insp-quick-rows [data-quick="${k}"] .quick-val`);
+        if (el) { el.textContent = quickFormat(k, now[k]); el.classList.toggle("zero", now[k] === 0); }
+      }
+      const change = { to };
+      if (canonCurve(now.curve) !== canonCurve(was.curve)) change.curve = now.curve.map((q) => q.slice());
+      if (Object.keys(to).length || change.curve) quickEdit(change);
+    },
+  });
+}
+
+function renderQuickCurve(photos) {
+  const cv = $("#insp-quick-curve");
+  cv.classList.toggle("hidden", !photos.length);
+  if (!photos.length) return;
+  if (!quickCurve.widget) quickCurveInit();
+  // Not while it is being dragged, or answers still on their way would pull
+  // it back to a step behind the hand.
+  if (!quickCurve.widget.dragging() && !quickQueue.busy) {
+    quickCurve.edit = quickCurveOf(photos[0]);
+    quickCurve.loaded = quickCurveOf(photos[0]);
+  }
+  quickCurve.widget.draw();
+}
+
 function renderQuickEdit() {
   const rows = $("#insp-quick-rows");
   if (!rows) return;
@@ -10429,6 +10573,7 @@ function renderQuickEdit() {
     el.textContent = !vals.length ? "" : one ? quickFormat(r.k, vals[0]) : "mixed";
     el.classList.toggle("zero", one && vals[0] === 0);
   }
+  renderQuickCurve(photos);
 }
 
 // Sent one at a time, in order. Steps pressed while one is on its way are
@@ -10441,13 +10586,19 @@ function quickEdit(change) {
   const rels = photos.map((p) => p.rel_path);
   const key = rels.join("\n");
   const last = quickQueue.items[quickQueue.items.length - 1];
-  const steps = (c) => !c.auto && !c.level && !Object.keys(c.to || {}).length;
+  const steps = (c) => !c.auto && !c.level && !Object.keys(c.to || {}).length && !c.curve;
+  // Values set outright (the curve's drag): the later one wins.
+  const sets = (c) => !c.auto && !c.level && !Object.keys(c.by || {}).length;
   if (last && last.key === key && steps(change) && steps(last.change)) {
     for (const [k, d] of Object.entries(change.by)) last.change.by[k] = (last.change.by[k] || 0) + d;
+  } else if (last && last.key === key && sets(change) && sets(last.change)) {
+    Object.assign(last.change.to, change.to || {});
+    if (change.curve) last.change.curve = change.curve;
   } else {
     quickQueue.items.push({ key, rels, focus: photos.length === 1 ? photos[0] : null,
                             change: { by: { ...(change.by || {}) }, to: { ...(change.to || {}) },
-                                      auto: !!change.auto, level: !!change.level } });
+                                      auto: !!change.auto, level: !!change.level,
+                                      ...(change.curve ? { curve: change.curve } : {}) } });
   }
   if (!quickQueue.busy) quickPump();
 }
@@ -10456,9 +10607,9 @@ async function quickPump() {
   quickQueue.busy = true;
   while (quickQueue.items.length) {
     const item = quickQueue.items.shift();
-    const { by, to, auto, level } = item.change;
+    const { by, to, auto, level, curve } = item.change;
     // Steps that cancelled out while waiting: nothing to send.
-    if (!auto && !level && !Object.keys(to).length
+    if (!auto && !level && !curve && !Object.keys(to).length
         && Object.values(by).every((d) => Math.abs(d) < 1e-9)) continue;
     // Auto and Level read each photo, half a second a RAW: say so meanwhile.
     if ((auto || level) && item.rels.length > 1) {
@@ -10475,6 +10626,7 @@ async function quickPump() {
     afterQuickEdit(item.focus);
   }
   quickQueue.busy = false;
+  renderQuickEdit();   // the curve takes what landed, now nothing is on its way
 }
 
 // The steps in a row on the same photos, for the message and its Undo.
@@ -10499,9 +10651,12 @@ function quickNoteRun(item, before, levelled) {
   }
   for (const k of Object.keys(to)) {
     delete run.sums[k];
-    const said = `${QUICK_BY_KEY[k].label} to ${quickFormat(k, to[k])}`;
-    if (!run.said.includes(said)) run.said.push(said);
+    // A drag sets it many times on the way: the last is what it is at.
+    const label = QUICK_BY_KEY[k].label;
+    run.said = run.said.filter((w) => !w.startsWith(`${label} to `));
+    run.said.push(`${label} to ${quickFormat(k, to[k])}`);
   }
+  if (item.change.curve && !run.said.includes("Curve")) run.said.push("Curve");
   for (const [k, d] of Object.entries(by)) run.sums[k] = (run.sums[k] || 0) + d;
   const sums = Object.entries(run.sums).filter(([, d]) => Math.abs(d) > 1e-9)
     .map(([k, d]) => `${QUICK_BY_KEY[k].label} ${quickFormat(k, d)}`);
@@ -11354,6 +11509,8 @@ function bindUi() {
   $("#edit-prev").addEventListener("click", () => editNav(-1));
   $("#edit-next").addEventListener("click", () => editNav(+1));
   $("#edit-curve-reset").addEventListener("click", resetCurve);
+  // Folded, the curve has no size to draw at: it draws when opened.
+  $("#edit-curve-group").addEventListener("toggle", drawCurve);
   $("#modal-level").addEventListener("click", () => setLevelTool(!levelTool.on));
   $("#modal-edit").addEventListener("click", () => {
     const i = state.modal.idx;

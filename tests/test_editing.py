@@ -65,6 +65,27 @@ def test_curve_brighten_then_render() -> None:
     assert out.mean() > img.mean()
 
 
+def test_levels_clip_the_ends_and_bend_the_middle() -> None:
+    """Black and white point are Photoshop's input levels, in 8-bit levels:
+    what lies outside goes to black or white and the rest stretches; gamma
+    moves the middle with both ends held."""
+    ramp = np.repeat(np.arange(256, dtype=np.uint8)[None, :, None], 3, axis=2)
+    out = editing.render(ramp, {"pv": 2, "black_point": 20, "white_point": 30})[0, :, 0].astype(int)
+    assert (out[:21] == 0).all() and (out[225:] == 255).all()
+    assert np.all(np.diff(out) >= 0)
+    mid = (20 + 225) // 2
+    assert abs(int(out[mid]) - 128) <= 2, "the middle of the kept range lands mid-way"
+    for g, brighter in ((50, True), (-50, False)):
+        bent = editing.render(ramp, {"pv": 2, "gamma": g})[0, :, 0].astype(int)
+        assert (bent[0], bent[255]) == (0, 255), "gamma holds both ends"
+        assert (bent[128] > 128) == brighter
+    # +100 is a gamma of 2.0: mid grey to its square root.
+    lut = editing._tone_lut(editing.normalize({"pv": 2, "gamma": 100}))
+    x = np.linspace(0, 1, lut.size)
+    assert np.allclose(lut, np.sqrt(x), atol=1e-6)
+    assert not editing.is_neutral({"gamma": 5}) and not editing.is_neutral({"black_point": 1})
+
+
 def test_auto_tone_shape() -> None:
     dark = (_sample().astype(np.float32) * 0.3).astype(np.uint8)
     edit = editing.auto_tone(dark)

@@ -143,12 +143,16 @@ keys for where you are, `?` lists every one (also in the
 - **Quick edit**, Lightroom's Quick Develop, without opening the editor: `.`
   and `,` brighten or darken by a third of a stop, `>` and `<` by a stop, in
   the grid and in the viewer. The info panel has the rest under **Quick edit**:
-  Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Temperature, Tint,
-  Clarity, Vibrance and Straighten, each with `«` `‹` `›` `»` (a stop and a
-  third of one for Exposure, 20 and 5 for the others, as Lightroom's are; 1°
-  and 0.1° for Straighten, the editor slider's own steps), its name to set it
-  back to 0, and **Auto** for each photo's own auto tone (exposure, contrast,
-  whites and blacks only; the editor's Auto starts the edit over).
+  Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Black point, White
+  point, Gamma, Temperature, Tint, Clarity, Vibrance, Clean and Straighten,
+  each with `«` `‹` `›` `»` (a stop and a third of one for Exposure, 10 and 2
+  levels for Black and White point, 20 and 5 for the others, as Lightroom's
+  are; 1° and 0.1° for Straighten, the editor slider's own steps), its name to
+  set it back to 0, and **Auto** for each photo's own auto tone (exposure,
+  contrast, whites and blacks only; the editor's Auto starts the edit over).
+  Above them is the **tone curve**, the editor's, drawn after the levels with
+  their triangles under it: dragging a point or a triangle sets it on every
+  photo the step would act on, and the rows follow.
 - **Straightening** in the viewer: `S` (or **Straighten** in its bar), then
   drag along a line in the photo that should be level, or upright, and the
   photo turns by what it is off, as Lightroom's Straighten tool does. The

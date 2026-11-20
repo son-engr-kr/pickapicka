@@ -65,6 +65,10 @@ DEFAULT_EDIT: dict[str, Any] = {
     "shadows": 0,
     "whites": 0,
     "blacks": 0,
+    # Levels: the ends clipped, in 8-bit levels, then the midtones' gamma.
+    "black_point": 0,  # 0..100: this many levels at the bottom go to black
+    "white_point": 0,  # 0..100: this many levels at the top go to white
+    "gamma": 0,        # midtones; +100 is a gamma of 2.0, -100 of 0.5
     "temp": 0,         # warm (+) / cool (-)
     "tint": 0,         # magenta (+) / green (-)
     "vibrance": 0,
@@ -123,6 +127,9 @@ _RANGES: dict[str, tuple[float, float]] = {
     "shadows": (-100, 100),
     "whites": (-100, 100),
     "blacks": (-100, 100),
+    "black_point": (0, 100),
+    "white_point": (0, 100),
+    "gamma": (-100, 100),
     "temp": (-100, 100),
     "tint": (-100, 100),
     "vibrance": (-100, 100),
@@ -443,6 +450,7 @@ PART_MAX = 8               # parts stacked onto one mask
 # colour or reshape one tonal range in one place.
 LOCAL_KEYS: tuple[str, ...] = (
     "exposure", "contrast", "highlights", "shadows", "whites", "blacks",
+    "black_point", "white_point", "gamma",
     "temp", "tint", "vibrance", "saturation", "clean", "clarity", "texture",
     "dehaze", "denoise", "sharpen", "sharpen_radius", "sharpen_detail",
     "sharpen_masking",
@@ -1069,6 +1077,16 @@ def _tone_lut(e: dict[str, Any]) -> np.ndarray:
 
     t = np.clip(t, 0.0, 1.0)
 
+    # Levels, as Photoshop's: the input range between the two points is
+    # stretched to the full range (what lay outside clips), then the midtones
+    # are raised to a power with both ends held. Before the curve, so a curve
+    # drawn on top shapes the levelled tones.
+    bp, wp = e["black_point"] / 255.0, e["white_point"] / 255.0
+    if bp or wp:
+        t = np.clip((t - bp) / (1.0 - wp - bp), 0.0, 1.0)
+    if e["gamma"]:
+        t = t ** (2.0 ** (-e["gamma"] / 100.0))
+
     if not _curve_is_identity(e["curve"]):
         clut = _curve_lut(e["curve"], 256)
         t = np.interp(t, np.linspace(0.0, 1.0, 256), clut)
@@ -1116,7 +1134,8 @@ def _wb_tone_lut(e: dict[str, Any]) -> np.ndarray | None:
 def _tone_is_neutral(e: dict[str, Any]) -> bool:
     return (
         abs(float(e["exposure"])) < _EPS
-        and not any(e[k] for k in ("contrast", "highlights", "shadows", "whites", "blacks"))
+        and not any(e[k] for k in ("contrast", "highlights", "shadows", "whites", "blacks",
+                                   "black_point", "white_point", "gamma"))
         and _curve_is_identity(e["curve"])
     )
 

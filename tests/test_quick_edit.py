@@ -126,3 +126,17 @@ def test_straighten_steps_and_level_from_the_photos_lines(tmp_path, monkeypatch)
     rolls["next"] = 0.0                       # fog: nothing to go by, left as it was
     done = _quick(app, ["a.jpg"], level=True)
     assert done["levelled"] == {"a.jpg": None} and done["photos"]["a.jpg"]["edit"]["tilt"] == 2.35
+
+
+def test_the_curve_and_levels_are_set_outright(tmp_path) -> None:
+    app, _ = _app(tmp_path, {"a.jpg": {"pv": editing.PROCESS_VERSION, "gamma": 30,
+                                        "curve": [[0, 0], [0.5, 0.4], [1, 1]]}})
+    got = _quick(app, ["a.jpg", "b.jpg"], to={"black_point": 12})["photos"]
+    assert got["a.jpg"]["edit"]["curve"] == [[0, 0], [0.5, 0.4], [1, 1]], "a triangle leaves the curve"
+    assert (got["a.jpg"]["edit"]["black_point"], got["b.jpg"]["edit"]["black_point"]) == (12, 12)
+    got = _quick(app, ["a.jpg", "b.jpg"], curve=[[0, 0.1], [0.5, 0.6], [1, 1]])["photos"]
+    for rp in ("a.jpg", "b.jpg"):
+        assert got[rp]["edit"]["curve"] == [[0, 0.1], [0.5, 0.6], [1, 1]]
+    assert got["a.jpg"]["edit"]["gamma"] == 30, "the curve leaves the levels"
+    got = _quick(app, ["b.jpg"], by={"white_point": 500})["photos"]["b.jpg"]["edit"]
+    assert got["white_point"] == 100

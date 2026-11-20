@@ -221,10 +221,12 @@ class QuickEditPayload(BaseModel):
     """Quick edit, from the culling screen: sliders moved by an amount on each
     photo (`by`), set to a value (`to`), and the photo's own auto tone
     (`auto`), and its horizon levelled from its own lines (`level`), on every
-    photo named. Each photo keeps the rest of its edit."""
+    photo named. `curve` sets the master tone curve, as the panel's curve is
+    dragged. Each photo keeps the rest of its edit."""
     rel_paths: list[str]
     by: dict[str, float] = {}
     to: dict[str, float] = {}
+    curve: list[list[float]] | None = None
     auto: bool = False
     level: bool = False
 
@@ -4177,7 +4179,7 @@ def create_app(initial_db_path: Path | None = None, lifespan: Any = None) -> Fas
         unknown = keys - (set(editing._RANGES) - editing._MODIFIER_KEYS)
         if unknown:
             raise HTTPException(status_code=400, detail=f"not a slider: {sorted(unknown)}")
-        if not (keys or payload.auto or payload.level):
+        if not (keys or payload.auto or payload.level or payload.curve is not None):
             raise HTTPException(status_code=400, detail="nothing to change")
         for rp in payload.rel_paths:
             if ctx.photo_index.get(rp) is None:
@@ -4202,6 +4204,8 @@ def create_app(initial_db_path: Path | None = None, lifespan: Any = None) -> Fas
                     e["tilt"], e["transform"] = round(roll, 2), None
             for k, v in payload.to.items():
                 e[k] = v
+            if payload.curve is not None:
+                e["curve"] = editing._clean_curve(payload.curve)
             for k, d in payload.by.items():
                 e[k] = e[k] + d
             for k in keys:

@@ -8,7 +8,8 @@ adjustments bake in only on export or download.
 ## Adjustments
 
 - **In-app photo editing**: adjust any photo right from the picking screen —
-  Exposure, Contrast, Highlights/Shadows/Whites/Blacks, Temperature/Tint,
+  Exposure, Contrast, Highlights/Shadows/Whites/Blacks, Levels (Black point,
+  White point, Gamma), Temperature/Tint,
   Vibrance/Saturation/Clean, Texture/Clarity/Dehaze/Denoise/Sharpen/Vignette, and a
   draggable **tone curve**,
   with a live before/after preview and an **Auto** button. Fully
@@ -478,6 +479,17 @@ Two stages that fix the captured image rather than interpret it, and they run
   collapse into the one 256-entry per-channel lookup the pipeline already
   applies with `cv2.LUT` — adding a red curve adds a table to bake, not a pass
   over the frame.
+- **Levels** in the Light panel, as Photoshop's: **Black point** and **White
+  point** (0 to 100, in 8-bit levels) send that many of the darkest or
+  brightest levels to pure black or white and stretch the rest over the full
+  range; **Gamma** (-100 to 100) bends the midtones with both ends held, +100
+  being a gamma of 2.0 and -100 of 0.5. Unlike Whites and Blacks they clip.
+  They run after the tone sliders and before the master curve.
+- The master curve is **drawn after the levels**, so its line is the response
+  of both, and the levels are handles on it: the end points slide sideways to
+  the black and white points, and the three triangles under the plot (black,
+  grey, white) are Black point, Gamma and White point. Dragging one moves its
+  slider and moving a slider moves it; a double-click puts a triangle back.
 
 ## Colour mixer
 
