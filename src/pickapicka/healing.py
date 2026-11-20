@@ -7,9 +7,21 @@ the whole point of this module: it is the *default* path of the removal feature
 (see `docs/roadmap-parity.md`, "Decisions taken"), and a heavier model behind a
 consent dialog is somebody else's file.
 
-  heal   fill a region with what surrounds it (`cv2.inpaint`)
+  heal   fill a region with what surrounds it
   clone  copy from an explicit source offset, through a feathered edge
   spot   a one-click circular heal, for dust and blemishes
+
+A heal or a spot fills its region one of two ways. Method "patch", what the
+editor makes, is the healing brush's: real pixels copied from a nearby source
+(found once by `find_source` and stored as the op's offset, as a clone's is)
+and blended in the gradient domain, so the copy keeps its own grain while its
+tones are bent to meet the region's edge exactly (Perez, Gangnet and Blake,
+"Poisson Image Editing", SIGGRAPH 2003: the "seamless cloning" of section 3,
+guidance field the source's own gradient). Methods "ns" and "telea" are
+OpenCV's diffusion (`cv2.inpaint`), what every heal used before; an op made
+that way still renders as it did. Diffusion has no grain to give, and
+Navier-Stokes carries the rim's noise inward along the pixel grid, so on a
+grainy sky it left a smooth disc crossed by horizontal and vertical streaks.
 
 A heal or a spot may instead carry method "ai": its pixels were made once by a
 generative model (`aifill`, opt-in by use, MIT-licensed weights) and are handed
@@ -101,6 +113,7 @@ KINDS: tuple[str, ...] = ("heal", "clone", "spot")
 # So NS by default, TELEA kept selectable because on some real edges it is
 # crisper and this is cheap enough to offer.
 METHODS: dict[str, int] = {"ns": cv2.INPAINT_NS, "telea": cv2.INPAINT_TELEA}
+PATCH_METHOD = "patch"     # a source patch, blended seamlessly; see `find_source`
 AI_METHOD = "ai"           # a patch made by a model; see `aifill` and `genfill`
 FILL_MODELS = ("aifill", "genfill")
 _AI_KINDS = ("heal", "spot")
@@ -174,7 +187,8 @@ def normalize_op(raw: Any) -> dict[str, Any] | None:
         "radius": _fnum(raw.get("radius"), rlo, rhi, 0.01),
         "feather": int(round(_fnum(raw.get("feather"), 0, 100, 50))),
         "opacity": int(round(_fnum(raw.get("opacity"), 0, 100, 100))),
-        "method": raw["method"] if raw.get("method") in METHODS else "ns",
+        "method": raw["method"] if raw.get("method") in METHODS or (
+            raw.get("method") == PATCH_METHOD and kind in _AI_KINDS) else "ns",
         "dx": 0.0,
         "dy": 0.0,
     }
@@ -188,7 +202,7 @@ def normalize_op(raw: Any) -> dict[str, Any] | None:
             return None
         op["method"] = AI_METHOD
         op["fill"] = fill
-    if kind == "clone":
+    if kind == "clone" or op["method"] == PATCH_METHOD:
         op["dx"] = _fnum(raw.get("dx"), _OFFSET_RANGE[0], _OFFSET_RANGE[1], 0.0)
         op["dy"] = _fnum(raw.get("dy"), _OFFSET_RANGE[0], _OFFSET_RANGE[1], 0.0)
         if abs(op["dx"]) < _EPS and abs(op["dy"]) < _EPS:
@@ -333,7 +347,7 @@ def read_bbox(op: dict[str, Any], w: int, h: int) -> tuple[int, int, int, int]:
         return x0, y0, x1, y1
     x0, y0 = max(0, x0 - _INPAINT_MARGIN), max(0, y0 - _INPAINT_MARGIN)
     x1, y1 = min(w, x1 + _INPAINT_MARGIN), min(h, y1 + _INPAINT_MARGIN)
-    if op["kind"] == "clone":
+    if _reads_offset(op):
         dx, dy = int(round(op["dx"] * w)), int(round(op["dy"] * h))
         x0, y0 = max(0, min(x0, x0 + dx)), max(0, min(y0, y0 + dy))
         x1, y1 = min(w, max(x1, x1 + dx)), min(h, max(y1, y1 + dy))
@@ -368,7 +382,7 @@ def padding(params: dict[str, Any] | None, w: int, h: int) -> float:
         # offset; strictly it needs no margin on top of that, but `_apply_op`
         # forms one box for both kinds and ten generous pixels cost nothing.
         reach = float(_INPAINT_MARGIN)
-        if op["kind"] == "clone":
+        if _reads_offset(op):
             reach += max(abs(op["dx"]) * w, abs(op["dy"]) * h)
         pad = max(pad, reach)
     return pad
@@ -419,6 +433,167 @@ def _fill_and_alpha(core: np.ndarray, collar: float) -> tuple[np.ndarray, np.nda
     fill = (dist <= collar).astype(np.uint8)
     alpha = _smoothstep(np.clip((collar + 0.5 - dist) / collar, 0.0, 1.0))
     return fill, alpha
+
+
+def _reads_offset(op: dict[str, Any]) -> bool:
+    """A clone, or a heal filled from a source patch: both read a region-sized
+    patch at the op's offset."""
+    return op["kind"] == "clone" or op["method"] == PATCH_METHOD
+
+
+# ----- seamless patch -----------------------------------------------------
+
+def _laplacian(fill: np.ndarray) -> tuple[Any, list[tuple[np.ndarray, np.ndarray, np.ndarray]], tuple[np.ndarray, np.ndarray]]:
+    """The 5-point Laplace system over the pixels of `fill`, factorized.
+
+    Every pixel of `fill` is an unknown; a neighbour outside it (inside the
+    array) is a fixed boundary value, and a neighbour past the array's edge is
+    left out (a zero-flux edge). Returns the solver, and for each of the four
+    directions the unknowns that have a boundary neighbour that way, with that
+    neighbour's coordinates, so a caller builds the right-hand side for any
+    boundary values without rebuilding the matrix."""
+    import scipy.sparse as sp
+    import scipy.sparse.linalg as spla
+    h, w = fill.shape
+    ys, xs = np.nonzero(fill)
+    n = ys.size
+    idx = np.full((h, w), -1, dtype=np.int64)
+    idx[ys, xs] = np.arange(n)
+    rows, cols, data = [np.arange(n)], [np.arange(n)], [np.zeros(n)]
+    diag = data[0]
+    bound = []
+    for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        ny, nx = ys + dy, xs + dx
+        inside = (ny >= 0) & (ny < h) & (nx >= 0) & (nx < w)
+        diag += inside
+        ny_c, nx_c = np.clip(ny, 0, h - 1), np.clip(nx, 0, w - 1)
+        j = np.where(inside, idx[ny_c, nx_c], -1)
+        own = inside & (j >= 0)
+        rows.append(np.arange(n)[own]); cols.append(j[own]); data.append(-np.ones(own.sum()))
+        edge = inside & (j < 0)
+        bound.append((np.nonzero(edge)[0], ny[edge], nx[edge]))
+    a = sp.csc_matrix((np.concatenate(data), (np.concatenate(rows), np.concatenate(cols))),
+                      shape=(n, n))
+    return spla.factorized(a), bound, (ys, xs)
+
+
+def _membrane(edge: np.ndarray, system: Any) -> np.ndarray:
+    """The harmonic function over the fill that equals `edge` (h, w, 3) on its
+    boundary, as an (h, w, 3) array that is zero outside the fill."""
+    solve, bound, (ys, xs) = system
+    out = np.zeros_like(edge)
+    for c in range(edge.shape[2]):
+        rhs = np.zeros(ys.size)
+        for k, by, bx in bound:
+            np.add.at(rhs, k, edge[by, bx, c])
+        out[ys, xs, c] = solve(rhs)
+    return out
+
+
+# Unknowns past which the membrane is solved on a smaller grid. A direct solve
+# grows faster than the region (measured: 0.06 s at 20k unknowns, 0.6 s at
+# 130k, 3.9 s at 500k); a membrane is harmonic, smooth away from its edge, so a
+# grid a few times coarser loses only the edge's pixel-scale noise, which the
+# op's feathered collar blends over. A dust spot never gets here.
+_MEMBRANE_MAX = 100_000
+
+
+def _seamless(patch: np.ndarray, src: np.ndarray, fill: np.ndarray) -> np.ndarray:
+    """`src` blended into `patch` over `fill` (Perez et al. 2003, seamless
+    cloning): inside the fill the result keeps the source's gradient and meets
+    the patch on the fill's edge, which is the source plus the membrane that
+    takes the source's edge to the patch's."""
+    diff = (patch - src).astype(np.float32)
+    n = int(fill.sum())
+    if n <= _MEMBRANE_MAX:
+        m = _membrane(diff.astype(np.float64), _laplacian(fill))
+    else:
+        h, w = fill.shape
+        f = math.sqrt(n / _MEMBRANE_MAX)
+        size = (max(2, round(w / f)), max(2, round(h / f)))
+        outside = (fill == 0).astype(np.float32)
+        # The edge values on the coarse grid: an average of the outside pixels
+        # only, since the difference inside the fill means nothing.
+        wsum = cv2.resize(outside, size, interpolation=cv2.INTER_AREA)
+        dsum = cv2.resize(diff * outside[..., None], size, interpolation=cv2.INTER_AREA)
+        coarse_fill = (wsum < 1e-6).astype(np.uint8)
+        coarse_edge = dsum / np.maximum(wsum, 1e-6)[..., None]
+        m = _membrane(coarse_edge.astype(np.float64), _laplacian(coarse_fill))
+        m = np.where(coarse_fill[..., None] > 0, m, coarse_edge)
+        m = cv2.resize(m.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+    out = src + m.astype(np.float32)
+    return np.where(fill[..., None] > 0, out, patch)
+
+
+# Where `find_source` looks: rings at these distances, in units of the region's
+# reach (radius plus collar), at this many angles each. The nearest ring that
+# clears the region and its surround is 2 reaches out; sky and skin change
+# slowly enough that 4.5 is still the same stuff.
+_SOURCE_RINGS = (2.2, 2.9, 3.7, 4.5)
+_SOURCE_ANGLES = 16
+_SOURCE_WORK_R = 16.0      # px: the search runs on a copy scaled so the radius is about this
+
+
+def find_source(rgb: np.ndarray, op: dict[str, Any],
+                roi: tuple[float, float, float, float] = FULL_ROI) -> tuple[float, float] | None:
+    """Where a heal or a spot should copy from, as the (dx, dy) frame-fraction
+    offset of its source, or None when no candidate lies wholly in the image.
+
+    The healing brush's choice, made once when the repair is placed: candidates
+    on rings around the region, each scored by two things the blend cannot fix.
+    The band just outside the region has to look like the band outside the
+    candidate (the blend takes care of a difference in level, so it is compared
+    with its mean taken out); and the candidate's inside has to be as plain as
+    its own surround says it should be: what is left after the membrane of its
+    own edge is taken out is a blob, an edge, another speck of dust. The search
+    runs on a copy scaled so the radius is about 16 px, which a dust spot's
+    surround does not need more than.
+
+    `rgb` is float32 in [0,1], the frame (or the window `roi` of it) the repair
+    applies to, with the repairs before this one already done."""
+    assert rgb.ndim == 3 and rgb.dtype == np.float32, f"expected float32 RGB, got {rgb.dtype} {rgb.shape}"
+    p = normalize_op(dict(op, method="ns", dx=0.0, dy=0.0))
+    assert p is not None and p["kind"] in _AI_KINDS, f"not a heal or a spot: {op!r}"
+    h, w = rgb.shape[:2]
+    frame_w, frame_h = w / roi[2], h / roi[3]
+    ox, oy = roi[0] * frame_w, roi[1] * frame_h
+    r_px, collar = _op_geometry(p, frame_w)
+    k = min(1.0, _SOURCE_WORK_R / r_px)
+    img = cv2.resize(rgb, (max(1, round(w * k)), max(1, round(h * k))),
+                     interpolation=cv2.INTER_AREA) if k < 1.0 else rgb
+    hh, ww = img.shape[:2]
+    path = _pixel_path(p, frame_w, frame_h, ox, oy) * k
+    r, col = r_px * k, collar * k
+    band = max(2.0, 0.5 * r)
+    x0, y0, x1, y1 = _reach_bbox(path, r + col + band + 1, ww, hh)
+    core = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    _rasterize(core, path - np.asarray([x0, y0], dtype=np.float64), r)
+    dist = cv2.distanceTransform(255 - core, cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+    fill = (dist <= col).astype(np.uint8)
+    ring = (dist > col) & (dist <= col + band)
+    system = _laplacian(fill)
+    target = img[y0:y1, x0:x1].astype(np.float64)
+    t_ring = target[ring] - target[ring].mean(0)
+    # Reach in pixels of the region's own box: the farthest pixel it covers.
+    reach = max(x1 - x0, y1 - y0) / 2.0
+    best, best_cost = None, math.inf
+    for d in _SOURCE_RINGS:
+        for i in range(_SOURCE_ANGLES):
+            a = 2 * math.pi * i / _SOURCE_ANGLES
+            dx, dy = int(round(math.cos(a) * d * reach)), int(round(math.sin(a) * d * reach))
+            if x0 + dx < 0 or y0 + dy < 0 or x1 + dx > ww or y1 + dy > hh:
+                continue
+            src = img[y0 + dy:y1 + dy, x0 + dx:x1 + dx].astype(np.float64)
+            s_ring = src[ring] - src[ring].mean(0)
+            ring_cost = float(((t_ring - s_ring) ** 2).sum(1).mean())
+            own = src - _membrane(np.where(fill[..., None] > 0, 0.0, src), system)
+            inside_cost = float((own[fill > 0] ** 2).sum(1).mean())
+            cost = ring_cost + inside_cost
+            if cost < best_cost:
+                best, best_cost = (dx, dy), cost
+    if best is None:
+        return None
+    return best[0] / k / frame_w, best[1] / k / frame_h
 
 
 # ----- the three tools ----------------------------------------------------
@@ -506,10 +681,12 @@ def _apply_op(img: np.ndarray, op: dict[str, Any], frame_w: float, frame_h: floa
         fid = op["fill"]["id"]
         assert fills is not None and fid in fills, f"AI heal {fid[:12]} needs its patch from the caller"
         src = _place_patch(fills[fid], op["fill"]["box"], frame_w, frame_h, ox, oy, box)
-    elif op["kind"] == "clone":
+    elif _reads_offset(op):
         src, valid = _shifted_read(img, box, int(round(op["dy"] * frame_h)),
                                    int(round(op["dx"] * frame_w)))
         alpha = alpha * valid
+        if op["kind"] != "clone":
+            src = _seamless(patch, src, fill)
     else:
         # cv2.inpaint takes 8-bit only. The round trip is confined to the filled
         # pixels — everything else keeps its float value untouched — and the

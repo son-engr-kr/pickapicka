@@ -540,3 +540,99 @@ if __name__ == "__main__":
                 fails += 1
                 print(f"FAIL {name}: {exc}")
     sys.exit(1 if fails else 0)
+
+
+# ----- patch: a source copied in and blended seamlessly --------------------
+
+def _dusty_sky(h: int = 300, w: int = 400, grain: float = 2.0 / 255):
+    """A sky with real grain, the clean one, and dust at (200, 150) and a second
+    speck at (290, 150) where a source to the right would pick it up."""
+    rng = np.random.default_rng(1)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    clean = np.stack([0.20 + 0.05 * xx / w, 0.22 + 0.03 * yy / h, 0.60 + 0.05 * xx / w], -1)
+    clean = clean + rng.normal(0, grain, (h, w, 1)) + rng.normal(0, grain * 0.6, (h, w, 3))
+    clean = (np.rint(np.clip(clean, 0, 1) * 255) / 255).astype(np.float32)
+
+    def blob(cx, cy, s):
+        return (np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * s ** 2)) * 0.04)[..., None]
+    dusty = np.clip(clean - blob(200, 150, 12) - blob(290, 150, 10), 0, 1).astype(np.float32)
+    return dusty, clean
+
+
+def test_a_patch_spot_keeps_the_grain_where_diffusion_smooths_it() -> None:
+    """The case this exists for: dust on a grainy sky. Diffusion fills a smooth
+    disc (and Navier-Stokes streaks it along the grid); the patch carries the
+    sky's own grain, so the hole's noise matches the clean sky's, and its level
+    is the clean sky's, not the dust's."""
+    dusty, clean = _dusty_sky()
+    h, w = dusty.shape[:2]
+    op = _spot(200 / w, 150 / h, 35 / w)
+    dx, dy = healing.find_source(dusty, op)
+    hole = (slice(125, 175), slice(175, 225))
+    clean_std = clean[hole].std((0, 1))
+    diffused = healing.apply_healing(dusty, {"ops": [dict(op, method="ns")]})
+    patched = healing.apply_healing(dusty, {"ops": [dict(op, method="patch", dx=dx, dy=dy)]})
+    assert np.all(diffused[hole].std((0, 1)) < 0.75 * clean_std), "the premise: diffusion smooths"
+    assert np.allclose(patched[hole].std((0, 1)), clean_std, rtol=0.15), \
+        f"grain {patched[hole].std((0, 1))} against the sky's {clean_std}"
+    assert np.abs((patched[hole] - clean[hole]).mean((0, 1))).max() < 1.5 / 255, "the dust is gone"
+
+
+def test_the_source_avoids_another_speck() -> None:
+    dusty, clean = _dusty_sky()
+    h, w = dusty.shape[:2]
+    op = _spot(200 / w, 150 / h, 35 / w)
+    dx, dy = healing.find_source(dusty, op)
+    sx, sy = 200 + dx * w, 150 + dy * h
+    assert np.hypot(sx - 290, sy - 150) > 35 + 10 + 20, f"copied from the other speck at ({sx:.0f}, {sy:.0f})"
+    # And from far enough away not to read its own region.
+    assert np.hypot(dx * w, dy * h) >= 2 * 35
+
+
+def test_no_source_when_nothing_fits() -> None:
+    dusty, _ = _dusty_sky(120, 120)
+    assert healing.find_source(dusty, _spot(0.5, 0.5, 0.3)) is None
+
+
+def test_a_patch_without_an_offset_is_not_an_edit_and_old_methods_stay() -> None:
+    assert healing.normalize_op(_spot(0.5, 0.5, 0.02, method="patch")) is None
+    op = healing.normalize_op(_spot(0.5, 0.5, 0.02, method="patch", dx=0.1, dy=-0.05))
+    assert (op["method"], op["dx"], op["dy"]) == ("patch", 0.1, -0.05)
+    old = healing.normalize_op(_spot(0.5, 0.5, 0.02, dx=0.1))
+    assert (old["method"], old["dx"]) == ("ns", 0.0), "a diffusion spot carries no offset"
+
+
+def test_a_padded_window_matches_the_whole_frame_for_a_patch() -> None:
+    dusty, _ = _dusty_sky()
+    h, w = dusty.shape[:2]
+    params = {"ops": [dict(_spot(200 / w, 150 / h, 30 / w), method="patch", dx=-80 / w, dy=0.0)]}
+    full = healing.apply_healing(dusty, params)
+    pad = int(round(healing.padding(params, w, h)))
+    wx0, wy0, ww, wh = 170, 120, 60, 60
+    x0, y0 = wx0 - pad, wy0 - pad
+    pw, ph = ww + 2 * pad, wh + 2 * pad
+    assert x0 >= 0 and y0 >= 0 and x0 + pw <= w and y0 + ph <= h, "the test needs slack"
+    out = healing.apply_healing(dusty[y0:y0 + ph, x0:x0 + pw], params,
+                                roi=(x0 / w, y0 / h, pw / w, ph / h))
+    inner = out[wy0 - y0:wy0 - y0 + wh, wx0 - x0:wx0 - x0 + ww]
+    assert np.abs(inner - full[wy0:wy0 + wh, wx0:wx0 + ww]).max() <= 2.0 / 255
+
+
+def test_a_large_patch_is_solved_coarse_and_still_seamless() -> None:
+    """Past `_MEMBRANE_MAX` unknowns the membrane is solved on a coarser grid;
+    it has to land on what the exact solve gives, closely inside."""
+    h = w = 520
+    yy, xx = np.mgrid[0:h, 0:w]
+    fill = (((yy - 260) ** 2 + (xx - 260) ** 2) <= 250 ** 2).astype(np.uint8)
+    rng = np.random.default_rng(0)
+    patch = (0.5 + 0.1 * xx / w + rng.normal(0, 0.01, (h, w)))[..., None].repeat(3, 2).astype(np.float32)
+    src = (0.3 + rng.normal(0, 0.01, (h, w)))[..., None].repeat(3, 2).astype(np.float32)
+    assert fill.sum() > healing._MEMBRANE_MAX
+    coarse = healing._seamless(patch, src, fill)
+    exact_max, healing._MEMBRANE_MAX = healing._MEMBRANE_MAX, 10 ** 9
+    try:
+        exact = healing._seamless(patch, src, fill)
+    finally:
+        healing._MEMBRANE_MAX = exact_max
+    d = np.abs(coarse - exact)[fill > 0]
+    assert d.mean() < 1.0 / 255 and d.max() < 12.0 / 255

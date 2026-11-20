@@ -140,3 +140,15 @@ def test_the_curve_and_levels_are_set_outright(tmp_path) -> None:
     assert got["a.jpg"]["edit"]["gamma"] == 30, "the curve leaves the levels"
     got = _quick(app, ["b.jpg"], by={"white_point": 500})["photos"]["b.jpg"]["edit"]
     assert got["white_point"] == 100
+
+
+def test_heal_source_finds_one_and_says_when_none_fits(tmp_path) -> None:
+    app, _ = _app(tmp_path, {})
+    find = _route(app, "/api/edit/heal-source", "POST")
+    got = find(server.HealSourcePayload(rel_path="a.jpg", op={"kind": "spot", "points": [[0.5, 0.5]],
+                                                               "radius": 0.05}))
+    assert np.hypot(got["dx"] * 90, got["dy"] * 60) > 2 * 0.05 * 90
+    with pytest.raises(server.HTTPException) as e:
+        find(server.HealSourcePayload(rel_path="a.jpg", op={"kind": "spot", "points": [[0.5, 0.5]],
+                                                             "radius": 0.25}))
+    assert e.value.status_code == 422

@@ -144,7 +144,8 @@ keys for where you are, `?` lists every one (also in the
   and `,` brighten or darken by a third of a stop, `>` and `<` by a stop, in
   the grid and in the viewer. The info panel has the rest under **Quick edit**:
   Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Black point, White
-  point, Gamma, Temperature, Tint, Clarity, Vibrance, Clean and Straighten,
+  point, Gamma, Temperature, Tint, Clarity, Vibrance, Saturation, Clean and
+  Straighten,
   each with `«` `‹` `›` `»` (a stop and a third of one for Exposure, 10 and 2
   levels for Black and White point, 20 and 5 for the others, as Lightroom's
   are; 1° and 0.1° for Straighten, the editor slider's own steps), its name to

@@ -62,7 +62,15 @@ Two stages that fix the captured image rather than interpret it, and they run
 
 - **Heal, clone and spot**, in the editor's **Heal & red eye** panel. **Spot**
   is one click on dust or a blemish; **Heal** is painted over what should go
-  and fills it from what surrounds it; **Clone** copies from a place you pick
+  and fills it from what surrounds it. Both copy real pixels from a matching
+  place nearby (shown dashed, as a clone's source is) and blend them into the
+  region's edge in the gradient domain (Perez et al., "Poisson Image Editing",
+  2003), so the repair carries the photo's own grain. The source is chosen once,
+  as the repair is placed: the candidate whose surround looks like the region's
+  surround and whose inside is plain (no other speck, no edge). Before this a
+  heal diffused inward from the edge (`cv2.inpaint`), which on a grainy sky left
+  a smooth disc crossed by horizontal and vertical streaks; repairs made then
+  still render that way; **Clone** copies from a place you pick
   (Alt-click, or the first click), through a feathered edge, and every stroke
   reads from that same point. **Size** is the brush, `[` and `]` nudge it, and
   each repair in the list can be switched off or removed. The repairs are

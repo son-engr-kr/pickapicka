@@ -244,6 +244,14 @@ class NeutralPickPayload(BaseModel):
     edit: dict[str, Any] | None = None   # only its optics are read
 
 
+# A heal or a spot just placed, and the edit it goes into (its optics and the
+# repairs before it are read), for where it should copy from.
+class HealSourcePayload(BaseModel):
+    rel_path: str
+    op: dict[str, Any]
+    edit: dict[str, Any] | None = None
+
+
 # One of a photo's edit slots. `edit: None` clears the slot; anything else
 # replaces what is in it.
 class EditSlotPayload(BaseModel):
@@ -4303,6 +4311,26 @@ def create_app(initial_db_path: Path | None = None, lifespan: Any = None) -> Fas
             raise HTTPException(status_code=404, detail="photo not found")
         base = ctx.get_corrected_base(payload.rel_path, payload.edit)
         return {"color": editing.sample_color(base, payload.x, payload.y)}
+
+    @app.post("/api/edit/heal-source")
+    def heal_source(payload: HealSourcePayload) -> dict[str, Any]:
+        """Where a heal or a spot copies from (`healing.find_source`), chosen
+        once as it is placed, on the frame it repairs: the lens-corrected base
+        with the repairs before it done. A repair the model filled is left out
+        of that, as its patch is not loaded here; it is rarely under a speck of
+        dust. 422 when no source fits in the frame."""
+        _require_loaded()
+        if ctx.photo_index.get(payload.rel_path) is None:
+            raise HTTPException(status_code=404, detail="photo not found")
+        img = ctx.get_corrected_base(payload.rel_path, payload.edit).astype(np.float32) / 255.0
+        before = editing.normalize(payload.edit)["healing"]
+        if before is not None:
+            ops = [op for op in before["ops"] if op["method"] != healing_mod.AI_METHOD]
+            img = healing_mod.apply_healing(img, {"ops": ops}, inplace=True)
+        got = healing_mod.find_source(img, payload.op)
+        if got is None:
+            raise HTTPException(status_code=422, detail="no room in the frame for a source this size")
+        return {"dx": got[0], "dy": got[1]}
 
     # ----- presets (app-global) --------------------------------------
 

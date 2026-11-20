@@ -1498,9 +1498,10 @@
                   <input type="range" id="repair-size" min="1" max="150" step="1" />
                   <span class="look-val" id="repair-size-val"></span></label>
                 <p class="hsl-note">
-                  Heal fills in from the edges: right for dust, spots, a stray hair
-                  or a wire against the sky, but it smears texture like skin,
-                  fabric, grass or hair. AI fill draws that texture instead (a
+                  Spot and Heal copy grain from a matching place nearby (the dashed
+                  mark) and blend it into the edges: right for dust, spots, a stray
+                  hair or a wire against the sky, but a mixed texture like skin,
+                  fabric, grass or hair may not match. AI fill draws that texture instead (a
                   28 MB MIT-licensed model), and Generative redraws larger
                   regions with a diffusion model (1.9 GB, opt-in); Clone copies
                   real texture from a place you choose. Runs before every other

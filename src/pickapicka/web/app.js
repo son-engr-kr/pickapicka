@@ -5694,6 +5694,32 @@ function repairsShown() {
     || (editSession.tab === "retouch" && $("#edit-repair-group").open);
 }
 
+// The healing brush: a heal or a spot copies real grain from a source near it
+// (healing.find_source), asked for once it is placed and stored as its offset,
+// as a clone's is. Until the answer lands it shows as a diffusion fill, so a
+// click answers at once. One gone or changed meanwhile is left as it is.
+async function placeHealSource(op) {
+  const rel = editSession.relPath;
+  const before = healOps().slice(0, healOps().indexOf(op));
+  const res = await fetch("/api/edit/heal-source", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rel_path: rel, op,
+                           edit: { ...editSession.edit, healing: before.length ? { ops: before } : null } }),
+  });
+  if (editSession.relPath !== rel || !healOps().includes(op)) return;
+  if (!res.ok) {
+    // 422: no source fits in the frame (a spot near a corner as big as the
+    // frame allows); it stays a diffusion fill, which is still a repair.
+    const err = await res.json().catch(() => ({}));
+    $("#edit-status").textContent = err.detail || `finding a source failed: ${res.status}`;
+    return;
+  }
+  const { dx, dy } = await res.json();
+  Object.assign(op, { method: "patch", dx, dy });
+  repairChanged();
+}
+
 function repairChanged() {
   renderRepairPanel();
   setEditDirty();
@@ -5725,8 +5751,10 @@ function repairDown(e, f) {
   const base = { radius, feather: 50, opacity: 100, method: "ns", enabled: true };
   e.preventDefault();
   if (tool === "spot") {
-    setHealOps([...healOps(), { ...base, kind: "spot", points: [[f.x, f.y]] }]);
+    const op = { ...base, kind: "spot", points: [[f.x, f.y]] };
+    setHealOps([...healOps(), op]);
     repairChanged();
+    placeHealSource(op);
     return;
   }
   if (tool === "clone" && (e.altKey || !repairState.cloneSrc)) {
@@ -5959,7 +5987,11 @@ async function fillAgain(i) {
 }
 
 async function repairUp(d) {
-  if (d.kind === "repair-paint") { repairChanged(); return; }
+  if (d.kind === "repair-paint") {
+    repairChanged();
+    if (d.op.kind === "heal") placeHealSource(d.op);
+    return;
+  }
   if (d.kind === "repair-fill") { fillStroke(d.op, d.model); return; }
   const status = $("#repair-status");
   const r = d.r < 0.004 ? EYE_CLICK_RADIUS : d.r;
@@ -6036,11 +6068,16 @@ function drawRepairs(ctx, mr) {
       path(op.points);
     }
     ctx.stroke();
-    if (op.kind === "clone") {
+    if (op.kind === "clone" || op.method === "patch") {
       // Where it copies from: the same path, dashed, and a line joining the two.
       ctx.setLineDash([4, 4]);
       ctx.strokeStyle = on ? "rgba(122,167,255,0.9)" : "rgba(122,167,255,0.35)";
-      path(op.points, op.dx, op.dy);
+      if (op.kind === "spot") {
+        ctx.beginPath();
+        ctx.arc(px(op.points[0][0] + op.dx), py(op.points[0][1] + op.dy), rad, 0, Math.PI * 2);
+      } else {
+        path(op.points, op.dx, op.dy);
+      }
       ctx.stroke();
       ctx.beginPath();
       ctx.moveTo(px(op.points[0][0] + op.dx), py(op.points[0][1] + op.dy));
@@ -10477,6 +10514,7 @@ const QUICK_ROWS = [
   { k: "tint", label: "Tint" },
   { k: "clarity", label: "Clarity" },
   { k: "vibrance", label: "Vibrance" },
+  { k: "saturation", label: "Saturation" },
   { k: "clean", label: "Clean" },
   // The editor's own steps for its Straighten slider: 0.1 a key, 1 with Shift.
   { k: "tilt", label: "Straighten", small: 0.1, big: 1, says: ["0.1°", "1°"] },
